@@ -161,7 +161,7 @@ def main():
         y_train = df_balanced[LABEL_COL]
         print(f"[+] Balanced training set size: {len(X_train)} rows.")
     else:
-        print("[!] Cannot balance training classes; one or more classes are missing.")
+        print("[!]   Cannot balance training classes; one or more classes are missing.")
         
     print("\n--- Balanced Training Class Distribution ---")
     print(y_train.value_counts().to_string())
