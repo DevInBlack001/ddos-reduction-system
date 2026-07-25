@@ -12,7 +12,6 @@ import sys
 import joblib
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils import resample
@@ -30,9 +29,25 @@ FEATURE_COLS = [
     "proto_ratio",
     "dominant_ip_ratio",
     "delta_rate",
-    "delta_entropy"
+    "delta_entropy",
+    "dominant_rate"
 ]
 LABEL_COL = "label"
+
+
+def balance_classes(X, y):
+    """Upsample every class to the size of the largest class. Training-split
+    only -- never call this on evaluation data."""
+    train_df = X.copy()
+    train_df[LABEL_COL] = y.values
+    per_class = [train_df[train_df[LABEL_COL] == lbl] for lbl in (0, 1, 2)]
+    per_class = [d for d in per_class if len(d) > 0]
+    if len(per_class) < 2:
+        return X, y
+    max_size = max(len(d) for d in per_class)
+    upsampled = [resample(d, replace=True, n_samples=max_size, random_state=42) for d in per_class]
+    balanced = pd.concat(upsampled, ignore_index=True)
+    return balanced[FEATURE_COLS], balanced[LABEL_COL]
 
 def main():
     print("=== DDoS Reduction Project: Stage 2 Training ===")
@@ -59,6 +74,12 @@ def main():
     # Calculate delta features
     df["delta_rate"] = df["ewma_rate"] - df["mean_r"]
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
+
+    # dominant_rate: estimated pps of the single busiest source in the window
+    # (ewma_rate * dominant_ip_ratio). Already used ad hoc in stage2.py's
+    # enforcement guards; promoted here to an actual classifier input so the
+    # RF sees it too, not just the post-classification block/ratelimit rule.
+    df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
 
     print("\n--- Raw Class Distribution ---")
     print(df[LABEL_COL].value_counts().to_string())
@@ -113,93 +134,92 @@ def main():
                 "Mean Entropy": lbl_df["entropy"].mean(),
                 "Min Dominant IP Ratio": lbl_df["dominant_ip_ratio"].min(),
                 "Max Dominant IP Ratio": lbl_df["dominant_ip_ratio"].max(),
-                "Mean Dominant IP Ratio": lbl_df["dominant_ip_ratio"].mean()
+                "Mean Dominant IP Ratio": lbl_df["dominant_ip_ratio"].mean(),
+                "Min Dominant Rate": lbl_df["dominant_rate"].min(),
+                "Max Dominant Rate": lbl_df["dominant_rate"].max(),
+                "Mean Dominant Rate": lbl_df["dominant_rate"].mean()
             })
     print(pd.DataFrame(overlap_info).to_string(index=False))
 
-    # 3. Split data by sessions
-    print("\n[+] Partitioning data into train and test sets...")
-    train_indices = []
-    test_indices = []
-    
-    for label in [0, 1, 2]:
-        label_df = df[df[LABEL_COL] == label]
-        if len(label_df) == 0:
+    # 3. Leave-One-Session-Out (LOSO) evaluation.
+    # For each session, hold it out entirely, train on every OTHER session
+    # (all labels), and test on the held-out one. A session is only a fair
+    # fold if its label has >=2 sessions total -- otherwise holding it out
+    # leaves zero training examples of that class, which is a dataset-
+    # coverage gap, not a real generalization test, and would just report a
+    # meaningless 0.00. Random splitting / percentage-of-session splitting
+    # both leak: consecutive windows share EWMA/Welford state, so the RF can
+    # memorize a session's fingerprint instead of learning to generalize.
+    print("\n[+] Running Leave-One-Session-Out (LOSO) evaluation...")
+    sessions_per_label = df.groupby(LABEL_COL)["session_id"].nunique()
+    all_sessions = sorted(df["session_id"].unique())
+
+    fold_true, fold_pred = [], []
+    for sess_id in all_sessions:
+        sess_df = df[df["session_id"] == sess_id]
+        label = sess_df[LABEL_COL].iloc[0]
+        if sessions_per_label.get(label, 0) < 2:
+            print(f"[!] Session {sess_id} (label {label}): SKIPPED -- only session for this "
+                  f"label, holding it out would leave zero training examples of it. "
+                  f"Capture >=1 more independent session of label {label} to make this a fair fold.")
             continue
-            
-        unique_sessions = label_df["session_id"].unique()
-        for sess_id in unique_sessions:
-            sess_df = label_df[label_df["session_id"] == sess_id]
-            split_idx = int(len(sess_df) * 0.8)
-            
-            train_indices.extend(sess_df.iloc[:split_idx].index)
-            test_indices.extend(sess_df.iloc[split_idx:].index)
-            print(f"[+] Label {label} Session {sess_id}: 80/20 chronological split.")
 
-    X_train = df.loc[train_indices, FEATURE_COLS].copy()
-    y_train = df.loc[train_indices, LABEL_COL].copy()
-    
-    X_test = df.loc[test_indices, FEATURE_COLS].copy()
-    y_test = df.loc[test_indices, LABEL_COL].copy()
+        test_df = sess_df
+        train_df = df[df["session_id"] != sess_id]
 
-    # 4. Balance classes on the training split ONLY
-    train_df = X_train.copy()
-    train_df[LABEL_COL] = y_train.values
-    
-    df_normal = train_df[train_df[LABEL_COL] == 0]
-    df_flash = train_df[train_df[LABEL_COL] == 1]
-    df_ddos = train_df[train_df[LABEL_COL] == 2]
-    
-    if len(df_normal) > 0 and len(df_flash) > 0 and len(df_ddos) > 0:
-        max_size = max(len(df_normal), len(df_flash), len(df_ddos))
-        df_normal_upsampled = resample(df_normal, replace=True, n_samples=max_size, random_state=42)
-        df_flash_upsampled = resample(df_flash, replace=True, n_samples=max_size, random_state=42)
-        df_ddos_upsampled = resample(df_ddos, replace=True, n_samples=max_size, random_state=42)
-        df_balanced = pd.concat([df_normal_upsampled, df_flash_upsampled, df_ddos_upsampled], ignore_index=True)
-        
-        X_train = df_balanced[FEATURE_COLS]
-        y_train = df_balanced[LABEL_COL]
-        print(f"[+] Balanced training set size: {len(X_train)} rows.")
+        X_fold_train, y_fold_train = balance_classes(train_df[FEATURE_COLS], train_df[LABEL_COL])
+        X_fold_test, y_fold_test = test_df[FEATURE_COLS], test_df[LABEL_COL]
+
+        fold_clf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
+        fold_clf.fit(X_fold_train, y_fold_train)
+        y_fold_pred = fold_clf.predict(X_fold_test)
+
+        acc = (y_fold_pred == y_fold_test.values).mean()
+        print(f"[+] Session {sess_id} (label {label}, {len(test_df)} rows) held out: accuracy={acc:.3f}")
+
+        fold_true.extend(y_fold_test.values)
+        fold_pred.extend(y_fold_pred)
+
+    if fold_true:
+        print("\n--- LOSO Aggregate Classification Report (all held-out folds combined) ---")
+        print(classification_report(fold_true, fold_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
+        print("\n--- LOSO Aggregate Confusion Matrix ---")
+        print(confusion_matrix(fold_true, fold_pred))
     else:
-        print("[!]   Cannot balance training classes; one or more classes are missing.")
-        
-    print("\n--- Balanced Training Class Distribution ---")
-    print(y_train.value_counts().to_string())
+        print("[-] No label currently has >=2 sessions -- LOSO cannot run yet. "
+              "Every label needs at least one more independent session before this "
+              "evaluation is meaningful. Falling back to reporting training-set fit only below.")
 
-    if len(X_train) < 100:
+    # 4. Final production model: train on ALL available data (every session),
+    # balanced. This is a SEPARATE step from the LOSO evaluation above -- LOSO
+    # exists to tell you whether the approach generalizes, not to produce the
+    # model you actually ship. Once LOSO results look acceptable, this is the
+    # model that gets saved and deployed.
+    print("\n[+] Training final production model on all available data...")
+    X_all, y_all = balance_classes(df[FEATURE_COLS], df[LABEL_COL])
+    print(f"[+] Balanced production training set size: {len(X_all)} rows.")
+    print("\n--- Balanced Training Class Distribution ---")
+    print(y_all.value_counts().to_string())
+
+    if len(X_all) < 100:
         print("[-] Warning: Dataset is very small. Classification results may be unreliable.")
 
-    # 6. Train Random Forest Model
-    print(f"\n[+] Training Random Forest Classifier on {len(X_train)} samples...")
     clf = RandomForestClassifier(
         n_estimators=100,
         max_depth=5,
         random_state=42,
         n_jobs=-1
     )
-    clf.fit(X_train, y_train)
+    clf.fit(X_all, y_all)
     print("[+] Model training complete.")
-    
-    # 7. Evaluate Model on Holdout Set
-    print("\n[+] Evaluating model on holdout test set...")
-    if len(X_test) > 0:
-        y_pred = clf.predict(X_test)
-        
-        print("\n--- Classification Report ---")
-        print(classification_report(y_test, y_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
-        
-        print("\n--- Confusion Matrix ---")
-        print(confusion_matrix(y_test, y_pred))
-    else:
-        print("[-] No test set available for evaluation.")
-        
+
     # Feature Importances
-    print("\n--- Feature Importances ---")
+    print("\n--- Feature Importances (production model) ---")
     importances = clf.feature_importances_
     for col, imp in sorted(zip(FEATURE_COLS, importances), key=lambda x: x[1], reverse=True):
         print(f"  {col:<20} : {imp:.4f}")
-        
-    # 8. Save Model
+
+    # 5. Save Model
     print(f"\n[+] Saving trained model to: {MODEL_PATH}")
     joblib.dump(clf, MODEL_PATH)
     print("[+] Done!")

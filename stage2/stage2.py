@@ -56,6 +56,46 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
 WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
 VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
 FLOWS_PATH = "/tmp/ddos_active_flows.json"
+ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")
+
+# Enforcement thresholds -- these were previously hardcoded magic numbers
+# scattered through the enforcement logic. Kept as a deterministic,
+# operator-tunable rule set (not statistically self-adjusted) so a given
+# decision can always be explained by pointing at a specific configured
+# value, editable live from the dashboard without touching code.
+DEFAULT_ENFORCEMENT_CONFIG = {
+    # Tier 1 fast-path gate: how concentrated traffic must be on one source
+    # before that source alone is enough to justify a block.
+    "dominant_ip_ratio_block_threshold": 0.40,
+    # Classification override: dominant_ip_ratio above this forces DDoS
+    # regardless of entropy (a near-single-source flood is unambiguous).
+    "dominant_ip_ratio_extreme_threshold": 0.75,
+    # Floor under block_threshold/extreme_dominant_rate_boundary so a
+    # near-idle victim's baseline can't produce an absurdly low bar.
+    "block_rate_floor_pps": 300.0,
+    # Floor under flow_threshold (the softer rate-limit tier).
+    "ratelimit_rate_floor_pps": 50.0,
+    # Sigma multiplier shared by Tier 2's per-source block_threshold and the
+    # classification override's extreme_dominant_rate_boundary -- kept as
+    # ONE value so the two stay consistent with each other by construction.
+    "block_sigma_multiplier": 10.0,
+    # Consecutive class-2 windows required before a block action (not
+    # rate-limit) is allowed to fire.
+    "block_hysteresis_windows": 2,
+    # ipset entry lifetime for auto-triggered blocks/rate-limits (self-heal).
+    "block_duration_seconds": 3600,
+    "ratelimit_duration_seconds": 3600,
+    # The actual pps cap enforced by the ddos_ratelimit iptables hashlimit
+    # rule. Unlike the others, changing this requires live iptables rule
+    # surgery (see update_ratelimit_hashlimit()), not just a Python read.
+    "ratelimit_hashlimit_pps": 50,
+}
+
+def get_enforcement_config():
+    """Load enforcement config, merged over defaults so a partially-old
+    saved file (missing newer keys) still works."""
+    saved = load_json_file(ENFORCEMENT_CONFIG_PATH, DEFAULT_ENFORCEMENT_CONFIG)
+    return {**DEFAULT_ENFORCEMENT_CONFIG, **saved}
 
 # Setup Logging
 logging.basicConfig(
@@ -112,11 +152,60 @@ last_metrics = {
 }
 last_metrics_by_target = {}  # victim_ip -> last_metrics dict
 
+# Hysteresis for hard blocks: how many CONSECUTIVE class-2 (DDoS) windows a
+# victim must see before a block action is allowed to fire (configurable --
+# see DEFAULT_ENFORCEMENT_CONFIG["block_hysteresis_windows"]). Rate-limiting
+# is unaffected by this -- it's intentionally the immediate, reversible
+# tier. Keeps a single noisy window from triggering an irreversible-feeling
+# action; the ipset entries self-heal regardless, this just raises the bar
+# before an entry gets created in the first place.
+consecutive_ddos_windows = {}  # victim_ip -> count of consecutive class-2 windows
+
 active_sessions = {}  # session_token -> last_active_timestamp
 
 # -----------------------------------------------------------------------------
 # Kernel netfilter blocklist control (ipset / iptables)
 # -----------------------------------------------------------------------------
+
+def _ensure_hashlimit_rule(pps):
+    """Insert the ddos_ratelimit hashlimit rule (INPUT + FORWARD) at the
+    given pps cap, if not already present. Idempotent -- iptables -C checks
+    before inserting, matching the pattern used for ddos_blocklist."""
+    for chain in ("INPUT", "FORWARD"):
+        check = subprocess.run(
+            ["iptables", "-C", chain, "-m", "set", "--match-set", "ddos_ratelimit", "src",
+             "-m", "hashlimit", "--hashlimit-above", f"{pps}/sec", "--hashlimit-burst", "20",
+             "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        if check.returncode != 0:
+            subprocess.run(
+                ["iptables", "-I", chain, "-m", "set", "--match-set", "ddos_ratelimit", "src",
+                 "-m", "hashlimit", "--hashlimit-above", f"{pps}/sec", "--hashlimit-burst", "20",
+                 "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            logging.info(f"[+] Linked 'ddos_ratelimit' with {pps}pps hashlimit to iptables {chain} chain.")
+
+def update_ratelimit_hashlimit(old_pps, new_pps):
+    """Called when the operator changes ratelimit_hashlimit_pps via the
+    dashboard. iptables rules are matched exactly on insert, including the
+    hashlimit value, so changing the cap means removing the rule that
+    matches the OLD value and inserting one with the new value -- there's
+    no in-place edit. Safe to call even if old==new (no-op) or if the old
+    rule is somehow already gone (delete just fails silently, matched by
+    returncode, not raised)."""
+    if old_pps == new_pps:
+        return
+    for chain in ("INPUT", "FORWARD"):
+        subprocess.run(
+            ["iptables", "-D", chain, "-m", "set", "--match-set", "ddos_ratelimit", "src",
+             "-m", "hashlimit", "--hashlimit-above", f"{old_pps}/sec", "--hashlimit-burst", "20",
+             "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    _ensure_hashlimit_rule(new_pps)
+    logging.warning(f"[+] Updated ddos_ratelimit hashlimit cap: {old_pps}/sec -> {new_pps}/sec")
 
 def setup_ipset():
     """Ensure the target ipset lists exist and are linked to iptables rules."""
@@ -157,7 +246,7 @@ def setup_ipset():
             )
             logging.info("[+] Linked 'ddos_blocklist' to iptables FORWARD chain.")
 
-        # 2. Create ddos_ratelimit set (rate-limits traffic to 50 pps per IP)
+        # 2. Create ddos_ratelimit set (rate-limits traffic per configured cap)
         subprocess.run(
             ["ipset", "create", "ddos_ratelimit", "hash:ip", "timeout", "3600"],
             stdout=subprocess.DEVNULL,
@@ -165,33 +254,11 @@ def setup_ipset():
         )
         logging.info("[+] Kernel ipset 'ddos_ratelimit' verified/created.")
 
-        # Link ddos_ratelimit to INPUT chain if not present
-        check_rl_input = subprocess.run(
-            ["iptables", "-C", "INPUT", "-m", "set", "--match-set", "ddos_ratelimit", "src", "-m", "hashlimit", "--hashlimit-above", "50/sec", "--hashlimit-burst", "20", "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        if check_rl_input.returncode != 0:
-            subprocess.run(
-                ["iptables", "-I", "INPUT", "-m", "set", "--match-set", "ddos_ratelimit", "src", "-m", "hashlimit", "--hashlimit-above", "50/sec", "--hashlimit-burst", "20", "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            logging.info("[+] Linked 'ddos_ratelimit' with 50pps hashlimit to iptables INPUT chain.")
-
-        # Link ddos_ratelimit to FORWARD chain if not present
-        check_rl_forward = subprocess.run(
-            ["iptables", "-C", "FORWARD", "-m", "set", "--match-set", "ddos_ratelimit", "src", "-m", "hashlimit", "--hashlimit-above", "50/sec", "--hashlimit-burst", "20", "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        if check_rl_forward.returncode != 0:
-            subprocess.run(
-                ["iptables", "-I", "FORWARD", "-m", "set", "--match-set", "ddos_ratelimit", "src", "-m", "hashlimit", "--hashlimit-above", "50/sec", "--hashlimit-burst", "20", "--hashlimit-name", "ddoslimit", "--hashlimit-mode", "srcip", "-j", "DROP"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            logging.info("[+] Linked 'ddos_ratelimit' with 50pps hashlimit to iptables FORWARD chain.")
+        # Hashlimit cap is operator-configurable (see enforcement_config.json,
+        # ratelimit_hashlimit_pps) -- ensure the rule reflects whatever is
+        # currently configured, not a hardcoded value, so a value saved
+        # before a restart takes effect immediately on startup too.
+        _ensure_hashlimit_rule(get_enforcement_config()["ratelimit_hashlimit_pps"])
 
     except Exception as e:
         logging.warning(f"[-] Could not setup/verify ipset or iptables: {e}")
@@ -252,7 +319,8 @@ def block_ip(ip, duration=3600, victim_ip="Unknown"):
         recently_blocked[ip] = now
 
 def ratelimit_ip(ip, duration=3600, victim_ip="Unknown"):
-    """Add offending IP to ddos_ratelimit set (enforces 50pps cap)."""
+    """Add offending IP to ddos_ratelimit set (enforces the configured
+    ratelimit_hashlimit_pps cap, default 50pps)."""
     global recently_blocked
     now = time.time()
     
@@ -273,7 +341,8 @@ def ratelimit_ip(ip, duration=3600, victim_ip="Unknown"):
             text=True
         )
         if res.returncode == 0:
-            logging.warning(f"[!!!] MITIGATION TRIGGERED: Rate-limited offending IP {ip} (duration: {duration}s, 50pps cap)")
+            rl_cap = get_enforcement_config()["ratelimit_hashlimit_pps"]
+            logging.warning(f"[!!!] MITIGATION TRIGGERED: Rate-limited offending IP {ip} (duration: {duration}s, {rl_cap}pps cap)")
             # Log to SQLite
             log_incident(now, ip, "Rate Limited", victim_ip)
         else:
@@ -358,10 +427,10 @@ def run_ipset_monitor():
         check_ipset_capacity()
         time.sleep(30)
 
-def get_blocked_ips():
-    """Extract blocked IPs and remaining timeouts directly from kernel."""
+def _get_ipset_members(set_name):
+    """Extract member IPs and remaining timeouts directly from a kernel ipset."""
     try:
-        res = subprocess.run(["ipset", "list", "ddos_blocklist"], capture_output=True, text=True)
+        res = subprocess.run(["ipset", "list", set_name], capture_output=True, text=True)
         if res.returncode != 0:
             return []
         lines = res.stdout.split('\n')
@@ -372,20 +441,28 @@ def get_blocked_ips():
                 break
         if members_idx == -1:
             return []
-        
-        blocked = []
+
+        members = []
         for line in lines[members_idx+1:]:
             line = line.strip()
             if not line:
                 continue
             parts = line.split()
             if len(parts) >= 3 and parts[1] == "timeout":
-                blocked.append({"ip": parts[0], "remaining_seconds": int(parts[2])})
+                members.append({"ip": parts[0], "remaining_seconds": int(parts[2])})
             else:
-                blocked.append({"ip": parts[0], "remaining_seconds": 3600})
-        return blocked
+                members.append({"ip": parts[0], "remaining_seconds": 3600})
+        return members
     except Exception:
         return []
+
+def get_blocked_ips():
+    """Extract hard-blocked IPs and remaining timeouts directly from kernel."""
+    return _get_ipset_members("ddos_blocklist")
+
+def get_ratelimited_ips():
+    """Extract rate-limited (50pps cap) IPs and remaining timeouts directly from kernel."""
+    return _get_ipset_members("ddos_ratelimit")
 
 def decode_ip(ip_bytes):
     try:
@@ -510,30 +587,63 @@ def run_ipc_receiver():
                 delta_rate = ewma_rate - mean_r
                 delta_entropy = entropy - mean_h
 
+                # dominant_rate: estimated pps of the single busiest source in
+                # this window. Computed once here -- fed to the classifier as
+                # an input feature (matches train.py's FEATURE_COLS order
+                # exactly), and reused below by the enforcement guards instead
+                # of each recomputing it independently.
+                dominant_rate = ewma_rate * dominant_ip_ratio
+
+                # Load once per packet -- operator-tunable thresholds for
+                # everything below (see DEFAULT_ENFORCEMENT_CONFIG for what
+                # each key means and why it's configurable, not hardcoded).
+                cfg = get_enforcement_config()
+
                 pred_class = 0
                 if clf:
                     import pandas as pd
                     features_df = pd.DataFrame([[
                         entropy, ewma_rate, mean_h, mean_r, sigma_h, sigma_r,
-                        proto_ratio, dominant_ip_ratio, delta_rate, delta_entropy
+                        proto_ratio, dominant_ip_ratio, delta_rate, delta_entropy,
+                        dominant_rate
                     ]], columns=[
                         "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
-                        "proto_ratio", "dominant_ip_ratio", "delta_rate", "delta_entropy"
+                        "proto_ratio", "dominant_ip_ratio", "delta_rate", "delta_entropy",
+                        "dominant_rate"
                     ])
                     pred_class = int(clf.predict(features_df)[0])
 
                 # Adaptive Safety overrides
                 # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
+                #    Aggregate rate is fine as the outer "is this worth a second
+                #    look" gate -- it doesn't decide Flash-Crowd vs DDoS by itself.
                 rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
-                # 2. Extreme rate trigger: mean_r + 10.0 * sigma_r (mirrors Stage 1's fixed emergency-volume cap)
-                extreme_rate_boundary = mean_r + 10.0 * sigma_r
+                # 2. Extreme SINGLE-SOURCE rate trigger -- based on dominant_rate
+                #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
+                #    Aggregate rate can't distinguish "one attacker producing an
+                #    extreme volume" from "many genuine users each producing a
+                #    normal trickle" -- a legitimate flash crowd's aggregate scales
+                #    with participant count exactly like an attacker's does. This
+                #    used to check ewma_rate directly, which meant a large but
+                #    genuinely distributed crowd (e.g. running the same generator
+                #    from two machines at once) could get force-classified as DDoS
+                #    purely from aggregate volume, bypassing the entropy/dom_ratio
+                #    check below entirely. Threshold matches Track B's per-source
+                #    block_threshold for consistency -- same bar that triggers a
+                #    hard block now also triggers this classification override.
+                #    (block_rate_floor_pps / block_sigma_multiplier are shared
+                #    with Tier 2's block_threshold below, computed once as
+                #    extreme_dominant_rate_boundary and reused there too.)
+                extreme_dominant_rate_boundary = max(
+                    cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+                )
                 # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
                 entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
 
                 if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
-                    if ewma_rate > extreme_rate_boundary:
+                    if dominant_rate > extreme_dominant_rate_boundary:
                         pred_class = 2
-                    elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > 0.75:
+                    elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
                         pred_class = 2
                     else:
                         pred_class = 1
@@ -568,56 +678,124 @@ def run_ipc_receiver():
                 # Save history
                 log_metrics_history(timestamp, ewma_rate, entropy, mean_h, mean_r, sigma_h, sigma_r, k_multiplier, victim_ip_str)
 
+                # Track consecutive class-2 windows per victim for block
+                # hysteresis (rate-limiting is NOT gated by this -- only the
+                # hard-block tiers below are).
+                if pred_class == 2:
+                    consecutive_ddos_windows[victim_ip_str] = consecutive_ddos_windows.get(victim_ip_str, 0) + 1
+                else:
+                    consecutive_ddos_windows[victim_ip_str] = 0
+
                 # Trigger block / rate-limit
                 if pred_class == 2:
                     if ip_str not in ("Unknown", "0.0.0.0", "::"):
-                        # Guard: Only block the dominant IP if:
-                        # 1. It represents a significant portion of the traffic (ratio >= 40%).
-                        # 2. Its individual packet rate exceeds the dynamic malicious threshold (mean_r + k_multiplier * sigma_r).
-                        # This prevents collateral damage on legitimate flash crowd users and post-mitigation decay tails.
-                        dominant_rate = ewma_rate * dominant_ip_ratio
                         dominant_rate_threshold = mean_r + k_multiplier * sigma_r
-                        if dominant_ip_ratio >= 0.40 and dominant_rate >= dominant_rate_threshold:
-                            block_ip(ip_str, victim_ip=victim_ip_str)
-                        else:
-                            # Cluster Block Mode: Pivot to mitigation of distributed attackers (botnets)
-                            # Parse active flows and rate-limit any flow that exceeds mean_r + sigma_r
-                            logging.warning(
-                                f"[!] DDoS detected but dominant IP {ip_str} bypassed single-source guard "
-                                f"(ratio={dominant_ip_ratio:.2%}, est_rate={dominant_rate:.2f} pps). "
-                                f"Pivoting to Cluster Block mode for distributed mitigation..."
+                        # Per-source block bar: sustained rate no legitimate
+                        # client/flash-crowd participant could produce.
+                        # (Same formula/values as extreme_dominant_rate_boundary
+                        # above -- reuse it directly to guarantee they can't drift
+                        # apart from each other.)
+                        block_threshold = extreme_dominant_rate_boundary
+                        # Softer bar for the rate-limit tier (unchanged from before).
+                        flow_threshold = max(cfg["ratelimit_rate_floor_pps"], mean_r + sigma_r)
+                        block_ready = consecutive_ddos_windows.get(victim_ip_str, 0) >= cfg["block_hysteresis_windows"]
+
+                        # Load and aggregate active flows BY SOURCE IP once, up
+                        # front -- every tier below reads from this same
+                        # aggregation instead of re-parsing the flows file
+                        # repeatedly. Aggregating by IP (summed across all of
+                        # that source's flow tuples) rather than per-flow means
+                        # an attacker spreading across multiple dst ports can't
+                        # dodge the per-source thresholds below by fragmenting
+                        # its traffic into several smaller-looking flows.
+                        per_source_rate = {}
+                        if os.path.exists(FLOWS_PATH):
+                            try:
+                                with open(FLOWS_PATH, "r") as f:
+                                    flow_data = json.load(f)
+                                for flow in flow_data.get("active_ips", []):
+                                    f_ip = flow.get("ip")
+                                    if f_ip and f_ip not in ("Unknown", "0.0.0.0", "::"):
+                                        per_source_rate[f_ip] = per_source_rate.get(f_ip, 0.0) + flow.get("rate", 0.0)
+                            except Exception as ce:
+                                logging.error(f"[-] Failed to parse active flows: {ce}")
+
+                        acted_on = set()
+
+                        # Tier 1 -- dominant-source fast path: one source
+                        # clearly drives the attack (both concentrated AND
+                        # fast). Gated by hysteresis like every block action.
+                        if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
+                            block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                            acted_on.add(ip_str)
+
+                        # Tier 2 -- independent per-source-rate escalation.
+                        # NOT gated behind dominant_ip_ratio: a source
+                        # sustaining an impossible rate gets blocked even if
+                        # it's one of many sources and the AGGREGATE looks
+                        # distributed. This is what closes the evasion gap --
+                        # spreading across sources no longer helps once every
+                        # source is still individually well above
+                        # human/flash-crowd rates.
+                        if block_ready:
+                            for f_ip, agg_rate in per_source_rate.items():
+                                if f_ip in acted_on:
+                                    continue
+                                if agg_rate >= block_threshold:
+                                    logging.warning(
+                                        f"[!] Per-source block: {f_ip} sustaining {agg_rate:.2f} pps "
+                                        f"(threshold {block_threshold:.2f}) across its active flows."
+                                    )
+                                    block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                                    acted_on.add(f_ip)
+
+                        if not block_ready and per_source_rate:
+                            logging.info(
+                                f"[i] Class-2 window {consecutive_ddos_windows.get(victim_ip_str, 0)}/"
+                                f"{cfg['block_hysteresis_windows']} for victim {victim_ip_str} -- "
+                                f"block actions held pending hysteresis, rate-limiting only this window."
                             )
-                            cluster_blocked_any = False
-                            if os.path.exists(FLOWS_PATH):
-                                try:
-                                    with open(FLOWS_PATH, "r") as f:
-                                        data = json.load(f)
-                                        # Adaptive individual flow threshold: mean_r + sigma_r (min 50.0 pps floor)
-                                        flow_threshold = max(50.0, mean_r + sigma_r)
-                                        for flow in data.get("active_ips", []):
-                                            f_ip = flow.get("ip")
-                                            f_rate = flow.get("rate", 0.0)
-                                            # If an individual flow in the cluster is sending >= flow_threshold, rate-limit it
-                                            if f_ip not in ("Unknown", "0.0.0.0", "::") and f_rate >= flow_threshold:
-                                                logging.warning(f"[Cluster Block] Rate-limiting high-rate distributed flow: {f_ip} ({f_rate:.2f} pps, threshold: {flow_threshold:.2f} pps)")
-                                                ratelimit_ip(f_ip, victim_ip=victim_ip_str)
-                                                cluster_blocked_any = True
-                                except Exception as ce:
-                                    logging.error(f"[-] Cluster Block failed to parse flows: {ce}")
-                            if not cluster_blocked_any:
-                                logging.warning("[!] Cluster Block completed: No individual botnet flow exceeded adaptive threshold.")
+
+                        # Tier 3 -- softer rate-limit for sources elevated but
+                        # below the hard-block bar (the original Cluster Block
+                        # Mode). NOT gated by hysteresis -- this is the
+                        # intentionally-immediate, reversible tier.
+                        for f_ip, agg_rate in per_source_rate.items():
+                            if f_ip in acted_on:
+                                continue
+                            if agg_rate >= flow_threshold:
+                                ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                                acted_on.add(f_ip)
+
+                        # Tier 4 -- aggregate cap fallback. Class-2 verdict but
+                        # nothing above matched any single source individually
+                        # (fully distributed at sub-threshold per-source
+                        # rates). Previously this meant doing NOTHING at all
+                        # despite a confirmed DDoS classification -- rate-limit
+                        # every currently-active flow to the victim as a last
+                        # resort so a class-2 verdict never silently goes
+                        # unhandled.
+                        if not acted_on and per_source_rate:
+                            logging.warning(
+                                "[!] Aggregate cap fallback: class-2 verdict but no individual "
+                                "source was attributable -- rate-limiting all active flows."
+                            )
+                            for f_ip in per_source_rate:
+                                ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                        elif not per_source_rate and not acted_on:
+                            logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
                     # Log flash crowd incident
                     log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
-                    dominant_rate = ewma_rate * dominant_ip_ratio
+                    # (dominant_rate computed once above, alongside the classifier features.)
                     dominant_rate_threshold = mean_r + k_multiplier * sigma_r
-                    if ip_str not in ("Unknown", "0.0.0.0", "::") and dominant_ip_ratio >= 0.40 and dominant_rate >= dominant_rate_threshold:
+                    if ip_str not in ("Unknown", "0.0.0.0", "::") and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
                         logging.warning(
                             f"[!] Legitimate flash crowd dominant IP {ip_str} rate highly elevated "
-                            f"({dominant_rate:.2f} pps). Applying rate-limit (50pps cap) as precaution."
+                            f"({dominant_rate:.2f} pps). Applying rate-limit ({cfg['ratelimit_hashlimit_pps']}pps cap) as precaution."
                         )
-                        ratelimit_ip(ip_str, victim_ip=victim_ip_str)
+                        ratelimit_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
                 elif pred_class == 0:
                     # Log normal traffic
                     log_incident(timestamp, ip_str, "Normal", victim_ip_str)
@@ -770,6 +948,12 @@ def get_state(target: Optional[str] = None):
     blocked_detail = get_blocked_ips()
     blocked_ips_only = [b["ip"] for b in blocked_detail]
 
+    # Load Rate-Limited (previously invisible to the dashboard -- only
+    # ddos_blocklist was ever queried, so throttled IPs never showed up
+    # anywhere in the UI even though the enforcement was actually active)
+    ratelimited_detail = get_ratelimited_ips()
+    ratelimited_ips_only = [r["ip"] for r in ratelimited_detail]
+
     # Load Interfaces
     interfaces = []
     try:
@@ -839,9 +1023,17 @@ def get_state(target: Optional[str] = None):
             "proto_gre": 0.0,
             "proto_esp": 0.0
         })
-    elif last_metrics_by_target:
-        first_target = next(iter(last_metrics_by_target.keys()))
-        metrics = last_metrics_by_target[first_target]
+    # else: no target requested -- keep `metrics = last_metrics` from above.
+    # last_metrics is already the most-recently-received window across ALL
+    # targets (overwritten on every packet regardless of victim), so it's
+    # the correct thing to show for an overview/no-target-selected view.
+    # There used to be an `elif last_metrics_by_target:` here that replaced
+    # it with last_metrics_by_target[first_target] -- "first" meaning
+    # whichever victim happened to be the first one ever registered, not
+    # the most recent. On a multi-target setup that pinned the dashboard's
+    # global status badge to one victim's stale history forever, even while
+    # a different victim was actively (and correctly) logging something
+    # else. Removed -- last_metrics was already right.
 
     return {
         **metrics,
@@ -850,6 +1042,9 @@ def get_state(target: Optional[str] = None):
         "blocked_ips": blocked_ips_only,
         "blocked_ips_detail": blocked_detail,
         "blocked_count": len(blocked_ips_only),
+        "ratelimited_ips": ratelimited_ips_only,
+        "ratelimited_ips_detail": ratelimited_detail,
+        "ratelimited_count": len(ratelimited_ips_only),
         "victim_targets": victims,
         "interfaces": interfaces,
         "active_interface": active_interface,
@@ -958,6 +1153,67 @@ def manual_unblock(payload: IpPayload):
     if unblock_ip(payload.ip, victim_ip=payload.victim_ip):
         return {"status": "success"}
     raise HTTPException(status_code=500, detail="Failed to release firewall block.")
+
+# -----------------------------------------------------------------------------
+# Enforcement threshold configuration (dashboard-editable)
+# -----------------------------------------------------------------------------
+
+class EnforcementConfigPayload(BaseModel):
+    dominant_ip_ratio_block_threshold: Optional[float] = None
+    dominant_ip_ratio_extreme_threshold: Optional[float] = None
+    block_rate_floor_pps: Optional[float] = None
+    ratelimit_rate_floor_pps: Optional[float] = None
+    block_sigma_multiplier: Optional[float] = None
+    block_hysteresis_windows: Optional[int] = None
+    block_duration_seconds: Optional[int] = None
+    ratelimit_duration_seconds: Optional[int] = None
+    ratelimit_hashlimit_pps: Optional[int] = None
+
+@app.get("/api/config/enforcement")
+def get_enforcement_config_api():
+    return get_enforcement_config()
+
+@app.post("/api/config/enforcement")
+def update_enforcement_config(payload: EnforcementConfigPayload):
+    current = get_enforcement_config()
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+
+    # Sanity bounds -- reject nonsensical values rather than silently
+    # accepting something that would lock the system into always/never
+    # blocking. Keeps this a "tune within reason" control, not a way to
+    # accidentally disable enforcement from a typo.
+    bounds = {
+        "dominant_ip_ratio_block_threshold": (0.0, 1.0),
+        "dominant_ip_ratio_extreme_threshold": (0.0, 1.0),
+        "block_rate_floor_pps": (0.0, None),
+        "ratelimit_rate_floor_pps": (0.0, None),
+        "block_sigma_multiplier": (0.0, None),
+        "block_hysteresis_windows": (0, None),
+        "block_duration_seconds": (1, None),
+        "ratelimit_duration_seconds": (1, None),
+        "ratelimit_hashlimit_pps": (1, None),
+    }
+    for key, value in updates.items():
+        lo, hi = bounds.get(key, (None, None))
+        if lo is not None and value < lo:
+            raise HTTPException(status_code=422, detail=f"{key} must be >= {lo}")
+        if hi is not None and value > hi:
+            raise HTTPException(status_code=422, detail=f"{key} must be <= {hi}")
+
+    new_config = {**current, **updates}
+    save_json_file(ENFORCEMENT_CONFIG_PATH, new_config)
+    logging.warning(f"[+] Enforcement config updated: {updates}")
+
+    # Hashlimit pps requires live iptables rule surgery -- every other key
+    # is just a Python value read fresh on the next packet, no extra work.
+    if "ratelimit_hashlimit_pps" in updates and updates["ratelimit_hashlimit_pps"] != current["ratelimit_hashlimit_pps"]:
+        try:
+            update_ratelimit_hashlimit(current["ratelimit_hashlimit_pps"], updates["ratelimit_hashlimit_pps"])
+        except Exception as e:
+            logging.error(f"[-] Failed to apply new hashlimit cap to iptables: {e}")
+            raise HTTPException(status_code=500, detail=f"Config saved but iptables rule update failed: {e}")
+
+    return new_config
 
 # Logs API
 @app.get("/api/logs")

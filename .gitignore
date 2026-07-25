@@ -61,6 +61,7 @@ stage2/models/
 # Training data (often large and/or sensitive — store separately)
 stage2/data/
 *.csv
+*.bak
 *.parquet
 *.pcap
 *.pcapng
@@ -180,3 +181,4 @@ false_positives_analysis.txt
 next_focus_items.txt
 update_log.txt
 way_forward.txt
+check this.txt

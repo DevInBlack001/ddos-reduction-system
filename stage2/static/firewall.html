@@ -10,6 +10,25 @@
             grid-template-columns: 1fr 1fr;
             gap: 20px;
         }
+        .threshold-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .threshold-field label {
+            display: block;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+            letter-spacing: 0.5px;
+        }
+        .threshold-field .threshold-hint {
+            display: block;
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            margin-top: 3px;
+        }
     </style>
 </head>
 <body>
@@ -72,7 +91,7 @@
                     <div class="hud-panel-header">
                         <div class="hud-panel-title">ACTIVE KERNEL BLOCKS (IPSET: ddos_blocklist)</div>
                     </div>
-                    
+
                     <table>
                         <thead>
                             <tr>
@@ -88,6 +107,91 @@
                         </tbody>
                     </table>
                 </div>
+
+                <!-- Rate-Limited IPs -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title" id="ratelimitPanelTitle">ACTIVE RATE LIMITS (IPSET: ddos_ratelimit, 50PPS CAP)</div>
+                    </div>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>RATE-LIMITED ADDRESS</th>
+                                <th>DECAY TIMEOUT</th>
+                                <th style="text-align: right;">ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ratelimitedTableBody">
+                            <tr>
+                                <td colspan="3" style="text-align: center; color: var(--text-dim);">LOADING ACTIVE RATE LIMITS...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Enforcement Thresholds -->
+            <div class="hud-panel" style="margin-top: 20px;">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">ENFORCEMENT THRESHOLDS // OPERATOR-TUNABLE</div>
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 16px;">
+                    These are the deterministic thresholds that decide block vs. rate-limit vs. no
+                    action. Changes apply to the next window immediately -- no restart needed,
+                    except the rate-limit pps cap, which rewrites the live iptables hashlimit rule.
+                </div>
+                <form id="thresholdForm">
+                    <div class="threshold-grid">
+                        <div class="threshold-field">
+                            <label for="th_dom_block">DOMINANT IP RATIO — BLOCK GATE (0–1)</label>
+                            <input type="number" id="th_dom_block" class="form-input" step="0.01" min="0" max="1" required>
+                            <span class="threshold-hint">Tier 1 fast path: source share of traffic needed to block it alone.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_dom_extreme">DOMINANT IP RATIO — EXTREME (0–1)</label>
+                            <input type="number" id="th_dom_extreme" class="form-input" step="0.01" min="0" max="1" required>
+                            <span class="threshold-hint">Above this, classification forces DDoS regardless of entropy.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_block_floor">BLOCK RATE FLOOR (PPS)</label>
+                            <input type="number" id="th_block_floor" class="form-input" step="1" min="0" required>
+                            <span class="threshold-hint">Minimum bar for a per-source block, even on a near-idle victim.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_rl_floor">RATE-LIMIT FLOOR (PPS)</label>
+                            <input type="number" id="th_rl_floor" class="form-input" step="1" min="0" required>
+                            <span class="threshold-hint">Minimum bar for the softer per-source rate-limit tier.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_sigma">BLOCK SIGMA MULTIPLIER</label>
+                            <input type="number" id="th_sigma" class="form-input" step="0.5" min="0" required>
+                            <span class="threshold-hint">Shared by the block gate and the classification override.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_hysteresis">BLOCK HYSTERESIS (WINDOWS)</label>
+                            <input type="number" id="th_hysteresis" class="form-input" step="1" min="0" required>
+                            <span class="threshold-hint">Consecutive DDoS-classified windows before a block fires.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_block_dur">BLOCK DURATION (SECONDS)</label>
+                            <input type="number" id="th_block_dur" class="form-input" step="60" min="1" required>
+                            <span class="threshold-hint">ipset entry lifetime before an auto-block self-heals.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_rl_dur">RATE-LIMIT DURATION (SECONDS)</label>
+                            <input type="number" id="th_rl_dur" class="form-input" step="60" min="1" required>
+                            <span class="threshold-hint">ipset entry lifetime before an auto-rate-limit self-heals.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="th_hashlimit">RATE-LIMIT CAP (PPS)</label>
+                            <input type="number" id="th_hashlimit" class="form-input" step="1" min="1" required>
+                            <span class="threshold-hint">Kernel hashlimit cap -- changing this rewrites the live iptables rule.</span>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn">SAVE THRESHOLDS</button>
+                    <button type="button" class="btn" style="background: transparent;" onclick="loadThresholds()">DISCARD CHANGES</button>
+                </form>
             </div>
         </div>
     </div>
@@ -134,6 +238,25 @@
                     });
                     blBody.innerHTML = blHtml;
                 }
+
+                // Render rate limits -- distinct state from a hard block: same
+                // ipset-backed mechanism, cyan instead of red so it's visually
+                // clear these IPs are throttled (50pps cap), not dropped outright.
+                const rlBody = document.getElementById('ratelimitedTableBody');
+                const ratelimited = data.ratelimited_ips_detail || []; // {ip, remaining_seconds}
+                if (ratelimited.length === 0) {
+                    rlBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-dim);">PEACETIME: NO ACTIVE RATE LIMIT RULES.</td></tr>`;
+                } else {
+                    let rlHtml = '';
+                    ratelimited.forEach(r => {
+                        rlHtml += `<tr>
+                            <td style="font-weight: bold; color: var(--accent-cyan);">${r.ip}</td>
+                            <td style="color: #ff9f0a; font-weight: bold;">${r.remaining_seconds}s REMAINING</td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 2px 8px; font-size: 0.75rem;" onclick="releaseBlock('${r.ip}')">RELEASE</button></td>
+                        </tr>`;
+                    });
+                    rlBody.innerHTML = rlHtml;
+                }
             } catch (err) {
                 console.error("Failed to fetch firewall status:", err);
             }
@@ -174,7 +297,66 @@
             }
         }
 
+        // ---- Enforcement thresholds ----
+        const thresholdFieldMap = {
+            th_dom_block: 'dominant_ip_ratio_block_threshold',
+            th_dom_extreme: 'dominant_ip_ratio_extreme_threshold',
+            th_block_floor: 'block_rate_floor_pps',
+            th_rl_floor: 'ratelimit_rate_floor_pps',
+            th_sigma: 'block_sigma_multiplier',
+            th_hysteresis: 'block_hysteresis_windows',
+            th_block_dur: 'block_duration_seconds',
+            th_rl_dur: 'ratelimit_duration_seconds',
+            th_hashlimit: 'ratelimit_hashlimit_pps',
+        };
+
+        async function loadThresholds() {
+            try {
+                const res = await fetch('/api/config/enforcement');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const cfg = await res.json();
+                for (const [fieldId, key] of Object.entries(thresholdFieldMap)) {
+                    document.getElementById(fieldId).value = cfg[key];
+                }
+                document.getElementById('ratelimitPanelTitle').innerText =
+                    `ACTIVE RATE LIMITS (IPSET: ddos_ratelimit, ${cfg.ratelimit_hashlimit_pps}PPS CAP)`;
+            } catch (err) {
+                console.error("Failed to load enforcement config:", err);
+            }
+        }
+
+        document.getElementById('thresholdForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const payload = {};
+            for (const [fieldId, key] of Object.entries(thresholdFieldMap)) {
+                payload[key] = parseFloat(document.getElementById(fieldId).value);
+            }
+            const res = await fetch('/api/config/enforcement', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                await loadThresholds();
+                showSaveConfirmation();
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to save enforcement thresholds.");
+            }
+        });
+
+        function showSaveConfirmation() {
+            const btn = document.querySelector('#thresholdForm button[type="submit"]');
+            const original = btn.innerText;
+            btn.innerText = 'SAVED';
+            setTimeout(() => { btn.innerText = original; }, 1500);
+        }
+
         fetchFirewall();
+        loadThresholds();
         setInterval(fetchFirewall, 10000);
     </script>
 </body>

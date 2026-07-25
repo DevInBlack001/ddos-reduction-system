@@ -131,6 +131,11 @@
                         <span id="globalStatBlocked" class="stat-value">0</span>
                         <span class="stat-meta">GLOBAL FIREWALL SETS</span>
                     </div>
+                    <div class="stat-card">
+                        <span class="stat-label">RATE-LIMITED HOSTS</span>
+                        <span id="globalStatRatelimited" class="stat-value">0</span>
+                        <span class="stat-meta">GLOBAL FIREWALL SETS</span>
+                    </div>
                 </div>
 
                 <!-- Global Target IP Matrix Table -->
@@ -197,6 +202,11 @@
                         <span class="stat-label">BLOCKED HOSTS</span>
                         <span id="statBlocked" class="stat-value">0</span>
                         <span class="stat-meta">IN KERNEL NETSET</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">RATE-LIMITED HOSTS</span>
+                        <span id="statRatelimited" class="stat-value">0</span>
+                        <span class="stat-meta">50PPS CAP ACTIVE</span>
                     </div>
                 </div>
 
@@ -522,6 +532,7 @@
                 document.getElementById('globalStatTargets').innerText = monitoredTargetsCount;
                 document.getElementById('globalStatAttacked').innerText = attackedTargetsCount;
                 document.getElementById('globalStatBlocked').innerText = data.blocked_count;
+                document.getElementById('globalStatRatelimited').innerText = data.ratelimited_count;
 
                 const attackedCard = document.getElementById('globalStatAttacked');
                 if (attackedTargetsCount > 0) {
@@ -563,6 +574,7 @@
                 document.getElementById('statEntropyBaseline').innerText = `BASELINE: ${data.mean_h.toFixed(4)}`;
                 document.getElementById('statK').innerText = `k = ${data.k_multiplier.toFixed(1)}`;
                 document.getElementById('statBlocked').innerText = data.blocked_count;
+                document.getElementById('statRatelimited').innerText = data.ratelimited_count;
                 document.getElementById('targetInterfaceName').innerText = data.active_interface || '--';
                 
                 if (data.cooldown > 0) {
@@ -610,11 +622,28 @@
                     let html = '';
                     const logs = data.latest_logs.slice(0, 3);
                     logs.forEach(l => {
-                        const style = l.classification === 'DDoS' ? 'color: var(--accent-alert);' : '';
+                        // classification here is the LOGGED ACTION (from
+                        // block_ip()/ratelimit_ip()'s log_incident calls), not
+                        // just the RF's verdict -- "Blocked" and "Rate Limited"
+                        // are genuinely different outcomes and were previously
+                        // both rendered as "-> blocked", which misreported
+                        // every rate-limit action as a hard block.
+                        let style = '';
+                        let actionText = 'logged';
+                        if (l.classification === 'Blocked') {
+                            style = 'color: var(--accent-alert);';
+                            actionText = 'blocked';
+                        } else if (l.classification === 'Rate Limited') {
+                            style = 'color: var(--accent-cyan);';
+                            actionText = 'rate-limited';
+                        } else if (l.classification === 'DDoS') {
+                            style = 'color: var(--accent-alert);';
+                            actionText = 'flagged';
+                        }
                         const targetStr = l.victim_ip ? ` targeting ${l.victim_ip}` : '';
                         html += `<div style="margin-bottom: 8px; ${style}">
-                            [${new Date(l.timestamp*1000).toISOString().split('T')[1].substring(0,8)}] 
-                            ${l.classification.toUpperCase()} from ${l.src_ip}${targetStr} -> blocked
+                            [${new Date(l.timestamp*1000).toISOString().split('T')[1].substring(0,8)}]
+                            ${l.classification.toUpperCase()} from ${l.src_ip}${targetStr} -> ${actionText}
                         </div>`;
                     });
                     document.getElementById('latestMitigation').innerHTML = html;
