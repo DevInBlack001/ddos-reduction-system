@@ -110,7 +110,7 @@ Then: `variance = M2 / (n - 1)`
 
 **Why two deltas?** `delta` measures how surprising `x` was *before* the mean moved. `delta2` measures how far `x` still is *after* the mean stepped toward it. Their product is the exact algebraic correction that transitions the sum-of-squares from the old mean to the new mean in one step, with no stored history and no cancellation.
 
-**Recency cap:** After weeks of running, `n` becomes enormous and `delta/n ≈ 0`, freezing the mean. The implementation caps `n` at 500 so the algorithm stays sensitive to recent traffic patterns.
+**Recency cap:** After weeks of running, `n` becomes enormous and `delta/n ≈ 0`, freezing the mean. The implementation caps `n` at 500 (`MAX_N`) so the algorithm stays sensitive to recent traffic patterns — once capped, every new sample still runs the full update above, but `M2` also receives an exponential decay to stay consistent with the mean's fixed recency window. **This makes the accumulator a bounded-memory approximation of Welford's algorithm once capped, not exact running variance** — cite it as such rather than as a direct implementation of Welford (1962). The cap is paired with a *freeze-on-anomaly* rule (Stage 1 stops feeding samples into the accumulator during an active anomaly or cooldown, see "Core Safeguards" below) — the two are complementary: the cap alone would make the baseline more poisonable (shorter memory, easier for a slow-ramp attacker to shift), and the freeze is what makes that trade-off safe.
 
 **Warm-up:** The first 200 windows are discarded from anomaly evaluation. Welford's variance is meaningless on 2–3 samples.
 
@@ -131,10 +131,10 @@ window_rate = actual_packets_received / window_duration_seconds
 ewma_new    = α · window_rate + (1 − α) · ewma_old
 ```
 
-`α` (alpha) controls responsiveness:
+`α` (alpha) controls responsiveness, and is CLI-configurable (`--alpha`, see Usage below) rather than a fixed constant:
 - High α → reacts fast, noisier
 - Low α → smooth, slower reaction
-- Default: `α = 0.125` (same constant used in TCP's RTT estimator, RFC 6298)
+- Default: `α = 0.125` — a conventional starting point for exponential smoothing, not a value proven optimal for this specific traffic-rate use case.
 
 **Critical behaviour — EWMA never resets.** Unlike entropy (which is computed fresh each window), the EWMA carries memory *across* windows by design. A DDoS flood that ramps up gradually across multiple windows is still detected because the EWMA accumulates the rising rate over time.
 
@@ -427,6 +427,11 @@ To avoid poisoning the label with transitioning traffic, always wait for traffic
    - Run: `echo 2 > /tmp/ddos_label`. Run for ~3 minutes.
    - Run: `echo 0 > /tmp/ddos_label`. Stop `hping3`.
 
+**Capturing more than one session per label (required for a fair evaluation):**
+A single continuous process run — even one that cycles through all four phases above via `/tmp/ddos_label` — only produces *one* Welford baseline draw per label, because the baseline lives in memory for the life of the *process*, not the life of the *label*. Evaluating generalization (see Leave-One-Session-Out below) needs at least two **independent** sessions per label: kill and restart `ddos_stage1` (fresh warm-up) before capturing a second Normal or Flash-Crowd session, rather than just flipping the label on an already-running process. `training_data.csv` is append-only (Stage 1 opens it with `OpenOptions::append(true)`), so every new session — same file, any day — is picked up automatically; `train.py`'s own session detection (a >30s timestamp gap or a label change starts a new session) sorts it out from timestamps, not from how the file was written.
+
+One archetype worth deliberately capturing that the four phases above don't produce: a **hot-source flash crowd** — a legitimate surge where one participant (a monitoring bot, a NAT gateway, a proxy) contributes a disproportionate share of otherwise-normal traffic, so `dominant_ip_ratio` climbs on a benign sample. Keep that source's absolute rate modest (tens of pps, not hundreds+) and shrink the overall crowd size rather than raising any single source's rate aggressively — pushing a "hot source" too hard just reproduces a single-source DDoS signature with a legitimate label on it, which defeats the purpose.
+
 ### 2. Training the Model
 
 Once you have your `training_data.csv` collected in the `stage2/` directory, run the training script:
@@ -436,7 +441,13 @@ cd stage2
 python3 train.py
 ```
 
-This script will parse the CSV, apply preprocessing rules, compute delta features (`delta_rate`, `delta_entropy`), perform Random Forest training, validate session splitting, and save the trained model as `ddos_rf_model.joblib`.
+This script parses the CSV, drops NaN/inf rows, computes three derived features from the raw wire columns — `delta_rate` (`ewma_rate - mean_r`), `delta_entropy` (`entropy - mean_h`), and `dominant_rate` (`ewma_rate * dominant_ip_ratio`, the estimated pps of the single busiest source in the window) — and detects capture sessions from timestamp gaps/label changes. It prints a per-class feature-range overlap check (including `dominant_rate`) so you can see directly whether your captured classes actually overlap in rate/entropy/concentration space, rather than being trivially separable.
+
+Evaluation and the deployed model are two separate steps:
+- **Leave-One-Session-Out (LOSO) evaluation:** for every session whose label has ≥2 sessions total, that session is held out entirely, a temporary model is trained on every *other* session, and predictions on the held-out session are collected. Sessions whose label only has one session are skipped with an explicit note (holding out a class's only session would leave zero training examples of it — that's a coverage gap, not a fair test, and would just report a meaningless 0.00). Results from every fold are combined into one aggregate classification report and confusion matrix. This exists because a percentage-of-session split (or a random split) leaks: consecutive windows share EWMA/Welford state, so a model can memorize a session's fingerprint instead of learning to generalize, and will score a hollow 1.00 for it.
+- **Production model:** trained separately, on *all* available sessions (balanced via upsampling), and saved as `ddos_rf_model.joblib` — this is what Stage 2 actually loads. LOSO is purely an evaluation signal for how well the approach generalizes; it never produces the shipped model itself.
+
+Read the LOSO confusion matrix, not the headline accuracy — in particular, class-2 (DDoS) recall/precision and the true-Flash-Crowd-predicted-DDoS cell are the numbers that matter for this project's central claim (not over-blocking legitimate surges).
 
 ---
 
@@ -479,7 +490,7 @@ sudo bash scripts/uninstall.sh --remove-build --remove-rust
 Stage 2 listens on the Unix domain socket `/tmp/ddos_stage1.sock`, unpacks the incoming 168-byte `FeatureVector` structs, and classifies traffic in real-time. It operates as a FastAPI application with a persistent SQLite storage layer and a dynamic Chart.js dashboard.
 
 
-The features unpacked from the Feature Vector:
+The 17 numeric fields unpacked from the Feature Vector (plus the 2 IP fields — see the wire format table above):
 1. Source IP Entropy (`entropy`)
 2. Packet Rate (`ewma_rate`)
 3. Entropy Running Mean (`mean_h`)
@@ -495,23 +506,33 @@ The features unpacked from the Feature Vector:
 13. SCTP Ratio (`proto_sctp`)
 14. GRE Ratio (`proto_gre`)
 15. ESP Ratio (`proto_esp`)
+16. Operative Anomaly-Boundary Multiplier (`k_multiplier`) — Stage 1's live, cooldown-adjusted k, not a fixed constant.
+17. Cooldown Windows Remaining (`cooldown_counter`)
+
+Three more features are **derived in Stage 2**, not unpacked from the wire, and feed the Random Forest classifier alongside the fields above: `delta_rate` (`ewma_rate - mean_r`), `delta_entropy` (`entropy - mean_h`), and `dominant_rate` (`ewma_rate * dominant_ip_ratio` — the estimated pps of the single busiest source in the window). `dominant_rate` is also reused directly by the enforcement logic below (see "Core Safeguards"), computed once and shared rather than recomputed per use site.
 
 ### Core Safeguards and Adaptive Baselines
 
-To ensure high-performance, robust, and poison-resistant mitigation, Stage 2 integrates the following mechanisms:
+To ensure high-performance, robust, and poison-resistant mitigation, Stage 2 integrates the following mechanisms. All numeric values below are **defaults** — every one is operator-configurable from the Firewall tab's "Enforcement Thresholds" panel (backed by `stage2/enforcement_config.json`), not hardcoded, so a given block/rate-limit decision can always be explained by pointing at a specific, inspectable, tunable number.
 
-1. **Adaptive Safety Overrides:**
-   - Overrides ML predictions using dynamic statistical boundaries to ensure protection under extreme volumetric spikes:
-     - Volumetric Suspect: `ewma_rate > mean_r + 2.0 * sigma_r`
-     - Volumetric Extreme Flood: `ewma_rate > mean_r + 10.0 * sigma_r` (always flags Class 2)
-     - Concentrated Source/Entropy Drop: `entropy < mean_h - 2.0 * sigma_h` (always flags Class 2)
+1. **Adaptive Safety Overrides** (`stage2.py`'s "Adaptive Safety overrides" block):
+   - Overrides the RF's raw prediction using dynamic, per-victim statistical boundaries so extreme spikes are never missed even if the classifier is unsure:
+     - Volumetric suspect (re-examine the verdict at all): `ewma_rate > mean_r + k_multiplier * sigma_r` — `k_multiplier` is transmitted live from Stage 1 and reflects its own cooldown-adjusted sensitivity, not a fixed constant.
+     - Extreme **single-source** rate (forces Class 2 unconditionally): `dominant_rate > max(block_rate_floor_pps, mean_r + block_sigma_multiplier * sigma_r)`, default floor 300 pps, multiplier 10σ. This checks `dominant_rate` — the busiest single source's estimated pps — **not raw aggregate `ewma_rate`.** Aggregate volume alone can't distinguish one attacker producing an extreme volume from many genuine users each producing a normal trickle (a legitimate flash crowd's aggregate rate scales with participant count exactly like an attacker's does); checking the busiest single source instead means a large but genuinely distributed crowd no longer gets force-classified as DDoS purely because enough real users showed up at once.
+     - Concentrated source / entropy drop (also forces Class 2): `entropy < mean_h - k_multiplier * sigma_h` **or** `dominant_ip_ratio > dominant_ip_ratio_extreme_threshold` (default 0.75).
 
-2. **Tiered Mitigation Strategy:**
-   - **Full Block (`ddos_blocklist`):** Drops all packets from the IP. Triggered only for high-confidence single-source floods (where `dominant_ip_ratio >= 0.40` and `dominant_rate >= mean_r + 2.0 * sigma_r`).
-   - **Interactive Rate-Limiting (`ddos_ratelimit`):** Restricts the IP to a maximum of 50 pps using `iptables` and `hashlimit`. This is applied to distributed flows (Cluster Block fallback mode) and elevated dominant IPs during legitimate flash crowds, avoiding disruption of benign users.
+2. **Tiered Mitigation Strategy** — four tiers, evaluated in order, each acting on a per-source-IP rate rollup aggregated from Stage 1's active-flows telemetry (summed across every flow tuple a given source IP is using, so an attacker can't dodge the thresholds below by fragmenting its traffic across multiple destination ports):
+   - **Tier 1 — Dominant-source fast path:** blocks the single busiest source outright when it's both concentrated (`dominant_ip_ratio >= dominant_ip_ratio_block_threshold`, default 0.40) and fast enough to clear the live rate boundary.
+   - **Tier 2 — Independent per-source escalation:** blocks *any* individual source whose own rate clears `block_threshold` (same formula/value as the extreme-rate override above), regardless of how concentrated the *aggregate* traffic looks. This is what closes the evasion gap a purely aggregate-or-dominant-ratio gate has: spreading an attack across many sources no longer helps once every source is still individually well above human/flash-crowd rates.
+   - **Tier 3 — Soft rate-limit:** any remaining source clearing the softer `ratelimit_rate_floor_pps`-derived bar (default 50 pps floor) gets rate-limited to the configured `ratelimit_hashlimit_pps` cap (default 50 pps) via `iptables hashlimit`, rather than blocked — the reversible tier for elevated-but-ambiguous sources.
+   - **Tier 4 — Aggregate-cap fallback:** if a window is classified DDoS but *nothing* above matched any individual source (traffic distributed finely enough that no single source stands out even in the per-source rollup), every currently-active flow to the victim gets rate-limited rather than the system taking no action at all.
+   - **Block hysteresis:** Tiers 1 and 2 (the hard-block actions) additionally require `block_hysteresis_windows` (default 2) *consecutive* Class-2 windows for that victim before firing — a single noisy window can no longer trigger an immediate block. Tiers 3/4 (rate-limiting) are intentionally immediate and ungated, since they're already the reversible tier.
+   - Both `ddos_blocklist` and `ddos_ratelimit` are self-healing (configurable `block_duration_seconds` / `ratelimit_duration_seconds` ipset timeouts, default 3600s each) and are both visible on the Firewall tab and the main dashboard's stat tiles — not just the blocklist.
 
-3. **Welford Baseline Poisoning Protection:**
-   - Sits on Stage 1 to guard the parameters updated by Stage 2. Enforces baseline capping (maximum 10,000 pps mean rate), outlier rejection ($> 5\sigma$ deviations are ignored), and peacetime reference reversion if the Welford mean drifts by more than 50% from an ultra-slow EWMA peacetime baseline ($\alpha = 0.001$).
+3. **Welford Baseline Poisoning Protection** — two complementary mechanisms on Stage 1, not one:
+   - **Recency cap:** `welford.rs` caps the sample count `n` at 500 (`MAX_N`) so the running baseline can't freeze after weeks of uptime the way unbounded textbook Welford would (`delta/n → 0`). Once capped, the accumulator applies exponential decay to `M2` alongside the mean, to keep the variance estimate consistent with the same recency window — this makes it a **bounded-memory approximation of Welford's algorithm, not exact running variance**; it should be cited as such, not as a direct implementation of Welford (1962).
+   - **Freeze-on-anomaly:** Stage 1 only feeds new samples into the Welford accumulator when the current window is clean (`anomaly_flags == 0`) **and** not in cooldown — during an active or recently-resolved anomaly, the baseline simply stops updating. This is what stops a slow-ramp attacker from gradually dragging the "normal" baseline up to include their own flood. The recency cap and the freeze are complementary, not redundant: the cap keeps the baseline responsive to genuine legitimate drift, which on its own would make the baseline *more* poisonable (shorter memory, easier to shift); the freeze is what makes that safe. A recency cap without the freeze would be a net negative.
+   - On top of both: baseline capping (mean rate ceiling 10,000 pps), outlier rejection (>5σ deviations ignored), and peacetime-reference reversion if the Welford mean drifts more than 50% from an ultra-slow EWMA peacetime reference (α = 0.001).
 
 4. **Kernel Resource Capacity Monitor:**
    - A background thread polls the blocklist every 30 seconds and logs a critical warning if the kernel `ipset` table exceeds 80% capacity.
@@ -540,7 +561,7 @@ The planned evolutionary milestones for future gateway iterations are structured
 | :--- | :--- | :--- | :--- |
 | **V1 (Completed)** | **Initial ML Pipeline** | Proof of concept | Basic feature extraction and initial Web UI dashboard setup. |
 | **V2 (Completed)** | **Adaptive Baselines** | Dynamic defenses | Implemented entropy-guided thresholds, cluster rate-limiting, and Welford poisoning defenses. |
-| **V3** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
+| **V3 (Completed)** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
 | **V4** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. |
 | **V5** | **Multi-Interface Scaling** | Perimeter-wide visibility | Aggregate traffic statistics from multiple interface ports. Spawns egress sniffers to enable ingress vs. egress rate telemetry auditing. |
 | **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port packet sniffer and early drop logic to eBPF/XDP driver path using Aya in Rust, scaling handling capacity to 10M+ pps. |
