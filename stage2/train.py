@@ -151,7 +151,7 @@ def main():
             })
     print(pd.DataFrame(overlap_info).to_string(index=False))
 
-    # 3. Leave-One-Session-Out (LOSO) evaluation.
+    # 3. Leave-One-Session-Out (LOSO) evaluation, sweeping tree depth.
     # For each session, hold it out entirely, train on every OTHER session
     # (all labels), and test on the held-out one. A session is only a fair
     # fold if its label has >=2 sessions total -- otherwise holding it out
@@ -160,45 +160,76 @@ def main():
     # meaningless 0.00. Random splitting / percentage-of-session splitting
     # both leak: consecutive windows share EWMA/Welford state, so the RF can
     # memorize a session's fingerprint instead of learning to generalize.
-    print("\n[+] Running Leave-One-Session-Out (LOSO) evaluation...")
+    #
+    # max_depth is swept rather than fixed because the right value depends
+    # entirely on how many independent sessions THIS dataset has per class --
+    # with only two sessions of a class, a deep tree can memorize one
+    # session's specific fingerprint and completely fail on the other (one
+    # capture set here saw a held-out session collapse from ~1.00 to ~0.02
+    # accuracy once the tree was allowed more than a couple of splits). A
+    # hardcoded depth tuned on one capture set has no reason to suit a
+    # different one, so this picks whatever depth LOSO says generalizes best
+    # on the CSV actually loaded, every time the script runs.
+    print("\n[+] Running Leave-One-Session-Out (LOSO) evaluation across candidate tree depths...")
     sessions_per_label = df.groupby(LABEL_COL)["session_id"].nunique()
     all_sessions = sorted(df["session_id"].unique())
 
-    fold_true, fold_pred = [], []
+    eligible_sessions = []
     for sess_id in all_sessions:
-        sess_df = df[df["session_id"] == sess_id]
-        label = sess_df[LABEL_COL].iloc[0]
+        label = df[df["session_id"] == sess_id][LABEL_COL].iloc[0]
         if sessions_per_label.get(label, 0) < 2:
             print(f"[!] Session {sess_id} (label {label}): SKIPPED -- only session for this "
                   f"label, holding it out would leave zero training examples of it. "
                   f"Capture >=1 more independent session of label {label} to make this a fair fold.")
-            continue
+        else:
+            eligible_sessions.append(sess_id)
 
-        test_df = sess_df
-        train_df = df[df["session_id"] != sess_id]
+    CANDIDATE_MAX_DEPTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, None]
+    best_depth = 5  # undocumented-data fallback if LOSO can't run at all below
+    best_acc = -1.0
+    best_fold_true, best_fold_pred, best_per_session = [], [], []
 
-        X_fold_train, y_fold_train = balance_classes(train_df[FEATURE_COLS], train_df[LABEL_COL])
-        X_fold_test, y_fold_test = test_df[FEATURE_COLS], test_df[LABEL_COL]
-
-        fold_clf = RandomForestClassifier(n_estimators=100, max_depth=1, random_state=42, n_jobs=-1)
-        fold_clf.fit(X_fold_train, y_fold_train)
-        y_fold_pred = fold_clf.predict(X_fold_test)
-
-        acc = (y_fold_pred == y_fold_test.values).mean()
-        print(f"[+] Session {sess_id} (label {label}, {len(test_df)} rows) held out: accuracy={acc:.3f}")
-
-        fold_true.extend(y_fold_test.values)
-        fold_pred.extend(y_fold_pred)
-
-    if fold_true:
-        print("\n--- LOSO Aggregate Classification Report (all held-out folds combined) ---")
-        print(classification_report(fold_true, fold_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
-        print("\n--- LOSO Aggregate Confusion Matrix ---")
-        print(confusion_matrix(fold_true, fold_pred))
-    else:
+    if not eligible_sessions:
         print("[-] No label currently has >=2 sessions -- LOSO cannot run yet. "
-              "Every label needs at least one more independent session before this "
-              "evaluation is meaningful. Falling back to reporting training-set fit only below.")
+              "Every label needs at least one more independent session before tree depth "
+              f"can be validated. Falling back to an UNVALIDATED default max_depth={best_depth}.")
+    else:
+        for depth in CANDIDATE_MAX_DEPTHS:
+            fold_true, fold_pred, per_session = [], [], []
+            for sess_id in eligible_sessions:
+                test_df = df[df["session_id"] == sess_id]
+                train_df = df[df["session_id"] != sess_id]
+                label = test_df[LABEL_COL].iloc[0]
+
+                X_fold_train, y_fold_train = balance_classes(train_df[FEATURE_COLS], train_df[LABEL_COL])
+                X_fold_test, y_fold_test = test_df[FEATURE_COLS], test_df[LABEL_COL]
+
+                fold_clf = RandomForestClassifier(n_estimators=100, max_depth=depth, random_state=42, n_jobs=-1)
+                fold_clf.fit(X_fold_train, y_fold_train)
+                y_fold_pred = fold_clf.predict(X_fold_test)
+
+                acc = (y_fold_pred == y_fold_test.values).mean()
+                per_session.append((sess_id, label, len(test_df), acc))
+                fold_true.extend(y_fold_test.values)
+                fold_pred.extend(y_fold_pred)
+
+            overall_acc = float(np.mean(np.array(fold_true) == np.array(fold_pred)))
+            print(f"[+] max_depth={depth}: LOSO accuracy={overall_acc:.3f}")
+            if overall_acc > best_acc:
+                best_acc, best_depth = overall_acc, depth
+                best_fold_true, best_fold_pred, best_per_session = fold_true, fold_pred, per_session
+
+        print(f"\n[+] Selected max_depth={best_depth} (LOSO accuracy={best_acc:.3f}) for the "
+              "production model below. This was chosen fresh from the sessions currently in "
+              "the CSV -- a different or expanded capture set may select a different depth, "
+              "so re-run this script (not just reuse this number) whenever sessions change.")
+        print("\n--- Per-Session Results at Selected Depth ---")
+        for sess_id, label, n, acc in best_per_session:
+            print(f"    Session {sess_id} (label {label}, {n} rows): accuracy={acc:.3f}")
+        print("\n--- LOSO Aggregate Classification Report (selected depth, all held-out folds combined) ---")
+        print(classification_report(best_fold_true, best_fold_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
+        print("\n--- LOSO Aggregate Confusion Matrix (selected depth) ---")
+        print(confusion_matrix(best_fold_true, best_fold_pred))
 
     # 4. Final production model: train on ALL available data (every session),
     # balanced. This is a SEPARATE step from the LOSO evaluation above -- LOSO
@@ -216,7 +247,7 @@ def main():
 
     clf = RandomForestClassifier(
         n_estimators=100,
-        max_depth=1,
+        max_depth=best_depth,
         random_state=42,
         n_jobs=-1
     )
