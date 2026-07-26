@@ -67,7 +67,17 @@ def main():
     
     # Drop rows with NaN or infinite values
     df = df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
-    
+
+    # Drop exact-duplicate rows. Capture appends have landed the same rows in
+    # the CSV more than once before (e.g. re-running a capture into the same
+    # file); duplicates silently double a session's weight in the balanced
+    # training set and in LOSO folds, which distorts both without raising
+    # any error.
+    dup_count = df.duplicated().sum()
+    if dup_count > 0:
+        print(f"[!] Dropping {dup_count} exact-duplicate rows found in the dataset.")
+        df = df.drop_duplicates().reset_index(drop=True)
+
     # Filter out flash-crowd warm-up rows (rate < 100) that blur the boundary with Normal traffic
     df = df[~((df[LABEL_COL] == 1) & (df["ewma_rate"] < 100))].reset_index(drop=True)
     
@@ -170,7 +180,7 @@ def main():
         X_fold_train, y_fold_train = balance_classes(train_df[FEATURE_COLS], train_df[LABEL_COL])
         X_fold_test, y_fold_test = test_df[FEATURE_COLS], test_df[LABEL_COL]
 
-        fold_clf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
+        fold_clf = RandomForestClassifier(n_estimators=100, max_depth=1, random_state=42, n_jobs=-1)
         fold_clf.fit(X_fold_train, y_fold_train)
         y_fold_pred = fold_clf.predict(X_fold_test)
 
@@ -206,7 +216,7 @@ def main():
 
     clf = RandomForestClassifier(
         n_estimators=100,
-        max_depth=5,
+        max_depth=1,
         random_state=42,
         n_jobs=-1
     )
