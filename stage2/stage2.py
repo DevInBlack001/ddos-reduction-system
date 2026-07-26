@@ -1217,33 +1217,58 @@ def update_enforcement_config(payload: EnforcementConfigPayload):
 
 # Logs API
 @app.get("/api/logs")
-def get_logs(classification: str = "ALL"):
+def get_logs(classification: str = "ALL", limit: int = 50, offset: int = 0):
+    # The `logs` table has no size cap -- log_incident() writes a row for
+    # essentially every processed window, so over any sustained runtime this
+    # table grows into the hundreds of thousands of rows. It used to be
+    # fetched here with no LIMIT at all and rendered into the DOM in one
+    # shot by logs.html, which froze the tab once the table got large.
+    # Bounded + paginated now, with the row count operator-selectable from
+    # the page itself (default 50) rather than a fixed server-side cap. The
+    # full-history CSV export is intentionally left unbounded since that's
+    # a deliberate one-time download, not something rendered live.
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         if classification == "ALL":
-            cursor.execute("SELECT timestamp, src_ip, dst_ip, proto, rate, entropy, classification FROM logs ORDER BY id DESC")
+            where_clause = ""
+            params: tuple = ()
         elif classification == "DDoS":
-            cursor.execute("SELECT timestamp, src_ip, dst_ip, proto, rate, entropy, classification FROM logs WHERE classification IN ('Blocked', 'Rate Limited', 'DDoS') ORDER BY id DESC")
+            where_clause = "WHERE classification IN ('Blocked', 'Rate Limited', 'DDoS')"
+            params = ()
         else:
-            cursor.execute(
-                "SELECT timestamp, src_ip, dst_ip, proto, rate, entropy, classification FROM logs WHERE classification = ? ORDER BY id DESC",
-                (classification,)
-            )
+            where_clause = "WHERE classification = ?"
+            params = (classification,)
+
+        cursor.execute(f"SELECT COUNT(*) FROM logs {where_clause}", params)
+        total_count = cursor.fetchone()[0]
+
+        cursor.execute(
+            f"SELECT timestamp, src_ip, dst_ip, proto, rate, entropy, classification "
+            f"FROM logs {where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + (limit, offset)
+        )
         rows = cursor.fetchall()
         conn.close()
-        return [
-            {
-                "timestamp": r[0],
-                "src_ip": r[1],
-                "dst_ip": r[2],
-                "proto": r[3],
-                "rate": r[4],
-                "entropy": r[5],
-                "classification": r[6]
-            }
-            for r in rows
-        ]
+        return {
+            "logs": [
+                {
+                    "timestamp": r[0],
+                    "src_ip": r[1],
+                    "dst_ip": r[2],
+                    "proto": r[3],
+                    "rate": r[4],
+                    "entropy": r[5],
+                    "classification": r[6]
+                }
+                for r in rows
+            ],
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

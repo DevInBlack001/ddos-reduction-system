@@ -81,6 +81,12 @@
                     <button class="btn btn-filter" onclick="filterLogs('Normal')" id="btn-Normal">Normal</button>
                     <button class="btn btn-filter" onclick="filterLogs('Flash Crowd')" id="btn-Flash">Flash Crowd</button>
                     <button class="btn btn-filter" onclick="filterLogs('DDoS')" id="btn-DDoS">DDoS Attacks</button>
+                    <span style="margin-left: 16px; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);">Rows:</span>
+                    <select id="rowLimitSelect" class="btn btn-filter" style="cursor: pointer;" onchange="changeLimit()">
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="150">150</option>
+                    </select>
                 </div>
 
                 <table class="log-table">
@@ -101,6 +107,14 @@
                         </tr>
                     </tbody>
                 </table>
+
+                <div class="filter-controls" style="justify-content: space-between;">
+                    <span id="pageInfo" style="font-size: 0.78rem; color: var(--text-tertiary);"></span>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-filter" id="btnPrevPage" onclick="prevPage()">&laquo; Prev</button>
+                        <button class="btn btn-filter" id="btnNextPage" onclick="nextPage()">Next &raquo;</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -108,15 +122,26 @@
     <script src="/static/theme.js"></script>
     <script>
         let currentFilter = 'ALL';
+        let currentLimit = 50;
+        let currentOffset = 0;
 
         async function fetchLogs() {
             try {
-                const res = await fetch(`/api/logs?classification=${currentFilter}`);
+                const res = await fetch(`/api/logs?classification=${encodeURIComponent(currentFilter)}&limit=${currentLimit}&offset=${currentOffset}`);
                 if (res.status === 401) {
                     window.location.href = '/static/login.html';
                     return;
                 }
-                const logs = await res.json();
+                const data = await res.json();
+                const logs = data.logs;
+
+                // Pagination controls
+                const pageInfo = document.getElementById('pageInfo');
+                const shownFrom = data.total_count === 0 ? 0 : currentOffset + 1;
+                const shownTo = Math.min(currentOffset + currentLimit, data.total_count);
+                pageInfo.innerText = `Showing ${shownFrom}-${shownTo} of ${data.total_count}`;
+                document.getElementById('btnPrevPage').disabled = currentOffset === 0;
+                document.getElementById('btnNextPage').disabled = currentOffset + currentLimit >= data.total_count;
 
                 // Update filter button highlighting
                 document.querySelectorAll('.btn-filter').forEach(b => {
@@ -175,10 +200,29 @@
 
         function filterLogs(filterType) {
             currentFilter = filterType;
+            currentOffset = 0; // changing filter invalidates the current page
+            fetchLogs();
+        }
+
+        function changeLimit() {
+            currentLimit = parseInt(document.getElementById('rowLimitSelect').value, 10);
+            currentOffset = 0;
+            fetchLogs();
+        }
+
+        function prevPage() {
+            currentOffset = Math.max(0, currentOffset - currentLimit);
+            fetchLogs();
+        }
+
+        function nextPage() {
+            currentOffset += currentLimit;
             fetchLogs();
         }
 
         fetchLogs();
+        // Only re-fetches the CURRENT bounded page every 10s, not the whole
+        // table -- see the comment on GET /api/logs for why that matters.
         setInterval(fetchLogs, 10000);
     </script>
 </body>
