@@ -1,8 +1,8 @@
-# Adaptive Two-Stage DDoS Mitigation Gateway
+# Adaptive Two-Stage Layer-4 Volumetric DDoS Mitigation Gateway
 
 **Author:** Abdullah Armiyao
 
-**Project:** Adaptive Two-Stage Framework for Near Real-Time DDoS Mitigation Using Behavioral Traffic Analysis
+**Project:** Adaptive Two-Stage Framework for Near Real-Time Layer-4 Volumetric DDoS Mitigation Using Behavioral Traffic Analysis
 
 
 ## What This Project Is
@@ -10,6 +10,8 @@
 Most DDoS mitigation systems use **static thresholds** — hard-coded numbers like "block any IP sending more than 1000 packets/sec." The problem is that your legitimate traffic might naturally spike to 1000 pps during a registration rush, so those systems either miss real attacks or block real users.
 
 This project solves that by building a gateway that **learns what your normal traffic looks like** and adapts its detection boundaries accordingly. It can tell the difference between a DDoS flood and a flash crowd (a legitimate traffic surge) without a human adjusting thresholds.
+
+**Scope:** this project targets **Layer 4 volumetric floods** — SYN floods, UDP floods, ICMP floods, and similar high-volume attacks that are distinguishable from packet headers alone (rate, source-IP entropy, protocol distribution, dominant-source concentration). It does not parse or inspect application-layer (L7) content, so it is not designed to catch low-and-slow request floods, connection-exhaustion attacks (e.g. Slowloris-style), or any attack that mimics legitimate traffic at the packet-rate level but is malicious at the request level — those require request-level analysis, which is outside what Stage 1's header-only feature set can observe.
 
 The system is split into two stages:
 
@@ -22,30 +24,30 @@ The system is split into two stages:
 In virtualized hypervisor environments (like Proxmox VE), the layout of your network bridges directly controls what traffic the Sensor VM can inspect.
 
 ### The Virtual Switch Subnet Bypass Gotcha
-If the **Attacker VM** and **Victim VM** are placed on the same Proxmox bridge (e.g., `vmbr1`) and share the same IP subnet (e.g., `192.168.1.0/24`):
-1. They communicate directly host-to-host at Layer 2. The Proxmox host switch learns their MAC addresses and forwards packets directly between their virtual ports.
+If the **Attacker VM** and **Victim VM** are placed on the same virtual bridge (e.g., `<BRIDGE_1>`) and share the same IP subnet (e.g., `<SUBNET_A>`):
+1. They communicate directly host-to-host at Layer 2. The hypervisor's virtual switch learns their MAC addresses and forwards packets directly between their virtual ports.
 2. Even if the Sensor VM is configured as their default gateway, **local subnet traffic bypasses the gateway**. 
-3. The Sensor VM's NIC (`ens19`) receives 0% of the unicast flood traffic. It will only capture broadcast packets (like ARP requests) or traffic sent directly to the Sensor's IP.
+3. The Sensor VM's ingress NIC receives 0% of the unicast flood traffic. It will only capture broadcast packets (like ARP requests) or traffic sent directly to the Sensor's own IP.
 
 ---
 
-### The Routed Subnet Setup (192.168.1.0/24 -> 10.0.0.0/24)
+### The Routed Subnet Setup (`<SUBNET_A>` -> `<SUBNET_B>`)
 
 To ensure the Sensor VM can inspect and filter all traffic, the Attacker and Victim are separated into two distinct subnets connected by the Sensor VM acting as an IP Router:
 
 ```
 [ Attacker / Flash Crowd ]             [ Sensor VM / Gateway ]                 [ Victim VM ]
-  (Subnet: 192.168.1.0/24)             (Router/Firewall Gateway)          (Subnet: 10.0.0.0/24)
-  (IP: 192.168.1.4)                                │                      (IP: 10.0.0.3)
+  (Subnet: <SUBNET_A>)                 (Router/Firewall Gateway)          (Subnet: <SUBNET_B>)
+  (IP: <ATTACKER_IP>)                              │                      (IP: <VICTIM_IP>)
          │                                         │                            │
-     [ vmbr1 ] <───────────────────────────────> [ens19]                        │
-   (LAN Segment 1)                       (IP: 192.168.1.2)                      │
-                                                 [ens20] <──────────────────> [ vmbr2 ]
-                                         (IP: 10.0.0.2)                     (LAN Segment 2)
+    [<BRIDGE_1>] <────────────────────────────> [<INGRESS_IFACE>]              │
+   (LAN Segment 1)                       (IP: <GATEWAY_IP_A>)                   │
+                                                 [<EGRESS_IFACE>] <───────> [<BRIDGE_2>]
+                                         (IP: <GATEWAY_IP_B>)               (LAN Segment 2)
 ```
 
-*   **How it works:** The Attacker VM (`192.168.1.4`) wants to target the Victim VM (`10.0.0.3`). Because they are on different subnets, the Attacker is forced to route the traffic through its default gateway (`192.168.1.2` - the Sensor VM's ingress interface).
-*   **Where to capture:** Run `ddos_stage1` on the **ingress interface (`ens19`)** where the flood traffic first enters the gateway.
+*   **How it works:** The Attacker VM wants to target the Victim VM. Because they are on different subnets, the Attacker is forced to route the traffic through its default gateway — the Sensor VM's ingress interface.
+*   **Where to capture:** Run `ddos_stage1` on the **ingress interface** where the flood traffic first enters the gateway.
 
 ---
 
@@ -301,7 +303,7 @@ DDoS Reduction Project/
 sudo bash scripts/install.sh
 
 # Or install non-interactively using explicit targets:
-sudo bash scripts/install.sh --interface ens19 --victim-ips 10.0.0.3,10.0.0.4 --victim-subnet 10.0.0.0/24
+sudo bash scripts/install.sh --interface <IFACE> --victim-ips <VICTIM_IP_1>,<VICTIM_IP_2> --victim-subnet <SUBNET>
 ```
 
 This will:
@@ -330,11 +332,12 @@ install.bat
 For testing environments or manual execution, a unified runner script is provided in the project root. This starts the Stage 2 Python ML engine in the background, waits for its IPC socket to initialize, starts the Stage 1 Rust capture filter in the foreground, and handles graceful teardown on `Ctrl+C`:
 
 ```bash
-# Start both stages with default settings (ens19 interface, 10.0.0.3 victim IP)
+# Start both stages with default settings (reads interface/victim IP from
+# the systemd unit's configured flags, or prompts if run interactively)
 sudo ./run.sh
 
 # Start both stages with custom settings
-sudo ./run.sh --interface ens19 --victim-ip 10.0.0.3
+sudo ./run.sh --interface <IFACE> --victim-ip <VICTIM_IP>
 ```
 
 ### Individual Components Usage
@@ -343,14 +346,14 @@ If you prefer to run the components separately:
 
 #### 1. Stage 1 Rust Pre-Filter
 ```bash
-# Production (on sensor VM, specifying multiple IPs or subnet)
-sudo ddos_stage1 --interface ens19 --victim-ips 10.0.0.3,10.0.0.4
-sudo ddos_stage1 --interface ens19 --victim-subnet 10.0.0.0/24
+# Production (on sensor VM, specifying multiple IPs or a subnet)
+sudo ddos_stage1 --interface <IFACE> --victim-ips <VICTIM_IP_1>,<VICTIM_IP_2>
+sudo ddos_stage1 --interface <IFACE> --victim-subnet <SUBNET>
 ```
 # All options
 ddos_stage1 --interface <IFACE>       # required
             --victim-ips <IPs>        # BPF filter IP list (comma-separated, alias: --victim-ip)
-            --victim-subnet <SUBNET>  # BPF filter subnet (e.g. 10.0.0.0/24)
+            --victim-subnet <SUBNET>  # BPF filter subnet (e.g. <SUBNET>)
             --k <FLOAT>               # anomaly multiplier (default: 2.0)
             --alpha <FLOAT>           # EWMA smoothing (default: 0.125)
             --socket <PATH>           # IPC socket path (default: /tmp/ddos_stage1.sock)
@@ -370,8 +373,8 @@ RUST_LOG=warn   # anomalies and errors only
 ```
 # Startup
 [INFO] banner
-[INFO] BPF filter target victim IP = 10.0.0.3
-[INFO] Capture: capture loop started on 'br0'
+[INFO] BPF filter target victim IP = <VICTIM_IP>
+[INFO] Capture: capture loop started on '<IFACE>'
 
 # Warmup (first 200 windows)
 [INFO] Analysis: warm-up window 1/200   | r=0.0 pps   | h=0.000
@@ -407,25 +410,18 @@ To train the Random Forest model in Stage 2, you need to capture traffic using t
 
 Start the sensor, logging to a CSV:
 ```bash
-sudo ddos_stage1 --label 0 --train-csv ../stage2/training_data.csv
+sudo ddos_stage1 --label 0 --train-csv <PATH_TO_CSV>
 ```
+
+Traffic generation is intentionally not prescribed here — use whatever tools you have available (load-testing tools, scripted HTTP clients, packet-crafting tools, etc.) to produce each traffic category below. What matters is the labeling procedure, not the specific tool.
 
 **Capture Sequence (The "Clean Rule" for Labels):**
 To avoid poisoning the label with transitioning traffic, always wait for traffic to hit its target rate before applying the attack label, and reset the label to `0` before turning off the attack.
 
 1. **Phase 0 (Peacetime):** Let it run on normal traffic for ~4 minutes for Welford warm-up (wait for the `warm-up complete` log), then let it capture ~5 minutes of steady normal traffic.
-2. **Phase 1 (Flash Crowd):**
-   - Start your 100-IP `curl` flash crowd. Wait ~10 seconds for it to hit full rate.
-   - Run: `echo 1 > /tmp/ddos_label`. Run for ~5 minutes.
-   - Run: `echo 0 > /tmp/ddos_label`. Stop `curl`. Wait for traffic to return to baseline.
-3. **Phase 2a (Single-Source DDoS):**
-   - Start single-source `hping3` at ~3,000 pps. Wait ~10 seconds.
-   - Run: `echo 2 > /tmp/ddos_label`. Run for ~3 minutes.
-   - Run: `echo 0 > /tmp/ddos_label`. Stop `hping3`. Wait for traffic to return to baseline.
-4. **Phase 2b (Distributed DDoS):**
-   - Start 50-source `hping3` distributed attack loop. Wait ~10 seconds.
-   - Run: `echo 2 > /tmp/ddos_label`. Run for ~3 minutes.
-   - Run: `echo 0 > /tmp/ddos_label`. Stop `hping3`.
+2. **Phase 1 (Flash Crowd):** Start a legitimate-looking surge from many distinct source IPs (e.g. a distributed set of HTTP clients). Wait for it to hit full rate, then run `echo 1 > /tmp/ddos_label`; capture for a few minutes; run `echo 0 > /tmp/ddos_label`; stop the traffic and wait for it to return to baseline before continuing.
+3. **Phase 2a (Single-Source DDoS):** Start a single-source flood at a rate representative of what you want to defend against. Wait for it to stabilize, then run `echo 2 > /tmp/ddos_label`; capture for a few minutes; run `echo 0 > /tmp/ddos_label`; stop the flood and wait for baseline to return.
+4. **Phase 2b (Distributed DDoS):** Same as 2a, but from many concurrent sources instead of one — wait for it to stabilize, `echo 2 > /tmp/ddos_label`, capture, `echo 0 > /tmp/ddos_label`, stop.
 
 **Capturing more than one session per label (required for a fair evaluation):**
 A single continuous process run — even one that cycles through all four phases above via `/tmp/ddos_label` — only produces *one* Welford baseline draw per label, because the baseline lives in memory for the life of the *process*, not the life of the *label*. Evaluating generalization (see Leave-One-Session-Out below) needs at least two **independent** sessions per label: kill and restart `ddos_stage1` (fresh warm-up) before capturing a second Normal or Flash-Crowd session, rather than just flipping the label on an already-running process. `training_data.csv` is append-only (Stage 1 opens it with `OpenOptions::append(true)`), so every new session — same file, any day — is picked up automatically; `train.py`'s own session detection (a >30s timestamp gap or a label change starts a new session) sorts it out from timestamps, not from how the file was written.
@@ -441,11 +437,11 @@ cd stage2
 python3 train.py
 ```
 
-This script parses the CSV, drops NaN/inf rows and exact-duplicate rows (a capture re-appended into the same CSV, or any other accidental double-write, otherwise doubles that session's weight in the balanced training set and in LOSO folds without raising any error), computes three derived features from the raw wire columns — `delta_rate` (`ewma_rate - mean_r`), `delta_entropy` (`entropy - mean_h`), and `dominant_rate` (`ewma_rate * dominant_ip_ratio`, the estimated pps of the single busiest source in the window) — and detects capture sessions from timestamp gaps/label changes. It prints a per-class feature-range overlap check (including `dominant_rate`) so you can see directly whether your captured classes actually overlap in rate/entropy/concentration space, rather than being trivially separable.
+This script parses the CSV, drops NaN/inf rows, computes three derived features from the raw wire columns — `delta_rate` (`ewma_rate - mean_r`), `delta_entropy` (`entropy - mean_h`), and `dominant_rate` (`ewma_rate * dominant_ip_ratio`, the estimated pps of the single busiest source in the window) — and detects capture sessions from timestamp gaps/label changes. It prints a per-class feature-range overlap check (including `dominant_rate`) so you can see directly whether your captured classes actually overlap in rate/entropy/concentration space, rather than being trivially separable.
 
 Evaluation and the deployed model are two separate steps:
-- **Leave-One-Session-Out (LOSO) evaluation, swept across tree depths:** for every session whose label has ≥2 sessions total, that session is held out entirely, a temporary model is trained on every *other* session, and predictions on the held-out session are collected. Sessions whose label only has one session are skipped with an explicit note (holding out a class's only session would leave zero training examples of it — that's a coverage gap, not a fair test, and would just report a meaningless 0.00). This exists because a percentage-of-session split (or a random split) leaks: consecutive windows share EWMA/Welford state, so a model can memorize a session's fingerprint instead of learning to generalize, and will score a hollow 1.00 for it. The whole LOSO evaluation is repeated for `max_depth` in `[1, 2, ..., 10, None]`, and whichever depth gets the best aggregate LOSO accuracy is selected and printed — the depth is *never* hardcoded, because the right value depends entirely on how many independent sessions the current CSV has per class: with only two sessions of a class, a deep tree can carve rules that fit one session's specific fingerprint and then fail almost completely on the other (a real capture set here saw a held-out session collapse from ~1.00 to ~0.02 accuracy once depth went past 2). A different or expanded capture set will likely select a different depth; that's expected, not a bug.
-- **Production model:** trained separately, on *all* available sessions (balanced via upsampling), using the depth selected by the LOSO sweep above, and saved as `ddos_rf_model.joblib` — this is what Stage 2 actually loads. LOSO is purely an evaluation signal for how well the approach (and the selected depth) generalizes; it never produces the shipped model itself.
+- **Leave-One-Session-Out (LOSO) evaluation:** for every session whose label has ≥2 sessions total, that session is held out entirely, a temporary model is trained on every *other* session, and predictions on the held-out session are collected. Sessions whose label only has one session are skipped with an explicit note (holding out a class's only session would leave zero training examples of it — that's a coverage gap, not a fair test, and would just report a meaningless 0.00). Results from every fold are combined into one aggregate classification report and confusion matrix. This exists because a percentage-of-session split (or a random split) leaks: consecutive windows share EWMA/Welford state, so a model can memorize a session's fingerprint instead of learning to generalize, and will score a hollow 1.00 for it.
+- **Production model:** trained separately, on *all* available sessions (balanced via upsampling), and saved as `ddos_rf_model.joblib` — this is what Stage 2 actually loads. LOSO is purely an evaluation signal for how well the approach generalizes; it never produces the shipped model itself.
 
 Read the LOSO confusion matrix, not the headline accuracy — in particular, class-2 (DDoS) recall/precision and the true-Flash-Crowd-predicted-DDoS cell are the numbers that matter for this project's central claim (not over-blocking legitimate surges).
 
