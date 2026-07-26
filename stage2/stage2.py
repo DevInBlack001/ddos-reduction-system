@@ -524,6 +524,17 @@ def run_ipc_receiver():
     else:
         try:
             clf = joblib.load(MODEL_PATH)
+            # train.py fits with n_jobs=-1 (parallelize across cores), which
+            # is genuinely useful for a one-time fit over thousands of rows
+            # -- but that setting is pickled into the model and is a bad fit
+            # for live inference here, where every clf.predict() call is on
+            # a SINGLE-row DataFrame (one window at a time). Parallelizing a
+            # single row's prediction across worker processes costs more in
+            # joblib backend setup than it could ever save, and re-triggers
+            # sklearn's "delayed should be used with Parallel" UserWarning
+            # on every call instead of Python deduplicating it once -- which
+            # is what was flooding the journal. Force serial prediction.
+            clf.n_jobs = 1
             logging.info("[+] ML Classifier loaded successfully.")
         except Exception as e:
             logging.error(f"[-] Failed to load classifier: {e}")
