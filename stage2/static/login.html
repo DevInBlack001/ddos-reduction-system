@@ -2,143 +2,101 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHIELD GATEWAY - AUTHENTICATION REQUIRED</title>
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Sign In</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         body {
             align-items: center;
             justify-content: center;
             padding: 0;
-            background-color: #030508;
+        }
+        .theme-toggle-corner {
+            position: fixed;
+            top: 20px;
+            right: 20px;
         }
         .login-box {
-            width: 420px;
-            background: #080c12;
-            border: 1px solid var(--accent-cyan-dim);
-            padding: 30px;
-            position: relative;
-            box-shadow: 0 0 15px rgba(0, 240, 255, 0.05);
-        }
-        .login-box::before {
-            content: "";
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 12px;
-            height: 12px;
-            border-top: 2px solid var(--accent-cyan);
-            border-left: 2px solid var(--accent-cyan);
-        }
-        .login-box::after {
-            content: "";
-            position: absolute;
-            bottom: 0;
-            right: 0;
-            width: 12px;
-            height: 12px;
-            border-bottom: 2px solid var(--accent-cyan);
-            border-right: 2px solid var(--accent-cyan);
+            width: 400px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-md);
+            padding: 32px;
         }
         .login-header {
             text-align: center;
             margin-bottom: 24px;
         }
         .login-logo {
-            width: 48px;
-            height: 48px;
-            border: 1px solid var(--accent-cyan);
-            color: var(--accent-cyan);
-            font-size: 1.5rem;
-            font-weight: bold;
+            width: 44px;
+            height: 44px;
+            border-radius: var(--radius);
+            background-color: var(--accent);
+            color: var(--text-on-accent);
+            font-size: 1.25rem;
+            font-weight: 600;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 0 auto 12px auto;
-            text-shadow: 0 0 4px var(--accent-cyan);
-            box-shadow: 0 0 6px var(--accent-cyan-glow);
+            margin: 0 auto 14px auto;
         }
         .login-title {
-            color: var(--accent-cyan);
-            font-size: 1rem;
-            font-weight: bold;
-            letter-spacing: 3px;
-            text-transform: uppercase;
+            color: var(--text-primary);
+            font-size: 1.15rem;
+            font-weight: 600;
         }
         .login-subtitle {
-            color: var(--text-dim);
-            font-size: 0.7rem;
-            letter-spacing: 1px;
+            color: var(--text-secondary);
+            font-size: 0.82rem;
             margin-top: 6px;
         }
         .error-message {
-            color: var(--accent-alert);
-            background-color: rgba(255, 59, 48, 0.08);
-            border: 1px solid var(--border-alert);
+            color: var(--status-danger);
+            background-color: var(--status-danger-bg);
+            border: 1px solid var(--status-danger);
+            border-radius: var(--radius-sm);
             padding: 10px;
-            font-size: 0.8rem;
+            font-size: 0.82rem;
             margin-bottom: 16px;
             display: none;
             text-align: center;
         }
-        .boot-log {
-            font-size: 0.65rem;
-            color: var(--text-dim);
-            height: 80px;
-            overflow-y: hidden;
-            border-top: 1px dashed rgba(0, 162, 176, 0.2);
-            padding-top: 10px;
-            margin-top: 20px;
-            font-family: inherit;
-        }
     </style>
 </head>
 <body>
+    <button id="themeToggle" class="theme-toggle theme-toggle-corner"></button>
+
     <div class="login-box">
         <div class="login-header">
             <div class="login-logo">S</div>
-            <div class="login-title">SHIELD GATEWAY</div>
-            <div class="login-subtitle">SECURE ACCESS CONTROLS (SESSION LIMIT: 10M)</div>
+            <div class="login-title">Shield Gateway</div>
+            <div class="login-subtitle">Please sign in to continue</div>
         </div>
 
         <div id="errorBox" class="error-message"></div>
 
         <form id="loginForm">
             <div style="margin-bottom: 16px;">
-                <label style="display: block; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase;">ADMIN IDENTITY</label>
-                <input type="text" id="username" class="form-input" placeholder="USERNAME" required autofocus>
+                <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;">Username</label>
+                <input type="text" id="username" class="form-input" placeholder="Username" required autofocus>
             </div>
             <div style="margin-bottom: 20px;">
-                <label style="display: block; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase;">ACCESS DECRYPT-KEY</label>
-                <input type="password" id="password" class="form-input" placeholder="PASSWORD" required>
+                <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;">Password</label>
+                <input type="password" id="password" class="form-input" placeholder="Password" required>
             </div>
-            <button type="submit" class="btn" style="width: 100%;">ESTABLISH CONNECTION</button>
+            <button type="submit" class="btn" style="width: 100%;">Sign In</button>
         </form>
-
-        <div class="boot-log" id="bootLog">
-            SECURE LINK KERNEL INITIALISED...<br>
-            LOADED NETFILTER IPSET BLOCKLIST MODULES...<br>
-            AWAITING ROOT CONSOLE SIGNATURE...
-        </div>
     </div>
 
+    <script src="/static/theme.js"></script>
     <script>
-        const bootMessages = [
-            "CHECKING FIREWALL BLOCKLIST IPSETS...",
-            "ESTABLISHING SYNC WITH STAGE 1 TELEMETRY SOCKET...",
-            "DB INITIALIZED AT /etc/ddos-gateway/stage2.db...",
-            "AWAITING CONSOLE IDENTIFICATION...",
-        ];
-        let msgIndex = 0;
-        const logEl = document.getElementById("bootLog");
-
-        setInterval(() => {
-            if (msgIndex < bootMessages.length) {
-                logEl.innerHTML += `<br>${bootMessages[msgIndex]}`;
-                logEl.scrollTop = logEl.scrollHeight;
-                msgIndex++;
-            }
-        }, 1500);
-
         document.getElementById("loginForm").addEventListener("submit", async (e) => {
             e.preventDefault();
             const username = document.getElementById("username").value;
@@ -158,11 +116,11 @@
                     window.location.href = "/";
                 } else {
                     const data = await response.json();
-                    errBox.innerText = data.detail || "Authentication handshake rejected.";
+                    errBox.innerText = data.detail || "Invalid username or password.";
                     errBox.style.display = "block";
                 }
             } catch (err) {
-                errBox.innerText = "Network failure while connecting to gateway API.";
+                errBox.innerText = "Network error while connecting to the gateway.";
                 errBox.style.display = "block";
             }
         });

@@ -2,12 +2,16 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHIELD GATEWAY - ACTIVE FLOWS</title>
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Active Flows</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
-        .flow-table td {
-            font-family: 'JetBrains Mono', monospace;
-        }
         .action-cell {
             text-align: right;
         }
@@ -17,7 +21,7 @@
     <div class="sidebar">
         <div class="logo-area">
             <div class="logo-icon">S</div>
-            <div class="logo-text">SHIELD</div>
+            <div class="logo-text">Shield Gateway</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -29,42 +33,43 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            GATEWAY CONSOLE v1.0.0
+            Gateway Console v1.0.0
         </div>
     </div>
 
     <div class="main-panel">
         <div class="top-bar">
             <div class="top-bar-title">
-                <h1>FLOW_DB // LAYER 4 CONCURRENT PEERS</h1>
+                <h1>Active Flows</h1>
             </div>
             <div class="system-status">
                 <div class="status-pill">
-                    <span id="flowCountPill" class="badge badge-normal">0 ACTIVE CONNECTIONS</span>
+                    <span id="flowCountPill" class="badge badge-normal">0 active connections</span>
                 </div>
+                <button id="themeToggle" class="theme-toggle"></button>
             </div>
         </div>
 
         <div class="content-area">
             <div class="hud-panel">
                 <div class="hud-panel-header">
-                    <div class="hud-panel-title">LIVE CONNECTION SPECTRUM (TOP 20 FLOWS)</div>
+                    <div class="hud-panel-title">Live Connections (Top 20 Flows)</div>
                 </div>
-                
+
                 <table class="flow-table">
                     <thead>
                         <tr>
-                            <th>SOURCE ADDRESS</th>
-                            <th>DESTINATION PORT</th>
-                            <th>PROTOCOL</th>
-                            <th>FLOW RATE (PPS)</th>
-                            <th>MITIGATION STATUS</th>
-                            <th class="action-cell">ADMINISTRATIVE ACTIONS</th>
+                            <th>Source Address</th>
+                            <th>Destination Port</th>
+                            <th>Protocol</th>
+                            <th>Flow Rate (pps)</th>
+                            <th>Mitigation Status</th>
+                            <th class="action-cell">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="flowTableBody">
                         <tr>
-                            <td colspan="6" style="text-align: center; color: var(--text-dim);">AWAITING TELEMETRY STACK SYNC...</td>
+                            <td colspan="6" style="text-align: center; color: var(--text-tertiary);">Loading active flows...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -72,6 +77,7 @@
         </div>
     </div>
 
+    <script src="/static/theme.js"></script>
     <script>
         async function fetchFlows() {
             try {
@@ -81,49 +87,49 @@
                     return;
                 }
                 const data = await res.json();
-                
+
                 // Get whitelist and blocked lists
                 const whitelisted = data.whitelisted_ips || [];
                 const blocked = data.blocked_ips || [];
-                
+
                 const tableBody = document.getElementById('flowTableBody');
                 const flows = data.active_flows || [];
-                
-                document.getElementById('flowCountPill').innerText = `${flows.length} ACTIVE FLOWS`;
+
+                document.getElementById('flowCountPill').innerText = `${flows.length} active flows`;
 
                 if (flows.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-dim);">PEACETIME: NO ACTIVE IP FLOWS DETECTED ON INTERFACE.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-tertiary);">No active IP flows detected on this interface.</td></tr>`;
                     return;
                 }
 
                 let html = '';
                 flows.forEach(f => {
-                    let statusLabel = '<span class="badge badge-normal">MONITORED</span>';
+                    let statusLabel = '<span class="badge badge-normal">Monitored</span>';
                     let actionBtn = '';
-                    
+
                     if (whitelisted.includes(f.ip)) {
-                        statusLabel = '<span class="badge badge-normal" style="border-color:#10b981; color:#10b981;">WHITELISTED</span>';
-                        actionBtn = `<button class="btn btn-danger" onclick="blockIp('${f.ip}')" disabled style="opacity: 0.5;">BLOCK</button>`;
+                        statusLabel = '<span class="badge" style="color: var(--status-success); background-color: var(--status-success-bg);">Whitelisted</span>';
+                        actionBtn = `<button class="btn btn-danger" onclick="blockIp('${f.ip}')" disabled style="opacity: 0.5;">Block</button>`;
                     } else if (blocked.includes(f.ip)) {
-                        statusLabel = '<span class="badge badge-ddos">BLOCKED</span>';
-                        actionBtn = `<button class="btn" onclick="unblockIp('${f.ip}')">RELEASE</button>`;
+                        statusLabel = '<span class="badge badge-ddos">Blocked</span>';
+                        actionBtn = `<button class="btn" onclick="unblockIp('${f.ip}')">Release</button>`;
                     } else {
                         actionBtn = `
-                            <button class="btn btn-danger" style="margin-right: 6px;" onclick="blockIp('${f.ip}')">BLOCK</button>
-                            <button class="btn" onclick="whitelistIp('${f.ip}')">WHITELIST</button>
+                            <button class="btn btn-danger" style="margin-right: 6px;" onclick="blockIp('${f.ip}')">Block</button>
+                            <button class="btn" onclick="whitelistIp('${f.ip}')">Whitelist</button>
                         `;
                     }
 
                     html += `<tr>
-                        <td>${f.ip}</td>
-                        <td>${f.port}</td>
+                        <td style="font-family: var(--font-mono);">${f.ip}</td>
+                        <td style="font-family: var(--font-mono);">${f.port}</td>
                         <td>${f.proto}</td>
-                        <td style="color: var(--accent-cyan); font-weight: bold;">${f.rate.toFixed(1)}</td>
+                        <td style="color: var(--accent); font-weight: 600; font-family: var(--font-mono);">${f.rate.toFixed(1)}</td>
                         <td>${statusLabel}</td>
                         <td class="action-cell">${actionBtn}</td>
                     </tr>`;
                 });
-                
+
                 tableBody.innerHTML = html;
             } catch (err) {
                 console.error("Failed to load active flows:", err);

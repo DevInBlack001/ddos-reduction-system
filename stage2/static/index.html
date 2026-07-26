@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHIELD GATEWAY - MISSION CONTROL</title>
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Dashboard</title>
     <link rel="stylesheet" href="/static/base.css">
     <script src="/static/chart.js"></script>
     <style>
@@ -12,54 +19,35 @@
             gap: 20px;
         }
         .metric-badge {
-            font-size: 0.7rem;
-            padding: 2px 6px;
-            border: 1px solid var(--accent-cyan-dim);
-            color: var(--accent-cyan);
+            font-size: 0.72rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
             margin-left: 8px;
         }
         .tabs-bar {
             user-select: none;
         }
+        .tab-button {
+            color: var(--text-secondary);
+        }
         .tab-button:hover {
-            color: var(--text-bright) !important;
+            color: var(--text-primary) !important;
         }
         .tab-button.active {
-            border-bottom: 2px solid var(--accent-cyan) !important;
-            color: var(--accent-cyan) !important;
+            border-bottom: 2px solid var(--accent) !important;
+            color: var(--accent) !important;
         }
         .data-table tbody tr {
-            border-bottom: 1px solid rgba(0, 162, 176, 0.15);
+            border-bottom: 1px solid var(--border-color);
             transition: background-color 0.2s;
         }
         .data-table tbody tr:hover {
-            background-color: rgba(0, 240, 255, 0.02);
+            background-color: var(--bg-hover);
         }
         .data-table td {
             padding: 12px 15px;
-        }
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            font-size: 0.75rem;
-            font-weight: bold;
-            border-radius: 2px;
-            text-align: center;
-        }
-        .badge-normal {
-            background-color: rgba(0, 240, 255, 0.1);
-            color: var(--accent-cyan);
-            border: 1px solid var(--border-cyan);
-        }
-        .badge-flash {
-            background-color: rgba(255, 159, 10, 0.1);
-            color: #ff9f0a;
-            border: 1px solid rgba(255, 159, 10, 0.4);
-        }
-        .badge-ddos {
-            background-color: rgba(255, 59, 48, 0.1);
-            color: var(--accent-alert);
-            border: 1px solid var(--border-alert);
         }
     </style>
 </head>
@@ -67,7 +55,7 @@
     <div class="sidebar">
         <div class="logo-area">
             <div class="logo-icon">S</div>
-            <div class="logo-text">SHIELD</div>
+            <div class="logo-text">Shield Gateway</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item active"><a href="/"><span>■</span> Dashboard</a></li>
@@ -79,32 +67,33 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            GATEWAY CONSOLE v1.0.0
+            Gateway Console v1.0.0
         </div>
     </div>
 
     <div class="main-panel">
         <div class="top-bar">
             <div class="top-bar-title">
-                <h1>SYS_TELEM_CORE // LIVE STATISTICAL MATRIX</h1>
+                <h1>Dashboard</h1>
             </div>
             <div class="system-status">
                 <div class="status-pill">
-                    <span id="threatStatus" class="badge badge-normal">NORMAL OPERATION</span>
+                    <span id="threatStatus" class="badge badge-normal">Normal</span>
                 </div>
                 <div class="status-pill">
                     <div id="engineStatusDot" class="status-dot"></div>
-                    <span id="engineStatusText">GATEWAY ONLINE</span>
+                    <span id="engineStatusText">Online</span>
                 </div>
-                <button id="logoutBtn" class="btn btn-danger" style="padding: 4px 10px; font-size: 0.75rem;">DISCONNECT</button>
+                <button id="themeToggle" class="theme-toggle"></button>
+                <button id="logoutBtn" class="btn btn-danger" style="padding: 6px 12px; font-size: 0.8rem;">Log Out</button>
             </div>
         </div>
 
         <div class="content-area">
             <!-- Tab Controls -->
-            <div class="tabs-bar" style="display: flex; gap: 15px; border-bottom: 1px solid var(--border-cyan); margin-bottom: 20px;">
-                <div id="tabBtnGlobal" class="tab-button active" onclick="switchTab('global')" style="padding: 10px 20px; cursor: pointer; color: var(--accent-cyan); border-bottom: 2px solid var(--accent-cyan); font-weight: bold; letter-spacing: 1px; transition: all 0.2s;">GLOBAL OVERVIEW</div>
-                <div id="tabBtnTarget" class="tab-button" onclick="switchTab('target')" style="padding: 10px 20px; cursor: pointer; color: var(--text-dim); border-bottom: 2px solid transparent; font-weight: bold; letter-spacing: 1px; transition: all 0.2s;">TARGET MONITOR</div>
+            <div class="tabs-bar" style="display: flex; gap: 15px; border-bottom: 1px solid var(--border-color); margin-bottom: 20px;">
+                <div id="tabBtnGlobal" class="tab-button active" onclick="switchTab('global')" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid var(--accent); color: var(--accent); font-weight: 600; transition: all 0.2s;">Overview</div>
+                <div id="tabBtnTarget" class="tab-button" onclick="switchTab('target')" style="padding: 10px 20px; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 600; transition: all 0.2s;">Target Monitor</div>
             </div>
 
             <!-- VIEW 1: GLOBAL OVERVIEW -->
@@ -112,53 +101,53 @@
                 <!-- Global Summary Cards -->
                 <div class="stats-grid" style="margin-bottom: 25px;">
                     <div class="stat-card">
-                        <span class="stat-label">TOTAL ACCUMULATED RATE (PPS)</span>
+                        <span class="stat-label">Total Packet Rate (pps)</span>
                         <span id="globalStatPps" class="stat-value">0.0</span>
-                        <span class="stat-meta">SUM OF ALL VICTIMS</span>
+                        <span class="stat-meta">Sum of all targets</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">MONITORED TARGETS</span>
+                        <span class="stat-label">Monitored Targets</span>
                         <span id="globalStatTargets" class="stat-value">0</span>
-                        <span class="stat-meta">ACTIVE DESTINATIONS</span>
+                        <span class="stat-meta">Active destinations</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">ATTACKED DESTINATIONS</span>
+                        <span class="stat-label">Under Attack</span>
                         <span id="globalStatAttacked" class="stat-value">0</span>
-                        <span class="stat-meta">STATUS: DDoS ACTIVE</span>
+                        <span class="stat-meta">DDoS classification active</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">BLOCKED HOSTS</span>
+                        <span class="stat-label">Blocked Hosts</span>
                         <span id="globalStatBlocked" class="stat-value">0</span>
-                        <span class="stat-meta">GLOBAL FIREWALL SETS</span>
+                        <span class="stat-meta">Global firewall entries</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">RATE-LIMITED HOSTS</span>
+                        <span class="stat-label">Rate-Limited Hosts</span>
                         <span id="globalStatRatelimited" class="stat-value">0</span>
-                        <span class="stat-meta">GLOBAL FIREWALL SETS</span>
+                        <span class="stat-meta">Global firewall entries</span>
                     </div>
                 </div>
 
                 <!-- Global Target IP Matrix Table -->
                 <div class="hud-panel" style="margin-bottom: 25px;">
                     <div class="hud-panel-header">
-                        <div class="hud-panel-title">MONITORED DESTINATION IPs // ACTIVE TELEMETRY MATRIX</div>
-                        <span class="metric-badge">REAL-TIME MULTI-IP INSPECTOR</span>
+                        <div class="hud-panel-title">Monitored Targets</div>
+                        <span class="metric-badge">Live</span>
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
-                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-family: inherit; font-size: 0.85rem; text-align: left;">
+                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
                             <thead>
-                                <tr style="border-bottom: 1px solid var(--border-cyan); color: var(--accent-cyan);">
-                                    <th style="padding: 10px 15px;">TARGET IP</th>
-                                    <th style="padding: 10px 15px;">RATE (PPS)</th>
-                                    <th style="padding: 10px 15px;">SHANNON ENTROPY</th>
-                                    <th style="padding: 10px 15px;">DOMINANT SENDER ratio</th>
-                                    <th style="padding: 10px 15px;">THREAT STATUS</th>
-                                    <th style="padding: 10px 15px;">ACTION</th>
+                                <tr style="border-bottom: 1px solid var(--border-strong);">
+                                    <th style="padding: 10px 15px;">Target IP</th>
+                                    <th style="padding: 10px 15px;">Rate (pps)</th>
+                                    <th style="padding: 10px 15px;">Entropy</th>
+                                    <th style="padding: 10px 15px;">Dominant Sender %</th>
+                                    <th style="padding: 10px 15px;">Status</th>
+                                    <th style="padding: 10px 15px;">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="globalTargetsTableBody">
                                 <tr>
-                                    <td colspan="6" style="padding: 20px; text-align: center; color: var(--text-dim);">NO TARGET TELEMETRY CHANNELS ACTIVE</td>
+                                    <td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -171,42 +160,42 @@
                 <!-- Target Selector Panel -->
                 <div class="hud-panel" style="margin-bottom: 25px; padding: 15px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;">
                     <div style="display: flex; align-items: center; gap: 15px;">
-                        <label for="victimSelect" style="color: var(--accent-cyan); font-weight: bold; font-size: 0.9rem;">MONITORING TARGET IP:</label>
-                        <select id="victimSelect" onchange="changeVictimTarget()" style="background-color: var(--bg-surface); color: var(--accent-cyan); border: 1px solid var(--border-cyan); padding: 6px 12px; font-family: inherit; font-size: 0.9rem; outline: none; cursor: pointer; border-radius: 2px;">
-                            <option value="">-- SELECT TARGET --</option>
+                        <label for="victimSelect" style="color: var(--text-primary); font-weight: 600; font-size: 0.9rem;">Monitoring Target:</label>
+                        <select id="victimSelect" onchange="changeVictimTarget()" style="background-color: var(--bg-page); color: var(--text-primary); border: 1px solid var(--border-color); padding: 6px 12px; font-family: inherit; font-size: 0.9rem; outline: none; cursor: pointer; border-radius: 4px;">
+                            <option value="">-- Select target --</option>
                         </select>
                     </div>
-                    <div style="color: var(--text-dim); font-size: 0.8rem; font-family: inherit;">
-                        ACTIVE INGRESS INTERFACE: <span id="targetInterfaceName" style="color: var(--text-bright); font-weight: bold;">--</span>
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">
+                        Active interface: <span id="targetInterfaceName" style="color: var(--text-primary); font-weight: 600;">--</span>
                     </div>
                 </div>
 
                 <!-- Stat Cards Grid -->
                 <div class="stats-grid">
                     <div class="stat-card">
-                        <span class="stat-label">PACKET RATE (PPS)</span>
+                        <span class="stat-label">Packet Rate (pps)</span>
                         <span id="statPps" class="stat-value">0.0</span>
-                        <span id="statPpsBaseline" class="stat-meta">BASELINE: 0.0</span>
+                        <span id="statPpsBaseline" class="stat-meta">Baseline: 0.0</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">SHANNON ENTROPY</span>
+                        <span class="stat-label">Entropy</span>
                         <span id="statEntropy" class="stat-value">0.0000</span>
-                        <span id="statEntropyBaseline" class="stat-meta">BASELINE: 0.0000</span>
+                        <span id="statEntropyBaseline" class="stat-meta">Baseline: 0.0000</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">WELFORD THRESHOLDS</span>
-                        <span id="statK" class="stat-value">k = 2.0</span>
-                        <span id="statSensitivity" class="stat-meta">MODE: STEADY COOLDOWN</span>
+                        <span class="stat-label">Detection Sensitivity</span>
+                        <span id="statK" class="stat-value">2.0&times;</span>
+                        <span id="statSensitivity" class="stat-meta">Mode: steady state</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">BLOCKED HOSTS</span>
+                        <span class="stat-label">Blocked Hosts</span>
                         <span id="statBlocked" class="stat-value">0</span>
-                        <span class="stat-meta">IN KERNEL NETSET</span>
+                        <span class="stat-meta">Currently blocked</span>
                     </div>
                     <div class="stat-card">
-                        <span class="stat-label">RATE-LIMITED HOSTS</span>
+                        <span class="stat-label">Rate-Limited Hosts</span>
                         <span id="statRatelimited" class="stat-value">0</span>
-                        <span class="stat-meta">50PPS CAP ACTIVE</span>
+                        <span class="stat-meta">Rate cap active</span>
                     </div>
                 </div>
 
@@ -216,8 +205,8 @@
                         <!-- Rate Chart -->
                         <div class="hud-panel">
                             <div class="hud-panel-header">
-                                <div class="hud-panel-title">PACKET DELIVERY VELOCITY // TIME SERIES</div>
-                                <span class="metric-badge">UNIT: PPS (10s RESOLUTION)</span>
+                                <div class="hud-panel-title">Packet Rate Over Time</div>
+                                <span class="metric-badge">pps &middot; 10s interval</span>
                             </div>
                             <div class="chart-container">
                                 <canvas id="rateChart"></canvas>
@@ -227,8 +216,8 @@
                         <!-- Entropy Chart -->
                         <div class="hud-panel">
                             <div class="hud-panel-header">
-                                <div class="hud-panel-title">FLOW DISTRIBUTION ENTROPY // TIME SERIES</div>
-                                <span class="metric-badge">UNIT: SHANNON H (BITS)</span>
+                                <div class="hud-panel-title">Entropy Over Time</div>
+                                <span class="metric-badge">bits</span>
                             </div>
                             <div class="chart-container">
                                 <canvas id="entropyChart"></canvas>
@@ -240,7 +229,7 @@
                     <div>
                         <div class="hud-panel">
                             <div class="hud-panel-header">
-                                <div class="hud-panel-title">PROTOCOL RATIO</div>
+                                <div class="hud-panel-title">Protocol Breakdown</div>
                             </div>
                             <div style="height: 200px; position: relative;">
                                 <canvas id="protoChart"></canvas>
@@ -249,11 +238,10 @@
 
                         <div class="hud-panel">
                             <div class="hud-panel-header">
-                                <div class="hud-panel-title">LATEST MITIGATION ACTION</div>
+                                <div class="hud-panel-title">Recent Activity</div>
                             </div>
-                            <div id="latestMitigation" style="font-family: inherit; font-size: 0.8rem; line-height: 1.6;">
-                                NO MITIGATION ACTIONS LOGGED.<br>
-                                SYSTEM DEPLOYED IN STEADY STATE.
+                            <div id="latestMitigation" style="font-size: 0.8rem; line-height: 1.6; color: var(--text-secondary);">
+                                No mitigation actions recorded yet.
                             </div>
                         </div>
                     </div>
@@ -264,15 +252,28 @@
 
     <div class="toast-container" id="toastContainer"></div>
 
+    <script src="/static/theme.js"></script>
     <script>
-        // Setup Chart.js defaults for Cyber HUD Look
-        Chart.defaults.color = '#5c7b80';
-        Chart.defaults.font.family = "'JetBrains Mono', monospace";
+        // Chart.js setup, colors resolved from the active theme's CSS variables
+        function chartColors() {
+            return {
+                text: ShieldTheme.cssVar('--text-secondary'),
+                font: ShieldTheme.cssVar('--font-sans'),
+                accent: ShieldTheme.cssVar('--accent'),
+                danger: ShieldTheme.cssVar('--status-danger'),
+                grid: 'rgba(128, 140, 160, 0.15)',
+                surface: ShieldTheme.cssVar('--bg-surface')
+            };
+        }
+
+        let colors = chartColors();
+        Chart.defaults.color = colors.text;
+        Chart.defaults.font.family = colors.font;
         Chart.defaults.font.size = 11;
 
         const maxPoints = 30;
         const timeLabels = Array(maxPoints).fill('');
-        
+
         let currentTab = 'global';
         let selectedVictimIp = '';
 
@@ -284,18 +285,18 @@
                 labels: timeLabels,
                 datasets: [
                     {
-                        label: 'Live EWMA Rate (r)',
+                        label: 'Live rate (EWMA)',
                         data: Array(maxPoints).fill(0),
-                        borderColor: '#00f0ff',
+                        borderColor: colors.accent,
                         borderWidth: 1.5,
                         pointRadius: 0,
-                        backgroundColor: 'rgba(0, 240, 255, 0.03)',
+                        backgroundColor: colors.accent + '14',
                         fill: true
                     },
                     {
-                        label: 'Welford Upper Boundary (μ_r + k·σ_r)',
+                        label: 'Upper threshold',
                         data: Array(maxPoints).fill(0),
-                        borderColor: '#ff3b30',
+                        borderColor: colors.danger,
                         borderWidth: 1,
                         borderDash: [5, 5],
                         pointRadius: 0,
@@ -310,8 +311,8 @@
                     legend: { position: 'top', align: 'end' }
                 },
                 scales: {
-                    x: { grid: { color: 'rgba(0, 162, 176, 0.08)' } },
-                    y: { grid: { color: 'rgba(0, 162, 176, 0.08)' } }
+                    x: { grid: { color: colors.grid } },
+                    y: { grid: { color: colors.grid } }
                 }
             }
         });
@@ -324,18 +325,18 @@
                 labels: timeLabels,
                 datasets: [
                     {
-                        label: 'Shannon Entropy (h)',
+                        label: 'Entropy',
                         data: Array(maxPoints).fill(0),
-                        borderColor: '#00f0ff',
+                        borderColor: colors.accent,
                         borderWidth: 1.5,
                         pointRadius: 0,
-                        backgroundColor: 'rgba(0, 240, 255, 0.03)',
+                        backgroundColor: colors.accent + '14',
                         fill: true
                     },
                     {
-                        label: 'Welford Lower Boundary (μ_h - k·σ_h)',
+                        label: 'Lower threshold',
                         data: Array(maxPoints).fill(0),
-                        borderColor: '#ff3b30',
+                        borderColor: colors.danger,
                         borderWidth: 1,
                         borderDash: [5, 5],
                         pointRadius: 0,
@@ -350,8 +351,8 @@
                     legend: { position: 'top', align: 'end' }
                 },
                 scales: {
-                    x: { grid: { color: 'rgba(0, 162, 176, 0.08)' } },
-                    y: { grid: { color: 'rgba(0, 162, 176, 0.08)' } }
+                    x: { grid: { color: colors.grid } },
+                    y: { grid: { color: colors.grid } }
                 }
             }
         });
@@ -363,8 +364,8 @@
                 labels: ['TCP', 'UDP', 'ICMP', 'SCTP', 'GRE', 'ESP', 'OTHER'],
                 datasets: [{
                     data: [1, 0, 0, 0, 0, 0, 0],
-                    backgroundColor: ['#00a2b0', '#0ea5e9', '#f59e0b', '#10b981', '#a855f7', '#ec4899', '#4b5563'],
-                    borderColor: '#0a0e14',
+                    backgroundColor: ['#2563eb', '#0ea5e9', '#d97706', '#16a34a', '#7c3aed', '#db2777', '#6b7280'],
+                    borderColor: colors.surface,
                     borderWidth: 2
                 }]
             },
@@ -377,15 +378,37 @@
             }
         });
 
+        // Recolor charts in place when the theme is toggled, without a reload
+        document.addEventListener('themechange', () => {
+            colors = chartColors();
+            Chart.defaults.color = colors.text;
+
+            rateChart.data.datasets[0].borderColor = colors.accent;
+            rateChart.data.datasets[0].backgroundColor = colors.accent + '14';
+            rateChart.data.datasets[1].borderColor = colors.danger;
+            rateChart.options.scales.x.grid.color = colors.grid;
+            rateChart.options.scales.y.grid.color = colors.grid;
+            rateChart.update();
+
+            entropyChart.data.datasets[0].borderColor = colors.accent;
+            entropyChart.data.datasets[0].backgroundColor = colors.accent + '14';
+            entropyChart.data.datasets[1].borderColor = colors.danger;
+            entropyChart.options.scales.x.grid.color = colors.grid;
+            entropyChart.options.scales.y.grid.color = colors.grid;
+            entropyChart.update();
+
+            protoChart.data.datasets[0].borderColor = colors.surface;
+            protoChart.update();
+        });
+
         function showToast(text, type='info') {
             const toast = document.createElement('div');
             toast.className = 'toast';
             if (type === 'warn') {
-                toast.style.borderColor = 'var(--accent-alert)';
-                toast.style.color = 'var(--accent-alert)';
-                toast.style.boxShadow = '0 0 8px var(--accent-alert-glow)';
+                toast.style.borderColor = 'var(--status-danger)';
+                toast.style.color = 'var(--status-danger)';
             }
-            toast.innerText = `[SYS] ${text}`;
+            toast.innerText = text;
             document.getElementById('toastContainer').appendChild(toast);
             setTimeout(() => toast.remove(), 4000);
         }
@@ -441,18 +464,18 @@
                     return;
                 }
                 const history = await res.json();
-                
+
                 // Clear chart data
                 const rateData = rateChart.data.datasets[0].data;
                 const rateBound = rateChart.data.datasets[1].data;
                 const entropyData = entropyChart.data.datasets[0].data;
                 const entropyBound = entropyChart.data.datasets[1].data;
-                
+
                 rateData.fill(0);
                 rateBound.fill(0);
                 entropyData.fill(0);
                 entropyBound.fill(0);
-                
+
                 if (history && history.length > 0) {
                     const startIdx = Math.max(0, maxPoints - history.length);
                     history.forEach((h, idx) => {
@@ -460,7 +483,7 @@
                         if (targetIdx < maxPoints) {
                             rateData[targetIdx] = h.ewma_rate;
                             rateBound[targetIdx] = h.mean_r + (h.k_multiplier * h.sigma_r);
-                            
+
                             entropyData[targetIdx] = h.entropy;
                             entropyBound[targetIdx] = h.mean_h - (h.k_multiplier * h.sigma_h);
                         }
@@ -505,9 +528,9 @@
                         }
                     }
                 }
-                
+
                 if (differs) {
-                    selectElement.innerHTML = '<option value="">-- SELECT TARGET --</option>' + 
+                    selectElement.innerHTML = '<option value="">-- Select target --</option>' +
                         allTargets.map(ip => `<option value="${ip}">${ip}</option>`).join('');
                     if (allTargets.includes(selectedVictimIp)) {
                         selectElement.value = selectedVictimIp;
@@ -518,7 +541,7 @@
                 let totalRate = 0.0;
                 let monitoredTargetsCount = 0;
                 let attackedTargetsCount = 0;
-                
+
                 activeTargets.forEach(ip => {
                     const metric = data.last_metrics_by_target[ip];
                     totalRate += metric.ewma_rate;
@@ -536,30 +559,30 @@
 
                 const attackedCard = document.getElementById('globalStatAttacked');
                 if (attackedTargetsCount > 0) {
-                    attackedCard.style.color = 'var(--accent-alert)';
+                    attackedCard.style.color = 'var(--status-danger)';
                 } else {
-                    attackedCard.style.color = 'var(--text-bright)';
+                    attackedCard.style.color = 'var(--text-primary)';
                 }
 
                 let tableHtml = '';
                 if (activeTargets.length === 0) {
-                    tableHtml = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-dim);">NO TARGET TELEMETRY CHANNELS ACTIVE</td></tr>`;
+                    tableHtml = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td></tr>`;
                 } else {
                     activeTargets.forEach(ip => {
                         const metric = data.last_metrics_by_target[ip];
                         let statusBadgeClass = 'badge badge-normal';
                         if (metric.latest_classification === 'DDoS') statusBadgeClass = 'badge badge-ddos';
                         else if (metric.latest_classification === 'Flash Crowd') statusBadgeClass = 'badge badge-flash';
-                        
+
                         tableHtml += `
                             <tr>
-                                <td style="padding: 12px 15px; color: var(--accent-cyan); font-weight: bold; cursor: pointer;" onclick="switchToTargetIp('${ip}')">${ip}</td>
+                                <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${ip}')">${ip}</td>
                                 <td style="padding: 12px 15px;">${metric.ewma_rate.toFixed(1)}</td>
                                 <td style="padding: 12px 15px;">${metric.entropy.toFixed(4)}</td>
                                 <td style="padding: 12px 15px;">${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
-                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${metric.latest_classification.toUpperCase()}</span></td>
+                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${metric.latest_classification}</span></td>
                                 <td style="padding: 12px 15px;">
-                                    <button class="btn" onclick="switchToTargetIp('${ip}')" style="background-color: var(--bg-cyan-dark); border: 1px solid var(--border-cyan); color: var(--accent-cyan); padding: 3px 8px; font-size: 0.75rem; font-family: inherit; cursor: pointer; border-radius: 2px;">INSPECT</button>
+                                    <button class="btn" onclick="switchToTargetIp('${ip}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
                                 </td>
                             </tr>
                         `;
@@ -569,36 +592,36 @@
 
                 // 3. Target View Updates
                 document.getElementById('statPps').innerText = data.ewma_rate.toFixed(1);
-                document.getElementById('statPpsBaseline').innerText = `BASELINE: ${data.mean_r.toFixed(1)}`;
+                document.getElementById('statPpsBaseline').innerText = `Baseline: ${data.mean_r.toFixed(1)}`;
                 document.getElementById('statEntropy').innerText = data.entropy.toFixed(4);
-                document.getElementById('statEntropyBaseline').innerText = `BASELINE: ${data.mean_h.toFixed(4)}`;
-                document.getElementById('statK').innerText = `k = ${data.k_multiplier.toFixed(1)}`;
+                document.getElementById('statEntropyBaseline').innerText = `Baseline: ${data.mean_h.toFixed(4)}`;
+                document.getElementById('statK').innerText = `${data.k_multiplier.toFixed(1)}×`;
                 document.getElementById('statBlocked').innerText = data.blocked_count;
                 document.getElementById('statRatelimited').innerText = data.ratelimited_count;
                 document.getElementById('targetInterfaceName').innerText = data.active_interface || '--';
-                
+
                 if (data.cooldown > 0) {
-                    document.getElementById('statSensitivity').innerText = `MODE: COOLDOWN (${data.cooldown}s)`;
-                    document.getElementById('statSensitivity').style.color = '#ff9f0a';
+                    document.getElementById('statSensitivity').innerText = `Cooldown: ${data.cooldown}s`;
+                    document.getElementById('statSensitivity').style.color = 'var(--status-warning)';
                 } else {
-                    document.getElementById('statSensitivity').innerText = `MODE: STEADY STATE`;
-                    document.getElementById('statSensitivity').style.color = 'var(--text-dim)';
+                    document.getElementById('statSensitivity').innerText = `Mode: steady state`;
+                    document.getElementById('statSensitivity').style.color = 'var(--text-tertiary)';
                 }
 
                 const threatBadge = document.getElementById('threatStatus');
                 if (data.latest_classification === 'DDoS') {
                     threatBadge.className = 'badge badge-ddos';
-                    threatBadge.innerText = 'MITIGATING DDoS FLOOD';
+                    threatBadge.innerText = 'DDoS Attack Detected';
                 } else if (data.latest_classification === 'Flash Crowd') {
                     threatBadge.className = 'badge badge-flash';
-                    threatBadge.innerText = 'FLASH CROWD TRAFFIC';
+                    threatBadge.innerText = 'Flash Crowd Detected';
                 } else {
                     threatBadge.className = 'badge badge-normal';
-                    threatBadge.innerText = 'NORMAL OPERATION';
+                    threatBadge.innerText = 'Normal';
                 }
 
                 document.getElementById('engineStatusDot').className = 'status-dot';
-                document.getElementById('engineStatusText').innerText = 'GATEWAY ONLINE';
+                document.getElementById('engineStatusText').innerText = 'Online';
 
                 // Shift Chart Data if victim is loaded
                 if (currentTab === 'target' && selectedVictimIp) {
@@ -631,27 +654,27 @@
                         let style = '';
                         let actionText = 'logged';
                         if (l.classification === 'Blocked') {
-                            style = 'color: var(--accent-alert);';
+                            style = 'color: var(--status-danger);';
                             actionText = 'blocked';
                         } else if (l.classification === 'Rate Limited') {
-                            style = 'color: var(--accent-cyan);';
+                            style = 'color: var(--accent);';
                             actionText = 'rate-limited';
                         } else if (l.classification === 'DDoS') {
-                            style = 'color: var(--accent-alert);';
+                            style = 'color: var(--status-danger);';
                             actionText = 'flagged';
                         }
                         const targetStr = l.victim_ip ? ` targeting ${l.victim_ip}` : '';
                         html += `<div style="margin-bottom: 8px; ${style}">
                             [${new Date(l.timestamp*1000).toISOString().split('T')[1].substring(0,8)}]
-                            ${l.classification.toUpperCase()} from ${l.src_ip}${targetStr} -> ${actionText}
+                            ${l.classification} from ${l.src_ip}${targetStr} &rarr; ${actionText}
                         </div>`;
                     });
                     document.getElementById('latestMitigation').innerHTML = html;
                 }
             } catch (err) {
                 document.getElementById('engineStatusDot').className = 'status-dot offline';
-                document.getElementById('engineStatusText').innerText = 'GATEWAY TIMEOUT';
-                showToast('API Telemetry link failed!', 'warn');
+                document.getElementById('engineStatusText').innerText = 'Connection Lost';
+                showToast('Connection to gateway lost.', 'warn');
             }
         }
 
@@ -665,7 +688,7 @@
 
         async function initCharts() {
             await fetchState();
-            
+
             // Auto-select first active/configured target if possible
             const selectElement = document.getElementById('victimSelect');
             if (selectElement.options.length > 1) {
@@ -673,7 +696,7 @@
                 selectElement.value = selectedVictimIp;
                 await reloadTargetHistory();
             }
-            
+
             setInterval(fetchState, 10000);
         }
 

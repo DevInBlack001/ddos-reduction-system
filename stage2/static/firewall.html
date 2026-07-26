@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHIELD GATEWAY - FIREWALL STATS</title>
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Firewall</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .firewall-grid {
@@ -18,15 +25,15 @@
         }
         .threshold-field label {
             display: block;
-            font-size: 0.7rem;
-            color: var(--text-dim);
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-secondary);
             margin-bottom: 4px;
-            letter-spacing: 0.5px;
         }
         .threshold-field .threshold-hint {
             display: block;
-            font-size: 0.65rem;
-            color: var(--text-dim);
+            font-size: 0.68rem;
+            color: var(--text-tertiary);
             margin-top: 3px;
         }
     </style>
@@ -35,7 +42,7 @@
     <div class="sidebar">
         <div class="logo-area">
             <div class="logo-icon">S</div>
-            <div class="logo-text">SHIELD</div>
+            <div class="logo-text">Shield Gateway</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -47,14 +54,17 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            GATEWAY CONSOLE v1.0.0
+            Gateway Console v1.0.0
         </div>
     </div>
 
     <div class="main-panel">
         <div class="top-bar">
             <div class="top-bar-title">
-                <h1>NETFILTER_IPS // SECURITY POLICY MANAGER</h1>
+                <h1>Firewall</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
             </div>
         </div>
 
@@ -63,24 +73,24 @@
                 <!-- Whitelisted IPs -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
-                        <div class="hud-panel-title">ADMINISTRATIVE IP WHITELIST</div>
+                        <div class="hud-panel-title">IP Whitelist</div>
                     </div>
-                    
+
                     <form id="whitelistForm" class="form-group">
-                        <input type="text" id="whitelistIp" class="form-input" placeholder="ENTER IPv4 ADDRESS" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$" required>
-                        <button type="submit" class="btn">WHITELIST</button>
+                        <input type="text" id="whitelistIp" class="form-input" placeholder="Enter IPv4 address" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$" required>
+                        <button type="submit" class="btn">Whitelist</button>
                     </form>
 
                     <table>
                         <thead>
                             <tr>
-                                <th>WHITELISTED ADDRESS</th>
-                                <th style="text-align: right;">ACTION</th>
+                                <th>Whitelisted Address</th>
+                                <th style="text-align: right;">Action</th>
                             </tr>
                         </thead>
                         <tbody id="whitelistTableBody">
                             <tr>
-                                <td colspan="2" style="text-align: center; color: var(--text-dim);">LOADING WHITELIST ENTRIES...</td>
+                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading whitelist entries...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -89,20 +99,20 @@
                 <!-- Blocked IPs -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
-                        <div class="hud-panel-title">ACTIVE KERNEL BLOCKS (IPSET: ddos_blocklist)</div>
+                        <div class="hud-panel-title">Active Blocks (ipset: ddos_blocklist)</div>
                     </div>
 
                     <table>
                         <thead>
                             <tr>
-                                <th>BLOCKED ADDRESS</th>
-                                <th>DECAY TIMEOUT</th>
-                                <th style="text-align: right;">ACTION</th>
+                                <th>Blocked Address</th>
+                                <th>Time Remaining</th>
+                                <th style="text-align: right;">Action</th>
                             </tr>
                         </thead>
                         <tbody id="blockedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-dim);">LOADING ACTIVE BLOCKS...</td>
+                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active blocks...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -111,20 +121,20 @@
                 <!-- Rate-Limited IPs -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
-                        <div class="hud-panel-title" id="ratelimitPanelTitle">ACTIVE RATE LIMITS (IPSET: ddos_ratelimit, 50PPS CAP)</div>
+                        <div class="hud-panel-title" id="ratelimitPanelTitle">Active Rate Limits (ipset: ddos_ratelimit, 50pps cap)</div>
                     </div>
 
                     <table>
                         <thead>
                             <tr>
-                                <th>RATE-LIMITED ADDRESS</th>
-                                <th>DECAY TIMEOUT</th>
-                                <th style="text-align: right;">ACTION</th>
+                                <th>Rate-Limited Address</th>
+                                <th>Time Remaining</th>
+                                <th style="text-align: right;">Action</th>
                             </tr>
                         </thead>
                         <tbody id="ratelimitedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-dim);">LOADING ACTIVE RATE LIMITS...</td>
+                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active rate limits...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -134,9 +144,9 @@
             <!-- Enforcement Thresholds -->
             <div class="hud-panel" style="margin-top: 20px;">
                 <div class="hud-panel-header">
-                    <div class="hud-panel-title">ENFORCEMENT THRESHOLDS // OPERATOR-TUNABLE</div>
+                    <div class="hud-panel-title">Enforcement Thresholds</div>
                 </div>
-                <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 16px;">
+                <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
                     These are the deterministic thresholds that decide block vs. rate-limit vs. no
                     action. Changes apply to the next window immediately -- no restart needed,
                     except the rate-limit pps cap, which rewrites the live iptables hashlimit rule.
@@ -144,58 +154,59 @@
                 <form id="thresholdForm">
                     <div class="threshold-grid">
                         <div class="threshold-field">
-                            <label for="th_dom_block">DOMINANT IP RATIO — BLOCK GATE (0–1)</label>
+                            <label for="th_dom_block">Dominant IP ratio &mdash; block gate (0&ndash;1)</label>
                             <input type="number" id="th_dom_block" class="form-input" step="0.01" min="0" max="1" required>
                             <span class="threshold-hint">Tier 1 fast path: source share of traffic needed to block it alone.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_dom_extreme">DOMINANT IP RATIO — EXTREME (0–1)</label>
+                            <label for="th_dom_extreme">Dominant IP ratio &mdash; extreme (0&ndash;1)</label>
                             <input type="number" id="th_dom_extreme" class="form-input" step="0.01" min="0" max="1" required>
                             <span class="threshold-hint">Above this, classification forces DDoS regardless of entropy.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_block_floor">BLOCK RATE FLOOR (PPS)</label>
+                            <label for="th_block_floor">Block rate floor (pps)</label>
                             <input type="number" id="th_block_floor" class="form-input" step="1" min="0" required>
                             <span class="threshold-hint">Minimum bar for a per-source block, even on a near-idle victim.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_rl_floor">RATE-LIMIT FLOOR (PPS)</label>
+                            <label for="th_rl_floor">Rate-limit floor (pps)</label>
                             <input type="number" id="th_rl_floor" class="form-input" step="1" min="0" required>
                             <span class="threshold-hint">Minimum bar for the softer per-source rate-limit tier.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_sigma">BLOCK SIGMA MULTIPLIER</label>
+                            <label for="th_sigma">Block sigma multiplier</label>
                             <input type="number" id="th_sigma" class="form-input" step="0.5" min="0" required>
                             <span class="threshold-hint">Shared by the block gate and the classification override.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_hysteresis">BLOCK HYSTERESIS (WINDOWS)</label>
+                            <label for="th_hysteresis">Block hysteresis (windows)</label>
                             <input type="number" id="th_hysteresis" class="form-input" step="1" min="0" required>
                             <span class="threshold-hint">Consecutive DDoS-classified windows before a block fires.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_block_dur">BLOCK DURATION (SECONDS)</label>
+                            <label for="th_block_dur">Block duration (seconds)</label>
                             <input type="number" id="th_block_dur" class="form-input" step="60" min="1" required>
                             <span class="threshold-hint">ipset entry lifetime before an auto-block self-heals.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_rl_dur">RATE-LIMIT DURATION (SECONDS)</label>
+                            <label for="th_rl_dur">Rate-limit duration (seconds)</label>
                             <input type="number" id="th_rl_dur" class="form-input" step="60" min="1" required>
                             <span class="threshold-hint">ipset entry lifetime before an auto-rate-limit self-heals.</span>
                         </div>
                         <div class="threshold-field">
-                            <label for="th_hashlimit">RATE-LIMIT CAP (PPS)</label>
+                            <label for="th_hashlimit">Rate-limit cap (pps)</label>
                             <input type="number" id="th_hashlimit" class="form-input" step="1" min="1" required>
                             <span class="threshold-hint">Kernel hashlimit cap -- changing this rewrites the live iptables rule.</span>
                         </div>
                     </div>
-                    <button type="submit" class="btn">SAVE THRESHOLDS</button>
-                    <button type="button" class="btn" style="background: transparent;" onclick="loadThresholds()">DISCARD CHANGES</button>
+                    <button type="submit" class="btn">Save Thresholds</button>
+                    <button type="button" class="btn" style="background: transparent;" onclick="loadThresholds()">Discard Changes</button>
                 </form>
             </div>
         </div>
     </div>
 
+    <script src="/static/theme.js"></script>
     <script>
         async function fetchFirewall() {
             try {
@@ -205,18 +216,18 @@
                     return;
                 }
                 const data = await res.json();
-                
+
                 // Render whitelist
                 const wlBody = document.getElementById('whitelistTableBody');
                 const whitelisted = data.whitelisted_ips || [];
                 if (whitelisted.length === 0) {
-                    wlBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-dim);">NO IP ADDRESSES WHITELISTED.</td></tr>`;
+                    wlBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No IP addresses whitelisted.</td></tr>`;
                 } else {
                     let wlHtml = '';
                     whitelisted.forEach(ip => {
                         wlHtml += `<tr>
-                            <td style="font-weight: bold; color: var(--text-bright);">${ip}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 2px 8px; font-size: 0.75rem;" onclick="removeWhitelist('${ip}')">REMOVE</button></td>
+                            <td style="font-weight: 600; font-family: var(--font-mono);">${ip}</td>
+                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${ip}')">Remove</button></td>
                         </tr>`;
                     });
                     wlBody.innerHTML = wlHtml;
@@ -226,33 +237,33 @@
                 const blBody = document.getElementById('blockedTableBody');
                 const blocked = data.blocked_ips_detail || []; // Should contain {ip, remaining_seconds}
                 if (blocked.length === 0) {
-                    blBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-dim);">PEACETIME: NO ACTIVE IPSET BLOCK RULES.</td></tr>`;
+                    blBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active blocks.</td></tr>`;
                 } else {
                     let blHtml = '';
                     blocked.forEach(b => {
                         blHtml += `<tr>
-                            <td style="font-weight: bold; color: var(--accent-alert);">${b.ip}</td>
-                            <td style="color: #ff9f0a; font-weight: bold;">${b.remaining_seconds}s REMAINING</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 2px 8px; font-size: 0.75rem;" onclick="releaseBlock('${b.ip}')">RELEASE</button></td>
+                            <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${b.ip}</td>
+                            <td style="color: var(--status-warning); font-weight: 600;">${b.remaining_seconds}s remaining</td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${b.ip}')">Release</button></td>
                         </tr>`;
                     });
                     blBody.innerHTML = blHtml;
                 }
 
                 // Render rate limits -- distinct state from a hard block: same
-                // ipset-backed mechanism, cyan instead of red so it's visually
-                // clear these IPs are throttled (50pps cap), not dropped outright.
+                // ipset-backed mechanism, accent color instead of danger so it's
+                // visually clear these IPs are throttled (50pps cap), not dropped.
                 const rlBody = document.getElementById('ratelimitedTableBody');
                 const ratelimited = data.ratelimited_ips_detail || []; // {ip, remaining_seconds}
                 if (ratelimited.length === 0) {
-                    rlBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-dim);">PEACETIME: NO ACTIVE RATE LIMIT RULES.</td></tr>`;
+                    rlBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active rate limits.</td></tr>`;
                 } else {
                     let rlHtml = '';
                     ratelimited.forEach(r => {
                         rlHtml += `<tr>
-                            <td style="font-weight: bold; color: var(--accent-cyan);">${r.ip}</td>
-                            <td style="color: #ff9f0a; font-weight: bold;">${r.remaining_seconds}s REMAINING</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 2px 8px; font-size: 0.75rem;" onclick="releaseBlock('${r.ip}')">RELEASE</button></td>
+                            <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${r.ip}</td>
+                            <td style="color: var(--status-warning); font-weight: 600;">${r.remaining_seconds}s remaining</td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${r.ip}')">Release</button></td>
                         </tr>`;
                     });
                     rlBody.innerHTML = rlHtml;
@@ -322,7 +333,7 @@
                     document.getElementById(fieldId).value = cfg[key];
                 }
                 document.getElementById('ratelimitPanelTitle').innerText =
-                    `ACTIVE RATE LIMITS (IPSET: ddos_ratelimit, ${cfg.ratelimit_hashlimit_pps}PPS CAP)`;
+                    `Active Rate Limits (ipset: ddos_ratelimit, ${cfg.ratelimit_hashlimit_pps}pps cap)`;
             } catch (err) {
                 console.error("Failed to load enforcement config:", err);
             }
@@ -351,7 +362,7 @@
         function showSaveConfirmation() {
             const btn = document.querySelector('#thresholdForm button[type="submit"]');
             const original = btn.innerText;
-            btn.innerText = 'SAVED';
+            btn.innerText = 'Saved';
             setTimeout(() => { btn.innerText = original; }, 1500);
         }
 

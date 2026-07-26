@@ -2,28 +2,40 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SHIELD GATEWAY - SYSTEM EVENT LOGS</title>
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Event Log</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .filter-controls {
             display: flex;
-            gap: 16px;
+            gap: 10px;
             margin-bottom: 20px;
             align-items: center;
+            flex-wrap: wrap;
         }
         .log-table td {
-            font-family: 'JetBrains Mono', monospace;
+            font-family: var(--font-mono);
         }
         .text-ddos {
-            color: var(--accent-alert) !important;
-            font-weight: bold;
+            color: var(--status-danger) !important;
+            font-weight: 600;
         }
         .text-flash {
-            color: #f59e0b !important;
-            font-weight: bold;
+            color: var(--status-warning) !important;
+            font-weight: 600;
         }
         .text-normal {
-            color: var(--text-dim) !important;
+            color: var(--text-secondary) !important;
+        }
+        .btn-filter {
+            padding: 6px 14px;
+            font-size: 0.78rem;
         }
     </style>
 </head>
@@ -31,7 +43,7 @@
     <div class="sidebar">
         <div class="logo-area">
             <div class="logo-icon">S</div>
-            <div class="logo-text">SHIELD</div>
+            <div class="logo-text">Shield Gateway</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -43,46 +55,49 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            GATEWAY CONSOLE v1.0.0
+            Gateway Console v1.0.0
         </div>
     </div>
 
     <div class="main-panel">
         <div class="top-bar">
             <div class="top-bar-title">
-                <h1>SYS_AUDIT_LOG // EVENT CLASSIFIER LEDGER</h1>
+                <h1>Event Log</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
             </div>
         </div>
 
         <div class="content-area">
             <div class="hud-panel">
                 <div class="hud-panel-header">
-                    <div class="hud-panel-title">SYSTEM EVENT LOG RETRIEVAL</div>
+                    <div class="hud-panel-title">System Event Log</div>
                 </div>
 
                 <div class="filter-controls">
-                    <span style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;">CLASSIFICATION FILTER:</span>
-                    <button class="btn btn-filter" onclick="filterLogs('ALL')" id="btn-ALL">ALL EVENTS</button>
-                    <button class="btn btn-filter" onclick="filterLogs('Normal')" id="btn-Normal">NORMAL</button>
-                    <button class="btn btn-filter" onclick="filterLogs('Flash Crowd')" id="btn-Flash">FLASH CROWD</button>
-                    <button class="btn btn-filter" onclick="filterLogs('DDoS')" id="btn-DDoS">DDoS ATTACKS</button>
+                    <span style="font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);">Filter:</span>
+                    <button class="btn btn-filter" onclick="filterLogs('ALL')" id="btn-ALL">All Events</button>
+                    <button class="btn btn-filter" onclick="filterLogs('Normal')" id="btn-Normal">Normal</button>
+                    <button class="btn btn-filter" onclick="filterLogs('Flash Crowd')" id="btn-Flash">Flash Crowd</button>
+                    <button class="btn btn-filter" onclick="filterLogs('DDoS')" id="btn-DDoS">DDoS Attacks</button>
                 </div>
-                
+
                 <table class="log-table">
                     <thead>
                         <tr>
-                            <th>TIMESTAMP</th>
-                            <th>SOURCE IP</th>
-                            <th>DESTINATION IP</th>
-                            <th>PROTOCOL</th>
-                            <th>PACKET RATE</th>
-                            <th>SHANNON ENTROPY</th>
-                            <th>CLASSIFICATION</th>
+                            <th>Timestamp</th>
+                            <th>Source IP</th>
+                            <th>Destination IP</th>
+                            <th>Protocol</th>
+                            <th>Packet Rate</th>
+                            <th>Entropy</th>
+                            <th>Classification</th>
                         </tr>
                     </thead>
                     <tbody id="logTableBody">
                         <tr>
-                            <td colspan="7" style="text-align: center; color: var(--text-dim);">RETRIEVING AUDIT HISTORY...</td>
+                            <td colspan="7" style="text-align: center; color: var(--text-tertiary);">Loading event history...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -90,6 +105,7 @@
         </div>
     </div>
 
+    <script src="/static/theme.js"></script>
     <script>
         let currentFilter = 'ALL';
 
@@ -101,24 +117,24 @@
                     return;
                 }
                 const logs = await res.json();
-                
+
                 // Update filter button highlighting
                 document.querySelectorAll('.btn-filter').forEach(b => {
-                    b.style.borderColor = 'var(--accent-cyan-dim)';
-                    b.style.backgroundColor = 'var(--bg-cyan-dark)';
-                    b.style.color = 'var(--accent-cyan-dim)';
+                    b.style.borderColor = 'var(--border-strong)';
+                    b.style.backgroundColor = 'var(--bg-surface)';
+                    b.style.color = 'var(--text-primary)';
                 });
                 const activeBtnId = currentFilter === 'ALL' ? 'btn-ALL' : (currentFilter === 'Flash Crowd' ? 'btn-Flash' : `btn-${currentFilter}`);
                 const activeBtn = document.getElementById(activeBtnId);
                 if (activeBtn) {
-                    activeBtn.style.borderColor = 'var(--accent-cyan)';
-                    activeBtn.style.backgroundColor = 'var(--bg-cyan-dark)';
-                    activeBtn.style.color = 'var(--accent-cyan)';
+                    activeBtn.style.borderColor = 'var(--accent)';
+                    activeBtn.style.backgroundColor = 'var(--accent)';
+                    activeBtn.style.color = 'var(--text-on-accent)';
                 }
 
                 const tableBody = document.getElementById('logTableBody');
                 if (logs.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">NO EVENT RECORDS FOUND FOR SELECTION.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-tertiary);">No event records found for this selection.</td></tr>`;
                     return;
                 }
 
@@ -126,7 +142,7 @@
                 logs.forEach(l => {
                     let classStyle = 'text-normal';
                     let badgeClass = 'badge badge-normal';
-                    
+
                     if (['DDoS', 'Blocked', 'Rate Limited'].includes(l.classification)) {
                         classStyle = 'text-ddos';
                         badgeClass = 'badge badge-ddos';
@@ -142,15 +158,15 @@
 
                     html += `<tr class="${classStyle}">
                         <td>${dateStr}</td>
-                        <td style="color: var(--text-bright); font-weight: bold;">${l.src_ip}</td>
-                        <td>${l.dst_ip || 'MULTIPLE'}</td>
-                        <td>${l.proto || 'MIXED'}</td>
+                        <td style="font-weight: 600;">${l.src_ip}</td>
+                        <td>${l.dst_ip || 'Multiple'}</td>
+                        <td>${l.proto || 'Mixed'}</td>
                         <td>${l.rate.toFixed(1)} pps</td>
                         <td>${l.entropy.toFixed(4)} bits</td>
-                        <td><span class="${badgeClass}">${l.classification.toUpperCase()}</span></td>
+                        <td><span class="${badgeClass}">${l.classification}</span></td>
                     </tr>`;
                 });
-                
+
                 tableBody.innerHTML = html;
             } catch (err) {
                 console.error("Failed to load logs:", err);
