@@ -267,6 +267,13 @@ else
     warn "setcap not found. You will need to run $BINARY_NAME as root."
 fi
 
+# V4: create the baseline-persistence directory. Deliberately NOT /tmp -- the
+# entire point of this file is surviving a reboot. Stage 1 degrades
+# gracefully (logs a warning, skips persistence) if this is missing, but the
+# feature does nothing useful without it existing up front.
+install -d -m 755 /var/lib/ddos_stage1
+success "Baseline persistence directory ready: /var/lib/ddos_stage1"
+
 # =============================================================================
 # STEP 5.5 — Setup Stage 2 Python Virtual Environment
 # =============================================================================

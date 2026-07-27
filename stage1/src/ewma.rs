@@ -130,6 +130,13 @@ impl EwmaState {
         self.value = alpha * rate + (1.0 - alpha) * self.value;
     }
 
+    /// Directly set the smoothed value -- used only to restore a persisted
+    /// baseline (V4) on startup. Not part of the normal per-window update
+    /// path, which always goes through `update_rate_with_alpha()`.
+    pub fn set_value(&mut self, value: f64) {
+        self.value = value;
+    }
+
     /// Expose the current alpha for logging / debugging.
     #[allow(dead_code)]
     pub fn alpha(&self) -> f64 {

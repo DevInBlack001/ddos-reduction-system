@@ -58,6 +58,7 @@ use crate::{
     entropy::{EntropyAccumulator, MIN_PACKETS_FOR_ENTROPY},
     ewma::EwmaState,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
+    persistence::{self, PersistedBaseline, PersistedState},
     welford::WelfordAccumulator,
 };
 use crossbeam_channel::Receiver;
@@ -89,6 +90,13 @@ pub struct AnalysisConfig {
     /// Integer class label written into every CSV row.
     /// 0 = normal, 1 = flash_crowd, 2 = ddos
     pub train_label: u8,
+    /// V4: where to persist/reload per-victim Welford/EWMA baselines across
+    /// restarts. Default: `persistence::DEFAULT_BASELINE_PATH`
+    /// (`/var/lib/ddos_stage1/baselines.json` -- deliberately not /tmp).
+    pub baseline_path: String,
+    /// V4: reject a persisted baseline older than this many seconds rather
+    /// than trusting it. Default: `persistence::DEFAULT_TTL_SECS` (1 hour).
+    pub baseline_ttl_secs: f64,
 }
 
 impl Default for AnalysisConfig {
@@ -100,6 +108,8 @@ impl Default for AnalysisConfig {
             victim_targets: None,
             train_csv:   None,
             train_label: 0,
+            baseline_path: persistence::DEFAULT_BASELINE_PATH.to_string(),
+            baseline_ttl_secs: persistence::DEFAULT_TTL_SECS,
         }
     }
 }
@@ -141,9 +151,38 @@ pub struct TargetState {
 }
 
 impl TargetState {
-    pub fn new(ewma_alpha: f64) -> Self {
+    /// Create a fresh target state, or -- if `persisted` is `Some` (a
+    /// baseline was found for this victim's IP in the loaded persistence
+    /// file, still within its TTL) -- restore the Welford/EWMA/cooldown/
+    /// peacetime-reference state from it instead of starting at zero.
+    ///
+    /// Everything NOT restored here (window_id, ip_counts, timing fields)
+    /// is intentionally transient and correctly starts fresh regardless --
+    /// see persistence.rs's module docs for why only the statistical
+    /// baseline itself is worth carrying across a restart.
+    pub fn new(ewma_alpha: f64, persisted: Option<&PersistedBaseline>) -> Self {
+        let mut welford_rate = WelfordAccumulator::default();
+        let mut welford_entropy = WelfordAccumulator::default();
+        let mut ewma = EwmaState::with_alpha(ewma_alpha);
+        let mut cooldown_counter = 0;
+        let mut peacetime_rate_ref = None;
+        let mut peacetime_entropy_ref = None;
+
+        if let Some(p) = persisted {
+            welford_rate.n = p.rate_n;
+            welford_rate.mean = p.rate_mean;
+            welford_rate.m2 = p.rate_m2;
+            welford_entropy.n = p.entropy_n;
+            welford_entropy.mean = p.entropy_mean;
+            welford_entropy.m2 = p.entropy_m2;
+            ewma.set_value(p.ewma_rate);
+            cooldown_counter = p.cooldown_counter;
+            peacetime_rate_ref = p.peacetime_rate_ref;
+            peacetime_entropy_ref = p.peacetime_entropy_ref;
+        }
+
         Self {
-            ewma: EwmaState::with_alpha(ewma_alpha),
+            ewma,
             entropy: EntropyAccumulator::new(),
             tcp_count: 0,
             udp_count: 0,
@@ -151,17 +190,36 @@ impl TargetState {
             sctp_count: 0,
             gre_count: 0,
             esp_count: 0,
-            welford_rate: WelfordAccumulator::default(),
-            welford_entropy: WelfordAccumulator::default(),
-            peacetime_rate_ref: None,
-            peacetime_entropy_ref: None,
+            welford_rate,
+            welford_entropy,
+            peacetime_rate_ref,
+            peacetime_entropy_ref,
             window_id: 0,
             ip_counts: HashMap::new(),
             window_packet_count: 0,
             last_window_close: Instant::now(),
-            cooldown_counter: 0,
+            cooldown_counter,
             last_sent_time: 0.0,
             warmup_completed_logged: false,
+        }
+    }
+
+    /// Snapshot this target's current baseline for persistence (V4). Called
+    /// only from a clean window (see the save-trigger site in
+    /// `run_analysis_thread`) so a snapshot can never capture mid-attack
+    /// state.
+    pub fn to_persisted(&self) -> PersistedBaseline {
+        PersistedBaseline {
+            rate_n: self.welford_rate.n,
+            rate_mean: self.welford_rate.mean,
+            rate_m2: self.welford_rate.m2,
+            entropy_n: self.welford_entropy.n,
+            entropy_mean: self.welford_entropy.mean,
+            entropy_m2: self.welford_entropy.m2,
+            ewma_rate: self.ewma.snapshot(),
+            cooldown_counter: self.cooldown_counter,
+            peacetime_rate_ref: self.peacetime_rate_ref,
+            peacetime_entropy_ref: self.peacetime_entropy_ref,
         }
     }
 }
@@ -211,6 +269,15 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     // Keep track of target states per destination IP
     let mut targets_map: HashMap<IpAddr, TargetState> = HashMap::new();
 
+    // -------------------------------------------------------------------------
+    // V4: load any persisted baseline once at thread start. `None` (missing,
+    // corrupt, or past its TTL -- see persistence.rs) is treated identically
+    // to "no prior state": every target simply gets a fresh warm-up, same as
+    // before V4 existed.
+    // -------------------------------------------------------------------------
+    let persisted_state = persistence::load(&cfg.baseline_path, cfg.baseline_ttl_secs);
+    let mut last_baseline_save = Instant::now();
+
     // IPC socket to Stage 2 (Python). Connected lazily on first anomaly.
     let mut ipc = IpcSocket::with_path(&cfg.socket_path);
 
@@ -254,7 +321,14 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 // Prevent memory leak by capping dynamic tracking list size
                 continue;
             }
-            targets_map.insert(meta.dst_ip, TargetState::new(cfg.ewma_alpha));
+            let restored = persistence::lookup(&persisted_state, &meta.dst_ip);
+            if let Some(ref r) = restored {
+                info!(
+                    "Analysis [victim={}]: restored baseline from persisted state (rate n={}, entropy n={}/{}).",
+                    meta.dst_ip, r.rate_n, r.entropy_n, crate::welford::WARMUP_WINDOWS
+                );
+            }
+            targets_map.insert(meta.dst_ip, TargetState::new(cfg.ewma_alpha, restored.as_ref()));
         }
 
         let target_state = targets_map.get_mut(&meta.dst_ip).unwrap();
@@ -517,7 +591,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 
         // 3. Conditional Updates: Feed scalars into Welford accumulators ONLY if the window is clean
         // and we are not in cooldown. This keeps the baseline stable and prevents statistical explosion.
-        if anomaly_flags == 0 && target_state.cooldown_counter == 0 {
+        // Captured as a named flag (not just inlined) because V4's baseline
+        // persistence reuses this EXACT condition below to decide whether
+        // this window is eligible to be snapshotted to disk -- a save must
+        // never capture mid-attack state, see persistence.rs's module docs.
+        let is_clean_window = anomaly_flags == 0 && target_state.cooldown_counter == 0;
+        if is_clean_window {
             // Outlier Rejection: Reject updates if the sample is > 5 standard deviations away.
             // Baseline Capping: Impose a hard ceiling of 10000.0 pps on the Welford mean rate.
             let is_rate_outlier = sigma_r > 0.0 && (r - target_state.welford_rate.mean).abs() > 5.0 * sigma_r;
@@ -626,6 +705,31 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 timestamp,
                 current_train_label
             );
+        }
+
+        // -------------------------------------------------------------------
+        // V4: periodically persist ALL targets' baselines, but only when
+        // triggered from a clean window (is_clean_window, captured above --
+        // the same gate that decides whether to feed Welford live). That
+        // guarantees the file on disk can never be a mid-attack snapshot.
+        // Rate-limited to SAVE_INTERVAL_SECS regardless of how many clean
+        // windows close in between, to bound both disk I/O and how much
+        // state an unannounced power loss could ever cost (worst case: the
+        // last SAVE_INTERVAL_SECS of drift, never the baseline itself).
+        // Placed at the very end of the loop body (not next to the
+        // cooldown-counter update above, where it conceptually belongs)
+        // because `target_state` -- a mutable borrow into `targets_map` --
+        // is still in use up through the CSV write just above; borrowing
+        // `targets_map` immutably here to snapshot every victim has to wait
+        // until after target_state's last use in this iteration.
+        // -------------------------------------------------------------------
+        if is_clean_window && last_baseline_save.elapsed().as_secs_f64() >= persistence::SAVE_INTERVAL_SECS {
+            let mut snapshot = PersistedState::new();
+            for (ip, state) in targets_map.iter() {
+                snapshot.victims.insert(ip.to_string(), state.to_persisted());
+            }
+            persistence::save(&cfg.baseline_path, &snapshot);
+            last_baseline_save = Instant::now();
         }
     }
 

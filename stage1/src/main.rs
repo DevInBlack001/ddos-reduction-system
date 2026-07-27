@@ -62,6 +62,7 @@ mod capture;
 mod entropy;
 mod ewma;
 mod ipc;
+mod persistence;
 mod welford;
 
 use analysis::AnalysisConfig;
@@ -150,6 +151,10 @@ struct CliArgs {
     train_csv:      Option<String>,
     /// Integer class label written into the CSV (0=normal, 1=flash_crowd, 2=ddos).
     train_label:    u8,
+    /// V4: where to persist/reload per-victim baselines across restarts.
+    baseline_path:      String,
+    /// V4: reject a persisted baseline older than this many seconds.
+    baseline_ttl_secs:  f64,
 }
 
 impl CliArgs {
@@ -166,6 +171,8 @@ impl CliArgs {
         let mut log_file:   Option<String> = None;
         let mut train_csv:  Option<String> = None;
         let mut train_label: u8 = 0;
+        let mut baseline_path = persistence::DEFAULT_BASELINE_PATH.to_string();
+        let mut baseline_ttl_secs = persistence::DEFAULT_TTL_SECS;
 
         let mut i = 1;
         while i < args.len() {
@@ -214,6 +221,16 @@ impl CliArgs {
                     train_label = args.get(i)
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0);
+                }
+                "--baseline-path" => {
+                    i += 1;
+                    baseline_path = args.get(i).cloned().unwrap_or(persistence::DEFAULT_BASELINE_PATH.to_string());
+                }
+                "--baseline-ttl-secs" => {
+                    i += 1;
+                    baseline_ttl_secs = args.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(persistence::DEFAULT_TTL_SECS);
                 }
                 "--help" | "-h" => {
                     print_usage(&args[0]);
@@ -272,7 +289,7 @@ impl CliArgs {
             None
         };
 
-        Self { interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label }
+        Self { interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs }
     }
 }
 
@@ -291,6 +308,8 @@ fn print_usage(bin: &str) {
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
     eprintln!("  --train-csv  <PATH>    Write ALL post-warmup feature vectors to CSV (training mode)");
     eprintln!("  --label      <INT>     Class label for training CSV rows (0=normal, 1=flash_crowd, 2=ddos)");
+    eprintln!("  --baseline-path <PATH> V4: persisted baseline file [default: /var/lib/ddos_stage1/baselines.json]");
+    eprintln!("  --baseline-ttl-secs <N> V4: reject a persisted baseline older than N seconds [default: 3600]");
     eprintln!("  --help, -h             Show this message");
     eprintln!();
     eprintln!("Environment:");
@@ -421,6 +440,8 @@ fn main() {
         victim_targets: args.victim_targets.clone(),
         train_csv:      args.train_csv.clone(),
         train_label:    args.train_label,
+        baseline_path:      args.baseline_path.clone(),
+        baseline_ttl_secs:  args.baseline_ttl_secs,
     };
 
     // -------------------------------------------------------------------------

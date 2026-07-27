@@ -29,6 +29,10 @@ debug     = true
 #   crossbeam-channel — bounded, lock-minimised MPSC channel between threads
 #   byteorder       — explicit endian-aware byte serialisation for the IPC struct
 #   log + env_logger — levelled logging without pulling in a heavy async runtime
+#   serde + serde_json — (de)serialise the V4 baseline-persistence file
+#                     (nested per-victim map, variable victim count -- a
+#                     better fit for JSON's flexibility than the IPC
+#                     struct's fixed layout, which stays hand-rolled).
 # ==============================================================================
 [dependencies]
 pcap              = "2"
@@ -37,3 +41,5 @@ crossbeam-channel = "0.5"
 byteorder         = "1"
 log               = "0.4"
 env_logger        = "0.11"
+serde             = { version = "1", features = ["derive"] }
+serde_json        = "1"

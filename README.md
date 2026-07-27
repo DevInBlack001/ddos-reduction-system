@@ -270,6 +270,22 @@ The answer lies in the **Global Interpreter Lock (GIL)** and **runtime overhead*
 
 ---
 
+### 8. Baseline Persistence Across Restarts (V4)
+
+**File:** `stage1/src/persistence.rs`
+
+**The problem it solves:** every victim's Welford/EWMA baseline lives only in memory. Any restart — a crash, a redeploy, a reboot — wipes it, forcing a fresh ~200-window warm-up. The real risk isn't just the downtime: if the restart happens *while an attack is already running*, the new warm-up period starts building "normal" directly out of attack traffic, since there's no prior peacetime reference to anchor it — poisoning the baseline from the first sample.
+
+**Why only clean windows get persisted:** the periodic save is triggered from the exact same gate that already decides whether to feed a sample into Welford live (`anomaly_flags == 0 && cooldown_counter == 0`). That guarantees the file on disk can never be a mid-attack snapshot — worst case, a crash mid-flood just reloads whatever the last known-good baseline was *before* the flood started.
+
+**Why it doesn't wait for a clean shutdown:** a SIGTERM-only save does nothing if power is simply lost with no warning. The real durability mechanism is a periodic snapshot (every 45s, only on clean windows) — worst case you lose the last ~45s of drift, never the whole baseline. Every write is atomic (temp file + rename, the same pattern already used for `/tmp/ddos_active_flows.json`), so a power loss mid-write can only ever leave the previous complete file in place, never a corrupted one. If the file is ever missing or fails to parse on load, that's treated identically to "no prior baseline" — a fresh warm-up, not a crash.
+
+**Why a 1-hour TTL, not indefinite:** the live recency cap (`MAX_N` = 500 windows, roughly 4–8 minutes of continuous traffic) already treats anything older as not fully trustworthy. Reloading a multi-hour-old baseline would both contradict that recency philosophy and risk resurrecting a baseline from a different point in the daily traffic cycle (an overnight-quiet baseline reloaded into a busy afternoon) — a distinct failure mode from the one V4 exists to fix. The default (`--baseline-ttl-secs`, 3600) is sized for "the process just restarted," not "resume from last week."
+
+**What's persisted, and where:** per victim — both Welford accumulators (rate + entropy: `n`, `mean`, `m2`), the EWMA smoothed rate, the cooldown counter, and both peacetime drift references. Stored as one JSON file (`--baseline-path`, default `/var/lib/ddos_stage1/baselines.json` — deliberately **not** `/tmp`, since the entire point is surviving a reboot).
+
+---
+
 ## Project File Structure
 
 ```
@@ -284,7 +300,8 @@ DDoS Reduction Project/
 │       ├── welford.rs              ← Welford online variance accumulator
 │       ├── ewma.rs                 ← EWMA rate estimator
 │       ├── entropy.rs              ← Shannon entropy calculator
-│       └── ipc.rs                  ← Binary IPC serialisation → Python
+│       ├── ipc.rs                  ← Binary IPC serialisation → Python
+│       └── persistence.rs          ← V4: baseline persistence across restarts
 └── scripts/
     ├── install.sh                  ← Linux installer (Debian/Ubuntu, RHEL, Alpine)
     ├── install.bat                 ← Windows installer (dev/test only)
@@ -358,6 +375,8 @@ ddos_stage1 --interface <IFACE>       # required
             --alpha <FLOAT>           # EWMA smoothing (default: 0.125)
             --socket <PATH>           # IPC socket path (default: /tmp/ddos_stage1.sock)
             --no-filter               # disable BPF (dev only)
+            --baseline-path <PATH>    # V4: persisted baseline file (default: /var/lib/ddos_stage1/baselines.json)
+            --baseline-ttl-secs <N>   # V4: reject a persisted baseline older than N seconds (default: 3600)
 ```
 
 ### Log Levels
@@ -558,7 +577,7 @@ The planned evolutionary milestones for future gateway iterations are structured
 | **V1 (Completed)** | **Initial ML Pipeline** | Proof of concept | Basic feature extraction and initial Web UI dashboard setup. |
 | **V2 (Completed)** | **Adaptive Baselines** | Dynamic defenses | Implemented entropy-guided thresholds, cluster rate-limiting, and Welford poisoning defenses. |
 | **V3 (Completed)** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
-| **V4** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. |
+| **V4 (Implemented)** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. See `stage1/src/persistence.rs`. |
 | **V5** | **Multi-Interface Scaling** | Perimeter-wide visibility | Aggregate traffic statistics from multiple interface ports. Spawns egress sniffers to enable ingress vs. egress rate telemetry auditing. |
 | **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port packet sniffer and early drop logic to eBPF/XDP driver path using Aya in Rust, scaling handling capacity to 10M+ pps. |
 | **V7** | **Ensemble Intelligence** | Complex classifier models | Deploy a multi-model voting ensemble layer to resolve advanced evasion/stealth attacks while maintaining low false positives. |
