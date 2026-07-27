@@ -261,6 +261,7 @@
                 font: ShieldTheme.cssVar('--font-sans'),
                 accent: ShieldTheme.cssVar('--accent'),
                 danger: ShieldTheme.cssVar('--status-danger'),
+                warning: ShieldTheme.cssVar('--status-warning'),
                 grid: 'rgba(128, 140, 160, 0.15)',
                 surface: ShieldTheme.cssVar('--bg-surface')
             };
@@ -301,6 +302,15 @@
                         borderDash: [5, 5],
                         pointRadius: 0,
                         fill: false
+                    },
+                    {
+                        label: 'Baseline (mean)',
+                        data: Array(maxPoints).fill(0),
+                        borderColor: colors.warning,
+                        borderWidth: 1,
+                        borderDash: [2, 2],
+                        pointRadius: 0,
+                        fill: false
                     }
                 ]
             },
@@ -339,6 +349,15 @@
                         borderColor: colors.danger,
                         borderWidth: 1,
                         borderDash: [5, 5],
+                        pointRadius: 0,
+                        fill: false
+                    },
+                    {
+                        label: 'Baseline (mean)',
+                        data: Array(maxPoints).fill(0),
+                        borderColor: colors.warning,
+                        borderWidth: 1,
+                        borderDash: [2, 2],
                         pointRadius: 0,
                         fill: false
                     }
@@ -386,6 +405,7 @@
             rateChart.data.datasets[0].borderColor = colors.accent;
             rateChart.data.datasets[0].backgroundColor = colors.accent + '14';
             rateChart.data.datasets[1].borderColor = colors.danger;
+            rateChart.data.datasets[2].borderColor = colors.warning;
             rateChart.options.scales.x.grid.color = colors.grid;
             rateChart.options.scales.y.grid.color = colors.grid;
             rateChart.update();
@@ -393,6 +413,7 @@
             entropyChart.data.datasets[0].borderColor = colors.accent;
             entropyChart.data.datasets[0].backgroundColor = colors.accent + '14';
             entropyChart.data.datasets[1].borderColor = colors.danger;
+            entropyChart.data.datasets[2].borderColor = colors.warning;
             entropyChart.options.scales.x.grid.color = colors.grid;
             entropyChart.options.scales.y.grid.color = colors.grid;
             entropyChart.update();
@@ -468,13 +489,17 @@
                 // Clear chart data
                 const rateData = rateChart.data.datasets[0].data;
                 const rateBound = rateChart.data.datasets[1].data;
+                const rateMean = rateChart.data.datasets[2].data;
                 const entropyData = entropyChart.data.datasets[0].data;
                 const entropyBound = entropyChart.data.datasets[1].data;
+                const entropyMean = entropyChart.data.datasets[2].data;
 
                 rateData.fill(0);
                 rateBound.fill(0);
+                rateMean.fill(0);
                 entropyData.fill(0);
                 entropyBound.fill(0);
+                entropyMean.fill(0);
 
                 if (history && history.length > 0) {
                     const startIdx = Math.max(0, maxPoints - history.length);
@@ -483,9 +508,11 @@
                         if (targetIdx < maxPoints) {
                             rateData[targetIdx] = h.ewma_rate;
                             rateBound[targetIdx] = h.mean_r + (h.k_multiplier * h.sigma_r);
+                            rateMean[targetIdx] = h.mean_r;
 
                             entropyData[targetIdx] = h.entropy;
                             entropyBound[targetIdx] = h.mean_h - (h.k_multiplier * h.sigma_h);
+                            entropyMean[targetIdx] = h.mean_h;
                         }
                     });
                 }
@@ -625,8 +652,8 @@
 
                 // Shift Chart Data if victim is loaded
                 if (currentTab === 'target' && selectedVictimIp) {
-                    updateChart(rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r));
-                    updateChart(entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h));
+                    updateChart(rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r), data.mean_r);
+                    updateChart(entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h), data.mean_h);
                 }
 
                 // Protocol doughnut
@@ -678,11 +705,13 @@
             }
         }
 
-        function updateChart(chart, val, boundary) {
+        function updateChart(chart, val, boundary, baseline) {
             chart.data.datasets[0].data.shift();
             chart.data.datasets[0].data.push(val);
             chart.data.datasets[1].data.shift();
             chart.data.datasets[1].data.push(boundary);
+            chart.data.datasets[2].data.shift();
+            chart.data.datasets[2].data.push(baseline);
             chart.update('none');
         }
 
