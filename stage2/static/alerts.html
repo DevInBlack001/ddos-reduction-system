@@ -12,9 +12,24 @@
     <title>Shield Gateway - Alerts</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
-        .toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-        .toggle-row input[type="checkbox"] { width: 18px; height: 18px; }
-        .channel-status { font-size: 0.78rem; margin-left: 8px; }
+        .info-note {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            background: var(--bg-surface-alt);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            margin-bottom: 20px;
+        }
+        .channel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
+        }
+        .panel-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 400; }
+        .panel-toggle input[type="checkbox"] { width: 16px; height: 16px; }
+        .channel-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+        .channel-status { font-size: 0.78rem; }
     </style>
 </head>
 <body>
@@ -52,64 +67,70 @@
         </div>
 
         <div class="content-area">
-            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
+            <div class="info-note">
                 Alerts fire on a victim's classification changing to/from DDoS, on every new hard
                 block (Tier 1/2), and on the Tier 4 aggregate rate-limit fallback. Soft rate-limits
                 (Tier 3) don't alert on their own, and a source already alerted stays suppressed
                 for the configured block duration so a sustained attack doesn't spam either channel.
             </div>
 
-            <div class="hud-panel">
-                <div class="hud-panel-header">
-                    <div class="hud-panel-title">Discord Webhook</div>
+            <div class="channel-grid">
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Discord Webhook</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="discordEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="discordWebhookUrl">Webhook URL</label>
+                        <input type="text" id="discordWebhookUrl" class="form-input" placeholder="https://discord.com/api/webhooks/...">
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn" style="background: transparent;" onclick="testChannel('discord')">Send Test Alert</button>
+                    </div>
+                    <div id="discordTestResult" class="channel-status" style="margin-top: 8px;"></div>
                 </div>
-                <div class="toggle-row">
-                    <input type="checkbox" id="discordEnabled">
-                    <label for="discordEnabled">Enabled</label>
-                </div>
-                <div class="threshold-field">
-                    <label for="discordWebhookUrl">Webhook URL</label>
-                    <input type="text" id="discordWebhookUrl" class="form-input" placeholder="https://discord.com/api/webhooks/...">
-                </div>
-                <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
-                <button type="button" class="btn" style="background: transparent;" onclick="testChannel('discord')">Send Test Alert</button>
-                <span id="discordTestResult" class="channel-status"></span>
-            </div>
 
-            <div class="hud-panel" style="margin-top: 20px;">
-                <div class="hud-panel-header">
-                    <div class="hud-panel-title">Email (SMTP)</div>
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Email (SMTP)</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="emailEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-grid">
+                        <div class="threshold-field">
+                            <label for="smtpHost">SMTP host</label>
+                            <input type="text" id="smtpHost" class="form-input" placeholder="smtp.gmail.com">
+                        </div>
+                        <div class="threshold-field">
+                            <label for="smtpPort">SMTP port</label>
+                            <input type="number" id="smtpPort" class="form-input" step="1" min="1" placeholder="587">
+                        </div>
+                        <div class="threshold-field">
+                            <label for="smtpUsername">Username (sender address)</label>
+                            <input type="text" id="smtpUsername" class="form-input" placeholder="you@gmail.com">
+                        </div>
+                        <div class="threshold-field">
+                            <label for="smtpAppPassword">App password</label>
+                            <input type="password" id="smtpAppPassword" class="form-input" placeholder="">
+                            <span class="threshold-hint" id="smtpAppPasswordHint">Leave blank to keep the current one.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="emailRecipients">Recipients (comma-separated)</label>
+                            <input type="text" id="emailRecipients" class="form-input" placeholder="ops@example.com, oncall@example.com">
+                        </div>
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn" style="background: transparent;" onclick="testChannel('email')">Send Test Alert</button>
+                    </div>
+                    <div id="emailTestResult" class="channel-status" style="margin-top: 8px;"></div>
                 </div>
-                <div class="toggle-row">
-                    <input type="checkbox" id="emailEnabled">
-                    <label for="emailEnabled">Enabled</label>
-                </div>
-                <div class="threshold-grid">
-                    <div class="threshold-field">
-                        <label for="smtpHost">SMTP host</label>
-                        <input type="text" id="smtpHost" class="form-input" placeholder="smtp.gmail.com">
-                    </div>
-                    <div class="threshold-field">
-                        <label for="smtpPort">SMTP port</label>
-                        <input type="number" id="smtpPort" class="form-input" step="1" min="1" placeholder="587">
-                    </div>
-                    <div class="threshold-field">
-                        <label for="smtpUsername">Username (sender address)</label>
-                        <input type="text" id="smtpUsername" class="form-input" placeholder="you@gmail.com">
-                    </div>
-                    <div class="threshold-field">
-                        <label for="smtpAppPassword">App password</label>
-                        <input type="password" id="smtpAppPassword" class="form-input" placeholder="">
-                        <span class="threshold-hint" id="smtpAppPasswordHint">Leave blank to keep the current one.</span>
-                    </div>
-                    <div class="threshold-field">
-                        <label for="emailRecipients">Recipients (comma-separated)</label>
-                        <input type="text" id="emailRecipients" class="form-input" placeholder="ops@example.com, oncall@example.com">
-                    </div>
-                </div>
-                <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
-                <button type="button" class="btn" style="background: transparent;" onclick="testChannel('email')">Send Test Alert</button>
-                <span id="emailTestResult" class="channel-status"></span>
             </div>
         </div>
     </div>
