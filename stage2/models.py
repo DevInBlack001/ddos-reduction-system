@@ -6,7 +6,7 @@ every route module can import from here without risking a cycle.
 """
 
 import ipaddress
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, field_validator
@@ -79,3 +79,55 @@ class EnforcementConfigPayload(BaseModel):
 class PdfReportPayload(BaseModel):
     rate_chart_base64: str
     entropy_chart_base64: str
+
+
+def _check_username(v: str) -> str:
+    if not (1 <= len(v) <= 64):
+        raise ValueError("Username must be 1-64 characters.")
+    return v
+
+def _check_password_strength(v: str) -> str:
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    return v
+
+
+class CreateUserPayload(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def _v_username(cls, v):
+        return _check_username(v)
+
+    @field_validator("password")
+    @classmethod
+    def _v_password(cls, v):
+        return _check_password_strength(v)
+
+
+class SetPasswordPayload(BaseModel):
+    username: str
+    new_password: str
+
+    @field_validator("username")
+    @classmethod
+    def _v_username(cls, v):
+        return _check_username(v)
+
+    @field_validator("new_password")
+    @classmethod
+    def _v_password(cls, v):
+        return _check_password_strength(v)
+
+
+class AlertsConfigPayload(BaseModel):
+    discord_enabled: Optional[bool] = None
+    discord_webhook_url: Optional[str] = None
+    email_enabled: Optional[bool] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_username: Optional[str] = None
+    smtp_app_password: Optional[str] = None
+    email_recipients: Optional[List[str]] = None

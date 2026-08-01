@@ -19,6 +19,8 @@ actual logic lives in:
   db.py             SQLite audit-log writers (logs, metrics_history)
   enforcement.py    ipset/iptables control, block/ratelimit/unblock
   auth.py           login/logout routes, session middleware, rate-limit
+  users.py          admin account management (add/delete/change password)
+  alerts.py         Discord webhook + SMTP email alerting
   ipc_receiver.py   Unix socket listener thread + classification/tiers
   reports.py        CSV/PDF incident report export routes
   api.py            dashboard state/history/whitelist/victim/config routes
@@ -45,6 +47,8 @@ import config
 import auth
 import api
 import reports
+import users
+import alerts
 from ipc_receiver import run_ipc_receiver
 from enforcement import run_ipset_monitor
 from storage import load_json_file
@@ -65,6 +69,8 @@ app.middleware("http")(auth.auth_middleware)
 app.include_router(auth.router)
 app.include_router(api.router)
 app.include_router(reports.router)
+app.include_router(users.router)
+app.include_router(alerts.router)
 
 # -----------------------------------------------------------------------------
 # Main Application Launch Hook
@@ -128,6 +134,10 @@ def main():
     # Start IPSET capacity monitor thread
     monitor_thread = threading.Thread(target=run_ipset_monitor, daemon=True)
     monitor_thread.start()
+
+    # Start alert dispatch worker thread
+    alert_thread = threading.Thread(target=alerts.run_alert_worker, daemon=True)
+    alert_thread.start()
 
     # Start FastAPI / Uvicorn server synchronously on main thread
     start_api_server()

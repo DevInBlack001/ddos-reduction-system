@@ -32,6 +32,7 @@ WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
 VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
 FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
 ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")
+ALERTS_CONFIG_PATH = os.path.join(SCRIPT_DIR, "alerts_config.json")
 
 TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
 TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
@@ -79,6 +80,31 @@ def get_enforcement_config():
     saved file (missing newer keys) still works."""
     saved = load_json_file(ENFORCEMENT_CONFIG_PATH, DEFAULT_ENFORCEMENT_CONFIG)
     return {**DEFAULT_ENFORCEMENT_CONFIG, **saved}
+
+
+# -----------------------------------------------------------------------------
+# Alerting (Discord webhook + SMTP email) -- disabled by default. Holds an
+# SMTP app password at rest; alerts_config.json gets the same chmod 0600
+# treatment as everything else storage.save_json_file touches, same trust
+# model as stage2.db/enforcement_config.json (protects against other local
+# accounts, not against root compromise).
+# -----------------------------------------------------------------------------
+
+DEFAULT_ALERTS_CONFIG = {
+    "discord_enabled": False,
+    "discord_webhook_url": "",
+    "email_enabled": False,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_username": "",
+    "smtp_app_password": "",
+    "email_recipients": [],
+}
+
+
+def get_alerts_config():
+    saved = load_json_file(ALERTS_CONFIG_PATH, DEFAULT_ALERTS_CONFIG)
+    return {**DEFAULT_ALERTS_CONFIG, **saved}
 
 
 # -----------------------------------------------------------------------------

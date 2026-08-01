@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Network Map</title>
+    <link rel="stylesheet" href="/static/base.css">
+    <style>
+        #graphCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+        #graphCanvas.dragging { cursor: grabbing; }
+        .graph-wrap {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 140px);
+            min-height: 420px;
+        }
+        .legend {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 10px 14px;
+            font-size: 0.75rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">S</div>
+            <div class="logo-text">Shield Gateway</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item active"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            Gateway Console v1.0.0
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Network Map</h1>
+            </div>
+            <div class="system-status">
+                <div class="status-pill">
+                    <span id="nodeCountPill" class="badge badge-normal">0 hosts</span>
+                </div>
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="hud-panel" style="padding: 0; overflow: hidden;">
+                <div class="graph-wrap">
+                    <canvas id="graphCanvas"></canvas>
+                    <div class="legend">
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Victim target</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked source</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited source</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-success);"></span> Whitelisted source</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source</div>
+                        <div class="legend-row" style="margin-top: 6px; color: var(--text-tertiary);">Drag a node to reposition it.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        const canvas = document.getElementById('graphCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ip -> {x, y, vx, vy, role, degree, fixed}. Persisted across data
+        // refreshes so the graph animates rather than resetting -- this is
+        // the "not static" part: only the underlying edges/roles change on
+        // each poll, the simulation just keeps running on top of them.
+        const nodes = new Map();
+        let edges = []; // {src, dst, rate}
+
+        let dragTarget = null;
+        let dragOffset = { x: 0, y: 0 };
+
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function roleColor(role) {
+            switch (role) {
+                case 'victim': return ShieldTheme.cssVar('--status-danger');
+                case 'blocked': return ShieldTheme.cssVar('--status-danger');
+                case 'ratelimited': return ShieldTheme.cssVar('--status-warning');
+                case 'whitelisted': return ShieldTheme.cssVar('--status-success');
+                default: return ShieldTheme.cssVar('--accent');
+            }
+        }
+
+        function ensureNode(ip, role) {
+            if (!nodes.has(ip)) {
+                nodes.set(ip, {
+                    x: canvas.width / 2 + (Math.random() - 0.5) * 100,
+                    y: canvas.height / 2 + (Math.random() - 0.5) * 100,
+                    vx: 0, vy: 0,
+                    role: role,
+                    degree: 0,
+                });
+            } else if (role === 'victim' || role === 'blocked' || role === 'ratelimited' || role === 'whitelisted') {
+                // Roles are re-derived every refresh; let a more specific
+                // role (victim/blocked/ratelimited/whitelisted) override the
+                // generic 'source' default without clobbering a prior
+                // specific role with a plain 'source' from a later flow.
+                nodes.get(ip).role = role;
+            }
+            return nodes.get(ip);
+        }
+
+        async function refreshGraphData() {
+            try {
+                const res = await fetch('/api/state');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const data = await res.json();
+                const flows = data.active_flows || [];
+                const blocked = new Set(data.blocked_ips || []);
+                const ratelimited = new Set(data.ratelimited_ips || []);
+                const whitelisted = new Set(data.whitelisted_ips || []);
+                const victims = (data.victim_targets || []).map(v => v.ip);
+
+                const seen = new Set();
+                victims.forEach(ip => { ensureNode(ip, 'victim'); seen.add(ip); });
+
+                const edgeMap = new Map(); // "src|dst" -> aggregated rate
+                flows.forEach(f => {
+                    if (!f.ip || !f.dst) return;
+                    let role = 'source';
+                    if (blocked.has(f.ip)) role = 'blocked';
+                    else if (ratelimited.has(f.ip)) role = 'ratelimited';
+                    else if (whitelisted.has(f.ip)) role = 'whitelisted';
+                    ensureNode(f.ip, role);
+                    ensureNode(f.dst, 'victim');
+                    seen.add(f.ip);
+                    seen.add(f.dst);
+
+                    const key = `${f.ip}|${f.dst}`;
+                    edgeMap.set(key, (edgeMap.get(key) || 0) + (f.rate || 0));
+                });
+
+                // Drop nodes no longer present in either victims or flows --
+                // stale sources shouldn't linger forever.
+                for (const ip of Array.from(nodes.keys())) {
+                    if (!seen.has(ip)) nodes.delete(ip);
+                }
+
+                edges = Array.from(edgeMap.entries()).map(([key, rate]) => {
+                    const [src, dst] = key.split('|');
+                    return { src, dst, rate };
+                });
+
+                const degree = new Map();
+                edges.forEach(e => {
+                    degree.set(e.src, (degree.get(e.src) || 0) + 1);
+                    degree.set(e.dst, (degree.get(e.dst) || 0) + 1);
+                });
+                nodes.forEach((n, ip) => { n.degree = degree.get(ip) || 0; });
+
+                document.getElementById('nodeCountPill').innerText = `${nodes.size} hosts`;
+            } catch (err) {
+                console.error("Failed to load network map data:", err);
+            }
+        }
+
+        function step() {
+            const W = canvas.width, H = canvas.height;
+            const nodeList = Array.from(nodes.values());
+
+            // Pairwise repulsion.
+            for (let i = 0; i < nodeList.length; i++) {
+                for (let j = i + 1; j < nodeList.length; j++) {
+                    const a = nodeList[i], b = nodeList[j];
+                    let dx = a.x - b.x, dy = a.y - b.y;
+                    let distSq = dx * dx + dy * dy;
+                    if (distSq < 1) distSq = 1;
+                    if (distSq > 90000) continue; // cutoff: >300px apart, ignore
+                    const dist = Math.sqrt(distSq);
+                    const force = 2200 / distSq;
+                    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                    if (a !== dragTarget) { a.vx += fx; a.vy += fy; }
+                    if (b !== dragTarget) { b.vx -= fx; b.vy -= fy; }
+                }
+            }
+
+            // Spring attraction along edges.
+            const targetLen = 140;
+            edges.forEach(e => {
+                const a = nodes.get(e.src), b = nodes.get(e.dst);
+                if (!a || !b) return;
+                let dx = b.x - a.x, dy = b.y - a.y;
+                const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+                const force = (dist - targetLen) * 0.02;
+                const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                if (a !== dragTarget) { a.vx += fx; a.vy += fy; }
+                if (b !== dragTarget) { b.vx -= fx; b.vy -= fy; }
+            });
+
+            // Mild pull toward center so disconnected nodes don't drift off.
+            nodes.forEach(n => {
+                if (n === dragTarget) return;
+                n.vx += (W / 2 - n.x) * 0.0015;
+                n.vy += (H / 2 - n.y) * 0.0015;
+            });
+
+            nodes.forEach(n => {
+                if (n === dragTarget) return;
+                n.vx *= 0.85;
+                n.vy *= 0.85;
+                n.x += n.vx;
+                n.y += n.vy;
+                n.x = Math.max(20, Math.min(W - 20, n.x));
+                n.y = Math.max(20, Math.min(H - 20, n.y));
+            });
+        }
+
+        function draw() {
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            const edgeColor = ShieldTheme.cssVar('--border-strong');
+            edges.forEach(e => {
+                const a = nodes.get(e.src), b = nodes.get(e.dst);
+                if (!a || !b) return;
+                const width = Math.min(6, 0.6 + Math.log10(1 + e.rate));
+                ctx.strokeStyle = edgeColor;
+                ctx.globalAlpha = Math.min(0.9, 0.25 + e.rate / 200);
+                ctx.lineWidth = width;
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                ctx.stroke();
+            });
+            ctx.globalAlpha = 1;
+
+            const textColor = ShieldTheme.cssVar('--text-secondary');
+            nodes.forEach((n, ip) => {
+                const r = n.role === 'victim' ? 10 : 5 + Math.min(6, n.degree);
+                ctx.fillStyle = roleColor(n.role);
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = textColor;
+                ctx.font = '11px var(--font-mono), monospace';
+                ctx.fillText(ip, n.x + r + 4, n.y + 3);
+            });
+        }
+
+        function loop() {
+            step();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        function nodeAt(x, y) {
+            for (const [ip, n] of nodes) {
+                const r = n.role === 'victim' ? 10 : 5 + Math.min(6, n.degree);
+                if ((n.x - x) ** 2 + (n.y - y) ** 2 <= (r + 4) ** 2) return n;
+            }
+            return null;
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left, y = e.clientY - rect.top;
+            const hit = nodeAt(x, y);
+            if (hit) {
+                dragTarget = hit;
+                dragOffset = { x: x - hit.x, y: y - hit.y };
+                canvas.classList.add('dragging');
+            }
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!dragTarget) return;
+            const rect = canvas.getBoundingClientRect();
+            dragTarget.x = e.clientX - rect.left - dragOffset.x;
+            dragTarget.y = e.clientY - rect.top - dragOffset.y;
+            dragTarget.vx = 0;
+            dragTarget.vy = 0;
+        });
+        window.addEventListener('mouseup', () => {
+            dragTarget = null;
+            canvas.classList.remove('dragging');
+        });
+
+        resizeCanvas();
+        refreshGraphData();
+        setInterval(refreshGraphData, 5000);
+        loop();
+    </script>
+</body>
+</html>

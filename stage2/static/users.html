@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Users</title>
+    <link rel="stylesheet" href="/static/base.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">S</div>
+            <div class="logo-text">Shield Gateway</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item active"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            Gateway Console v1.0.0
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Administrator Accounts</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Accounts</div>
+                </div>
+                <table class="flow-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th class="action-cell">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTableBody">
+                        <tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading accounts...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="hud-panel" style="margin-top: 20px;">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Add Account</div>
+                </div>
+                <form id="createUserForm" class="threshold-grid">
+                    <div class="threshold-field">
+                        <label for="newUsername">Username</label>
+                        <input type="text" id="newUsername" class="form-input" required maxlength="64">
+                    </div>
+                    <div class="threshold-field">
+                        <label for="newPassword">Password</label>
+                        <input type="password" id="newPassword" class="form-input" required minlength="8">
+                        <span class="threshold-hint">Minimum 8 characters.</span>
+                    </div>
+                </form>
+                <button type="submit" form="createUserForm" class="btn">Create Account</button>
+            </div>
+
+            <div class="hud-panel" style="margin-top: 20px;">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Change Password</div>
+                </div>
+                <form id="setPasswordForm" class="threshold-grid">
+                    <div class="threshold-field">
+                        <label for="pwUsername">Username</label>
+                        <input type="text" id="pwUsername" class="form-input" required maxlength="64">
+                    </div>
+                    <div class="threshold-field">
+                        <label for="pwNewPassword">New Password</label>
+                        <input type="password" id="pwNewPassword" class="form-input" required minlength="8">
+                        <span class="threshold-hint">Minimum 8 characters.</span>
+                    </div>
+                </form>
+                <button type="submit" form="setPasswordForm" class="btn">Update Password</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        async function fetchUsers() {
+            try {
+                const res = await fetch('/api/users');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const data = await res.json();
+                const tableBody = document.getElementById('userTableBody');
+                const users = data.users || [];
+
+                if (users.length === 0) {
+                    tableBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No accounts found.</td></tr>`;
+                    return;
+                }
+
+                let html = '';
+                users.forEach(u => {
+                    const jsU = ShieldSafe.jsAttr(u);
+                    html += `<tr>
+                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(u)}</td>
+                        <td class="action-cell"><button class="btn btn-danger" onclick="deleteUser('${jsU}')">Delete</button></td>
+                    </tr>`;
+                });
+                tableBody.innerHTML = html;
+            } catch (err) {
+                console.error("Failed to load users:", err);
+            }
+        }
+
+        async function deleteUser(username) {
+            if (!confirm(`Delete account "${username}"? This cannot be undone.`)) return;
+            const res = await fetch(`/api/users?username=${encodeURIComponent(username)}`, { method: 'DELETE' });
+            if (res.ok) {
+                fetchUsers();
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to delete account.");
+            }
+        }
+
+        document.getElementById('createUserForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('newUsername').value;
+            const password = document.getElementById('newPassword').value;
+            const res = await fetch('/api/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (res.ok) {
+                document.getElementById('createUserForm').reset();
+                fetchUsers();
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to create account.");
+            }
+        });
+
+        document.getElementById('setPasswordForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('pwUsername').value;
+            const new_password = document.getElementById('pwNewPassword').value;
+            const res = await fetch('/api/users/password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, new_password })
+            });
+            if (res.ok) {
+                document.getElementById('setPasswordForm').reset();
+                alert(`Password updated for "${username}".`);
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to update password.");
+            }
+        });
+
+        fetchUsers();
+    </script>
+</body>
+</html>

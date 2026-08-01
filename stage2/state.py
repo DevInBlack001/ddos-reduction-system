@@ -57,3 +57,14 @@ failed_login_attempts = {}  # client_ip -> list of failure timestamps
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECS = 300
 LOGIN_LOCKOUT_SECS = 300
+
+# Alert de-duplication (see alerts.py / ipc_receiver.py). victim_ip -> last
+# classification name seen, so a classification-change alert only fires on
+# an actual transition, not every window a victim stays classified DDoS.
+last_classification_by_target = {}
+
+# ip -> timestamp of the last block alert sent for that IP, so a source that
+# stays blocked across many windows doesn't get a fresh alert every time its
+# ipset entry gets renewed -- suppressed for cfg["block_duration_seconds"],
+# see alerts.py's usage.
+last_block_alert = {}

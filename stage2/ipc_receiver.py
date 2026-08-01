@@ -21,6 +21,23 @@ import config
 import state
 import db
 import enforcement
+import alerts
+
+
+def _maybe_alert_block(ip, victim_ip, rate, cfg):
+    """Dispatch a block alert the first time this IP is blocked, then
+    suppress re-alerts for cfg['block_duration_seconds'] -- tracks the
+    ipset entry's own timeout so "still presumably blocked" doesn't need
+    separate cooldown bookkeeping."""
+    now = time.time()
+    last = state.last_block_alert.get(ip, 0)
+    if now - last < cfg["block_duration_seconds"]:
+        return
+    state.last_block_alert[ip] = now
+    alerts.dispatch_alert(
+        "SHIELD Gateway: IP Blocked",
+        f"Blocked {ip} targeting {victim_ip} (sustained ~{rate:.1f} pps)."
+    )
 
 
 def decode_ip(ip_bytes):
@@ -215,6 +232,22 @@ def run_ipc_receiver():
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")
 
+                # Alert on DDoS classification transitions only (not every
+                # window a victim stays classified DDoS, and not on
+                # Normal<->Flash Crowd changes, which aren't malicious).
+                prev_class_name = state.last_classification_by_target.get(victim_ip_str)
+                if pred_name == "DDoS" and prev_class_name != "DDoS":
+                    alerts.dispatch_alert(
+                        "SHIELD Gateway: DDoS Detected",
+                        f"Victim {victim_ip_str} classified DDoS -- rate={ewma_rate:.1f}pps, entropy={entropy:.3f}, dominant_ip_ratio={dominant_ip_ratio:.1%}."
+                    )
+                elif pred_name != "DDoS" and prev_class_name == "DDoS":
+                    alerts.dispatch_alert(
+                        "SHIELD Gateway: DDoS Resolved",
+                        f"Victim {victim_ip_str} classification returned to {pred_name} -- rate={ewma_rate:.1f}pps, entropy={entropy:.3f}."
+                    )
+                state.last_classification_by_target[victim_ip_str] = pred_name
+
                 # Update live stats
                 state.last_metrics = {
                     "entropy": entropy,
@@ -291,6 +324,7 @@ def run_ipc_receiver():
                         # fast). Gated by hysteresis like every block action.
                         if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
                             enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                            _maybe_alert_block(ip_str, victim_ip_str, dominant_rate, cfg)
                             acted_on.add(ip_str)
 
                         # Tier 2 -- independent per-source-rate escalation.
@@ -311,6 +345,7 @@ def run_ipc_receiver():
                                         f"(threshold {block_threshold:.2f}) across its active flows."
                                     )
                                     enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                                    _maybe_alert_block(f_ip, victim_ip_str, agg_rate, cfg)
                                     acted_on.add(f_ip)
 
                         if not block_ready and per_source_rate:
@@ -343,6 +378,11 @@ def run_ipc_receiver():
                             logging.warning(
                                 "[!] Aggregate cap fallback: class-2 verdict but no individual "
                                 "source was attributable -- rate-limiting all active flows."
+                            )
+                            alerts.dispatch_alert(
+                                "SHIELD Gateway: Aggregate Fallback Triggered",
+                                f"Victim {victim_ip_str}: DDoS verdict with no individually-attributable source -- "
+                                f"rate-limited {len(per_source_rate)} active flows as a fallback."
                             )
                             for f_ip in per_source_rate:
                                 enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])

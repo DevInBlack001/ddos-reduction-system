@@ -141,8 +141,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     // IPC socket to Stage 2 (Python). Connected lazily on first anomaly.
     let mut ipc = IpcSocket::with_path(&cfg.socket_path);
 
-    // Active IP and port flow counters for Web UI telemetry.
-    let mut flow_counts: HashMap<(IpAddr, u16, u8), u32> = HashMap::new();
+    // Active IP and port flow counters for Web UI telemetry. Keyed by
+    // (src_ip, dst_ip, dst_port, proto) -- dst_ip is what lets the dashboard's
+    // network map / traffic tab show device-to-device communication instead
+    // of just "this source is talking to someone."
+    let mut flow_counts: HashMap<(IpAddr, IpAddr, u16, u8), u32> = HashMap::new();
     let mut last_flow_write = Instant::now();
 
     // Live label state for training
@@ -163,7 +166,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             Protocol::Esp => 50,
             Protocol::Other => 0,
         };
-        *flow_counts.entry((meta.src_ip, meta.dst_port, proto_num)).or_insert(0) += 1;
+        *flow_counts.entry((meta.src_ip, meta.dst_ip, meta.dst_port, proto_num)).or_insert(0) += 1;
 
         // Check if destination IP is one of our victim targets
         let is_target = match &cfg.victim_targets {
@@ -605,41 +608,41 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 /// Helper function to write top 20 active network flows atomically to
 /// /run/ddos_stage1/active_flows.json (not /tmp -- same reasoning as
 /// ipc::SOCKET_PATH: /tmp is world-writable and this directory isn't).
-fn write_active_flows(flow_counts: &HashMap<(IpAddr, u16, u8), u32>, timestamp: f64) {
+fn write_active_flows(flow_counts: &HashMap<(IpAddr, IpAddr, u16, u8), u32>, timestamp: f64) {
     // Sort flows by packet count descending
     let mut flows: Vec<_> = flow_counts.iter().collect();
     flows.sort_by(|a, b| b.1.cmp(a.1));
-    
+
     // Write all active network flows
     let all_flows = flows.into_iter();
-    
+
     let mut json = String::new();
     json.push_str("{\n  \"timestamp\": ");
     json.push_str(&timestamp.to_string());
     json.push_str(",\n  \"active_ips\": [\n");
-    
+
     let mut first = true;
     for (key, count_ref) in all_flows {
-        let (ip, port, proto) = *key;
+        let (src_ip, dst_ip, port, proto) = *key;
         let count = *count_ref;
         if !first {
             json.push_str(",\n");
         }
         first = false;
-        
+
         let proto_str = match proto {
             6 => "TCP",
             17 => "UDP",
             1 => "ICMP",
             _ => "OTHER",
         };
-        
+
         // Calculate rate over 10 seconds (count / 10.0)
         let rate = count as f64 / 10.0;
-        
+
         json.push_str(&format!(
-            "    {{\"ip\": \"{}\", \"port\": {}, \"proto\": \"{}\", \"rate\": {:.1}}}",
-            ip, port, proto_str, rate
+            "    {{\"ip\": \"{}\", \"dst\": \"{}\", \"port\": {}, \"proto\": \"{}\", \"rate\": {:.1}}}",
+            src_ip, dst_ip, port, proto_str, rate
         ));
     }
     json.push_str("\n  ]\n}");

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Traffic</title>
+    <link rel="stylesheet" href="/static/base.css">
+    <style>
+        #trafficCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .graph-wrap {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 140px);
+            min-height: 420px;
+        }
+        .legend {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 10px 14px;
+            font-size: 0.75rem;
+            box-shadow: var(--shadow-sm);
+        }
+        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">S</div>
+            <div class="logo-text">Shield Gateway</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item active"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            Gateway Console v1.0.0
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Traffic</h1>
+            </div>
+            <div class="system-status">
+                <div class="status-pill">
+                    <span id="flowCountPill" class="badge badge-normal">0 flows</span>
+                </div>
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="hud-panel" style="padding: 0; overflow: hidden;">
+                <div class="graph-wrap">
+                    <canvas id="trafficCanvas"></canvas>
+                    <div class="legend">
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Victim target</div>
+                        <div class="legend-row" style="margin-top: 6px; color: var(--text-tertiary);">Line width/pulse speed scales with flow rate.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        const canvas = document.getElementById('trafficCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Stable row assignment per IP so the columns don't reshuffle every
+        // poll -- new IPs append at the bottom of their column, existing
+        // ones keep their row. Cleared out only once an IP has been absent
+        // for a few refreshes.
+        const sourceRow = new Map(); // ip -> row index
+        const victimRow = new Map();
+        const missingSince = new Map(); // ip -> refresh count since last seen
+        let refreshCount = 0;
+
+        let edges = []; // {src, dst, rate, proto}
+        let pulses = []; // {src, dst, t (0..1), speed}
+
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function assignRow(map, ip) {
+            if (!map.has(ip)) {
+                map.set(ip, map.size);
+            }
+            return map.get(ip);
+        }
+
+        function compactRows(map, present) {
+            // Drop IPs absent for 3+ refreshes, then renumber rows 0..n-1
+            // in their existing relative order so gaps close smoothly.
+            const kept = Array.from(map.entries())
+                .filter(([ip]) => present.has(ip) || (missingSince.get(ip) || 0) < 3)
+                .sort((a, b) => a[1] - b[1]);
+            map.clear();
+            kept.forEach(([ip], i) => map.set(ip, i));
+        }
+
+        async function refreshTrafficData() {
+            refreshCount++;
+            try {
+                const res = await fetch('/api/state');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const data = await res.json();
+                const flows = data.active_flows || [];
+                const victims = new Set((data.victim_targets || []).map(v => v.ip));
+
+                const presentSources = new Set();
+                const presentVictims = new Set();
+                const edgeMap = new Map();
+
+                flows.forEach(f => {
+                    if (!f.ip || !f.dst) return;
+                    presentSources.add(f.ip);
+                    presentVictims.add(f.dst);
+                    const key = `${f.ip}|${f.dst}`;
+                    const existing = edgeMap.get(key);
+                    if (existing) {
+                        existing.rate += (f.rate || 0);
+                    } else {
+                        edgeMap.set(key, { src: f.ip, dst: f.dst, rate: f.rate || 0, proto: f.proto });
+                    }
+                });
+                victims.forEach(ip => presentVictims.add(ip));
+
+                for (const ip of presentSources) missingSince.delete(ip);
+                for (const ip of presentVictims) missingSince.delete(ip);
+                for (const ip of sourceRow.keys()) if (!presentSources.has(ip)) missingSince.set(ip, (missingSince.get(ip) || 0) + 1);
+                for (const ip of victimRow.keys()) if (!presentVictims.has(ip)) missingSince.set(ip, (missingSince.get(ip) || 0) + 1);
+
+                presentSources.forEach(ip => assignRow(sourceRow, ip));
+                presentVictims.forEach(ip => assignRow(victimRow, ip));
+                compactRows(sourceRow, presentSources);
+                compactRows(victimRow, presentVictims);
+
+                edges = Array.from(edgeMap.values());
+                document.getElementById('flowCountPill').innerText = `${edges.length} flows`;
+            } catch (err) {
+                console.error("Failed to load traffic data:", err);
+            }
+        }
+
+        function layoutPositions() {
+            const W = canvas.width, H = canvas.height;
+            const marginX = 140, marginY = 40;
+            const srcX = marginX, dstX = W - marginX;
+            const srcCount = Math.max(1, sourceRow.size);
+            const dstCount = Math.max(1, victimRow.size);
+            const srcSpacing = Math.max(28, (H - marginY * 2) / srcCount);
+            const dstSpacing = Math.max(28, (H - marginY * 2) / dstCount);
+            return { srcX, dstX, marginY, srcSpacing, dstSpacing };
+        }
+
+        function pointFor(ip, isSource, layout) {
+            const row = isSource ? sourceRow.get(ip) : victimRow.get(ip);
+            const spacing = isSource ? layout.srcSpacing : layout.dstSpacing;
+            const x = isSource ? layout.srcX : layout.dstX;
+            const y = layout.marginY + row * spacing + spacing / 2;
+            return { x, y };
+        }
+
+        function spawnPulses() {
+            edges.forEach(e => {
+                // Higher rate -> more frequent pulses. Cap so a huge flood
+                // doesn't spawn an unreadable number of dots.
+                const chance = Math.min(0.35, 0.03 + e.rate / 400);
+                if (Math.random() < chance) {
+                    pulses.push({ src: e.src, dst: e.dst, t: 0, speed: 0.01 + Math.min(0.03, e.rate / 5000) });
+                }
+            });
+            if (pulses.length > 400) pulses = pulses.slice(pulses.length - 400);
+        }
+
+        function draw() {
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+            const layout = layoutPositions();
+
+            const edgeColor = ShieldTheme.cssVar('--border-strong');
+            const accent = ShieldTheme.cssVar('--accent');
+            const danger = ShieldTheme.cssVar('--status-danger');
+            const textColor = ShieldTheme.cssVar('--text-secondary');
+
+            edges.forEach(e => {
+                if (!sourceRow.has(e.src) || !victimRow.has(e.dst)) return;
+                const a = pointFor(e.src, true, layout);
+                const b = pointFor(e.dst, false, layout);
+                const midX = (a.x + b.x) / 2;
+
+                ctx.strokeStyle = edgeColor;
+                ctx.globalAlpha = Math.min(0.8, 0.2 + e.rate / 250);
+                ctx.lineWidth = Math.min(5, 0.5 + Math.log10(1 + e.rate));
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.bezierCurveTo(midX, a.y, midX, b.y, b.x, b.y);
+                ctx.stroke();
+            });
+            ctx.globalAlpha = 1;
+
+            // Animated pulses traveling along each edge's curve.
+            ctx.fillStyle = accent;
+            pulses.forEach(p => {
+                if (!sourceRow.has(p.src) || !victimRow.has(p.dst)) return;
+                const a = pointFor(p.src, true, layout);
+                const b = pointFor(p.dst, false, layout);
+                const midX = (a.x + b.x) / 2;
+                const t = p.t;
+                const mt = 1 - t;
+                // Point on the cubic bezier (a, mid1, mid2, b).
+                const x = mt ** 3 * a.x + 3 * mt ** 2 * t * midX + 3 * mt * t ** 2 * midX + t ** 3 * b.x;
+                const y = mt ** 3 * a.y + 3 * mt ** 2 * t * a.y + 3 * mt * t ** 2 * b.y + t ** 3 * b.y;
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Source nodes.
+            sourceRow.forEach((row, ip) => {
+                const p = pointFor(ip, true, layout);
+                ctx.fillStyle = accent;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = textColor;
+                ctx.font = '11px var(--font-mono), monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText(ip, p.x - 10, p.y + 3);
+            });
+
+            // Victim nodes.
+            victimRow.forEach((row, ip) => {
+                const p = pointFor(ip, false, layout);
+                ctx.fillStyle = danger;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = textColor;
+                ctx.textAlign = 'left';
+                ctx.fillText(ip, p.x + 12, p.y + 3);
+            });
+            ctx.textAlign = 'left';
+        }
+
+        function loop() {
+            spawnPulses();
+            pulses.forEach(p => { p.t += p.speed; });
+            pulses = pulses.filter(p => p.t < 1);
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        resizeCanvas();
+        refreshTrafficData();
+        setInterval(refreshTrafficData, 5000);
+        loop();
+    </script>
+</body>
+</html>

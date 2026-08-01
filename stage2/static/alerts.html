@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        (function () {
+            var t = localStorage.getItem('shield-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>Shield Gateway - Alerts</title>
+    <link rel="stylesheet" href="/static/base.css">
+    <style>
+        .toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+        .toggle-row input[type="checkbox"] { width: 18px; height: 18px; }
+        .channel-status { font-size: 0.78rem; margin-left: 8px; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">S</div>
+            <div class="logo-text">Shield Gateway</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item active"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            Gateway Console v1.0.0
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Alerting</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
+                Alerts fire on a victim's classification changing to/from DDoS, on every new hard
+                block (Tier 1/2), and on the Tier 4 aggregate rate-limit fallback. Soft rate-limits
+                (Tier 3) don't alert on their own, and a source already alerted stays suppressed
+                for the configured block duration so a sustained attack doesn't spam either channel.
+            </div>
+
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Discord Webhook</div>
+                </div>
+                <div class="toggle-row">
+                    <input type="checkbox" id="discordEnabled">
+                    <label for="discordEnabled">Enabled</label>
+                </div>
+                <div class="threshold-field">
+                    <label for="discordWebhookUrl">Webhook URL</label>
+                    <input type="text" id="discordWebhookUrl" class="form-input" placeholder="https://discord.com/api/webhooks/...">
+                </div>
+                <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                <button type="button" class="btn" style="background: transparent;" onclick="testChannel('discord')">Send Test Alert</button>
+                <span id="discordTestResult" class="channel-status"></span>
+            </div>
+
+            <div class="hud-panel" style="margin-top: 20px;">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Email (SMTP)</div>
+                </div>
+                <div class="toggle-row">
+                    <input type="checkbox" id="emailEnabled">
+                    <label for="emailEnabled">Enabled</label>
+                </div>
+                <div class="threshold-grid">
+                    <div class="threshold-field">
+                        <label for="smtpHost">SMTP host</label>
+                        <input type="text" id="smtpHost" class="form-input" placeholder="smtp.gmail.com">
+                    </div>
+                    <div class="threshold-field">
+                        <label for="smtpPort">SMTP port</label>
+                        <input type="number" id="smtpPort" class="form-input" step="1" min="1" placeholder="587">
+                    </div>
+                    <div class="threshold-field">
+                        <label for="smtpUsername">Username (sender address)</label>
+                        <input type="text" id="smtpUsername" class="form-input" placeholder="you@gmail.com">
+                    </div>
+                    <div class="threshold-field">
+                        <label for="smtpAppPassword">App password</label>
+                        <input type="password" id="smtpAppPassword" class="form-input" placeholder="">
+                        <span class="threshold-hint" id="smtpAppPasswordHint">Leave blank to keep the current one.</span>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="emailRecipients">Recipients (comma-separated)</label>
+                        <input type="text" id="emailRecipients" class="form-input" placeholder="ops@example.com, oncall@example.com">
+                    </div>
+                </div>
+                <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                <button type="button" class="btn" style="background: transparent;" onclick="testChannel('email')">Send Test Alert</button>
+                <span id="emailTestResult" class="channel-status"></span>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        async function loadAlertsConfig() {
+            try {
+                const res = await fetch('/api/config/alerts');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const cfg = await res.json();
+                document.getElementById('discordEnabled').checked = !!cfg.discord_enabled;
+                document.getElementById('discordWebhookUrl').value = cfg.discord_webhook_url || '';
+                document.getElementById('emailEnabled').checked = !!cfg.email_enabled;
+                document.getElementById('smtpHost').value = cfg.smtp_host || '';
+                document.getElementById('smtpPort').value = cfg.smtp_port || 587;
+                document.getElementById('smtpUsername').value = cfg.smtp_username || '';
+                document.getElementById('emailRecipients').value = (cfg.email_recipients || []).join(', ');
+                document.getElementById('smtpAppPasswordHint').innerText = cfg.smtp_app_password_set
+                    ? 'A password is already saved -- leave blank to keep it.'
+                    : 'No password saved yet.';
+            } catch (err) {
+                console.error("Failed to load alerts config:", err);
+            }
+        }
+
+        async function saveAlertsConfig() {
+            const payload = {
+                discord_enabled: document.getElementById('discordEnabled').checked,
+                discord_webhook_url: document.getElementById('discordWebhookUrl').value,
+                email_enabled: document.getElementById('emailEnabled').checked,
+                smtp_host: document.getElementById('smtpHost').value,
+                smtp_port: parseInt(document.getElementById('smtpPort').value, 10) || 587,
+                smtp_username: document.getElementById('smtpUsername').value,
+                email_recipients: document.getElementById('emailRecipients').value
+                    .split(',').map(s => s.trim()).filter(Boolean),
+            };
+            const appPassword = document.getElementById('smtpAppPassword').value;
+            if (appPassword) {
+                payload.smtp_app_password = appPassword;
+            }
+            const res = await fetch('/api/config/alerts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                document.getElementById('smtpAppPassword').value = '';
+                await loadAlertsConfig();
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to save alerts config.");
+            }
+        }
+
+        async function testChannel(channel) {
+            const resultEl = document.getElementById(channel + 'TestResult');
+            resultEl.innerText = 'Sending...';
+            try {
+                const res = await fetch(`/api/alerts/test?channel=${encodeURIComponent(channel)}`, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) {
+                    resultEl.innerText = data.detail || 'Failed.';
+                    resultEl.style.color = 'var(--status-danger)';
+                    return;
+                }
+                const result = data[channel];
+                if (result === 'ok') {
+                    resultEl.innerText = 'Sent successfully.';
+                    resultEl.style.color = 'var(--status-success)';
+                } else if (result) {
+                    resultEl.innerText = result;
+                    resultEl.style.color = 'var(--status-danger)';
+                } else {
+                    resultEl.innerText = 'Channel not enabled.';
+                    resultEl.style.color = 'var(--text-tertiary)';
+                }
+            } catch (err) {
+                resultEl.innerText = 'Request failed.';
+                resultEl.style.color = 'var(--status-danger)';
+            }
+        }
+
+        loadAlertsConfig();
+    </script>
+</body>
+</html>
