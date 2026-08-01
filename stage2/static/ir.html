@@ -340,11 +340,24 @@
                 ctx.stroke();
             });
             ctx.globalAlpha = 1;
+            ctx.font = '9px monospace';
+            ctx.textBaseline = 'middle';
             nodes.forEach((n, ip) => {
+                const r = n.role === 'victim' ? 7 : 4;
                 ctx.fillStyle = roleColor[n.role] || colors.accent;
                 ctx.beginPath();
-                ctx.arc(n.x, n.y, n.role === 'victim' ? 7 : 4, 0, Math.PI * 2);
+                ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
                 ctx.fill();
+                // Flip the label to the opposite side near the canvas edges
+                // so it doesn't get clipped off the image.
+                ctx.fillStyle = colors.text;
+                if (n.x > W - 70) {
+                    ctx.textAlign = 'right';
+                    ctx.fillText(ip, n.x - r - 3, n.y);
+                } else {
+                    ctx.textAlign = 'left';
+                    ctx.fillText(ip, n.x + r + 3, n.y);
+                }
             });
 
             return canvas.toDataURL('image/png');
@@ -410,6 +423,8 @@
                 ctx.setLineDash([]);
             });
             ctx.globalAlpha = 1;
+            ctx.font = '9px monospace';
+            ctx.textBaseline = 'middle';
 
             ctx.fillStyle = colors.accent;
             sourceRow.forEach((row, ip) => {
@@ -417,6 +432,10 @@
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.fillStyle = colors.text;
+                ctx.textAlign = 'right';
+                ctx.fillText(ip, p.x - 8, p.y);
+                ctx.fillStyle = colors.accent;
             });
             ctx.fillStyle = colors.danger;
             victimRow.forEach((row, ip) => {
@@ -424,6 +443,10 @@
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.fillStyle = colors.text;
+                ctx.textAlign = 'left';
+                ctx.fillText(ip, p.x + 10, p.y);
+                ctx.fillStyle = colors.danger;
             });
 
             return canvas.toDataURL('image/png');

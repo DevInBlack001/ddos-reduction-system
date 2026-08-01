@@ -19,7 +19,12 @@
         .graph-wrap {
             position: relative;
             width: 100%;
-            max-height: calc(100vh - 220px);
+            /* height (not max-height): always fills the available space,
+               even with few nodes, instead of shrinking down to whatever
+               the content needs -- the canvas inside grows past this and
+               triggers the scrollbar only once there's actually enough
+               content to need more room. */
+            height: calc(100vh - 220px);
             min-height: 420px;
             overflow-y: auto;
             overflow-x: hidden;
@@ -127,8 +132,16 @@
         window.addEventListener('resize', resizeCanvasWidth);
 
         function updateCanvasHeight() {
+            // Baseline: whatever height the wrapper already fills on
+            // screen (reliable now that .graph-wrap has a fixed CSS
+            // `height`, not one derived from the canvas's own content).
+            // Grows past that only when the busier column (source or
+            // victim, whichever has more entries) actually needs more
+            // room at a comfortable ROW_HEIGHT per entry.
+            const visible = canvas.parentElement.clientHeight;
             const rows = Math.max(1, sourceRow.size, victimRow.size);
-            canvas.height = Math.max(400, MARGIN_Y * 2 + rows * ROW_HEIGHT);
+            const contentHeight = MARGIN_Y * 2 + rows * ROW_HEIGHT;
+            canvas.height = Math.max(visible, contentHeight);
         }
 
         function assignRow(map, ip) {
@@ -212,7 +225,18 @@
         function layoutPositions() {
             const W = canvas.width;
             const srcX = MARGIN_X, dstX = W - MARGIN_X;
-            return { srcX, dstX, marginY: MARGIN_Y, srcSpacing: ROW_HEIGHT, dstSpacing: ROW_HEIGHT };
+            // Each column's spacing is computed independently from the
+            // SAME available height, divided by that column's own count --
+            // not a flat ROW_HEIGHT for both. A column with fewer entries
+            // (typically destinations) gets proportionally MORE spacing so
+            // it spreads across the full height instead of clustering in
+            // just the first few rows while the busier column runs on
+            // underneath it. Re-derived every draw, so adding/removing
+            // destinations re-spreads them immediately.
+            const available = canvas.height - MARGIN_Y * 2;
+            const srcSpacing = available / Math.max(1, sourceRow.size);
+            const dstSpacing = available / Math.max(1, victimRow.size);
+            return { srcX, dstX, marginY: MARGIN_Y, srcSpacing, dstSpacing };
         }
 
         function pointFor(ip, isSource, layout) {

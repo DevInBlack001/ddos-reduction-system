@@ -21,7 +21,12 @@
         .graph-wrap {
             position: relative;
             width: 100%;
-            max-height: calc(100vh - 220px);
+            /* height (not max-height): always fills the available space
+               so the simulation has room to spread nodes out even when
+               there aren't many of them yet. The canvas inside grows past
+               this and triggers the scrollbar only once node count
+               actually needs more room than that. */
+            height: calc(100vh - 220px);
             min-height: 480px;
             overflow-y: auto;
             overflow-x: hidden;
@@ -117,16 +122,17 @@
         window.addEventListener('resize', resizeCanvasWidth);
 
         function updateCanvasHeight() {
-            // Loose heuristic, not an exact fit like traffic.html's column
-            // layout: a force-directed graph doesn't need one row per node,
-            // but it does need more 2D area as the node count grows, or
-            // spacing collapses regardless of how strong the repulsion is.
-            // Scrolls (via .graph-wrap's overflow-y) once this exceeds the
-            // panel's max-height instead of squeezing everything into a
-            // fixed viewport-sized canvas.
-            const area = Math.max(480 * 700, nodes.size * 9000);
-            const height = Math.max(480, Math.round(area / Math.max(canvas.width, 1)));
-            canvas.height = height;
+            // Baseline: whatever height the wrapper already fills on
+            // screen (reliable now that .graph-wrap has a fixed CSS
+            // `height`, not one derived from canvas content) -- this is
+            // what was missing before: with few nodes, height defaulted to
+            // a flat 480px floor regardless of how much taller the actual
+            // viewport was. Grows past that (triggering the scrollbar)
+            // only once node count needs more 2D area than fits.
+            const visible = canvas.parentElement.clientHeight;
+            const area = Math.max(canvas.width * visible, nodes.size * 9000);
+            const height = Math.round(area / Math.max(canvas.width, 1));
+            canvas.height = Math.max(visible, height);
         }
 
         function roleColor(role) {

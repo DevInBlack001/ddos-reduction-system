@@ -406,18 +406,23 @@ body {
     margin-bottom: 16px;
 }
 
+/* No explicit grid-row anywhere here -- deliberately relying on Grid's
+   default auto-placement (row-sparse, DOM order) instead of an explicit
+   row-span on the label. A spanning item's contribution to auto row-track
+   sizing is a genuinely unpredictable corner of the Grid spec; plain
+   auto-placement (label -> col 1 row 1, input -> col 2 row 1, hint -> col 2
+   row 2, since row 1/col 2 is already taken) gives the exact same visual
+   result with none of that fragility. */
 .threshold-field {
     display: grid;
     grid-template-columns: minmax(140px, 200px) 1fr;
-    grid-template-rows: auto auto;
+    align-items: start;
     column-gap: 14px;
     row-gap: 2px;
 }
 
 .threshold-field label {
     grid-column: 1;
-    grid-row: 1 / span 2;
-    align-self: start;
     text-align: left;
     padding-top: 9px;
     font-size: 0.72rem;
@@ -427,12 +432,10 @@ body {
 
 .threshold-field .form-input {
     grid-column: 2;
-    grid-row: 1;
 }
 
 .threshold-field .threshold-hint {
     grid-column: 2;
-    grid-row: 2;
     display: block;
     font-size: 0.68rem;
     color: var(--text-tertiary);
