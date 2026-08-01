@@ -91,6 +91,11 @@
                             <input type="password" id="newPassword" class="form-input" required minlength="8">
                             <span class="threshold-hint">Minimum 8 characters.</span>
                         </div>
+                        <div class="threshold-field">
+                            <label for="createAdminPassword">Your Password</label>
+                            <input type="password" id="createAdminPassword" class="form-input" required>
+                            <span class="threshold-hint">Confirm it's you -- enter your own current password.</span>
+                        </div>
                     </form>
                     <button type="submit" form="createUserForm" class="btn">Create Account</button>
                 </div>
@@ -108,6 +113,11 @@
                             <label for="pwNewPassword">New Password</label>
                             <input type="password" id="pwNewPassword" class="form-input" required minlength="8">
                             <span class="threshold-hint">Minimum 8 characters.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="pwAdminPassword">Your Password</label>
+                            <input type="password" id="pwAdminPassword" class="form-input" required>
+                            <span class="threshold-hint">Confirm it's you -- enter your own current password.</span>
                         </div>
                     </form>
                     <button type="submit" form="setPasswordForm" class="btn">Update Password</button>
@@ -162,7 +172,13 @@
 
         async function deleteUser(username) {
             if (!confirm(`Delete account "${username}"? This cannot be undone.`)) return;
-            const res = await fetch(`/api/users?username=${encodeURIComponent(username)}`, { method: 'DELETE' });
+            const admin_password = prompt("Confirm it's you -- enter your own current password:");
+            if (!admin_password) return;
+            const res = await fetch('/api/users', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, admin_password })
+            });
             if (res.ok) {
                 fetchUsers();
             } else {
@@ -175,10 +191,11 @@
             e.preventDefault();
             const username = document.getElementById('newUsername').value;
             const password = document.getElementById('newPassword').value;
+            const admin_password = document.getElementById('createAdminPassword').value;
             const res = await fetch('/api/users', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
+                body: JSON.stringify({ username, password, admin_password })
             });
             if (res.ok) {
                 document.getElementById('createUserForm').reset();
@@ -193,10 +210,11 @@
             e.preventDefault();
             const username = document.getElementById('pwUsername').value;
             const new_password = document.getElementById('pwNewPassword').value;
+            const admin_password = document.getElementById('pwAdminPassword').value;
             const res = await fetch('/api/users/password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, new_password })
+                body: JSON.stringify({ username, new_password, admin_password })
             });
             if (res.ok) {
                 document.getElementById('setPasswordForm').reset();

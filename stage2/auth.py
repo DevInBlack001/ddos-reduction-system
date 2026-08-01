@@ -35,6 +35,33 @@ def _record_login_failure(client_ip: str):
     state.failed_login_attempts.setdefault(client_ip, []).append(time.time())
 
 
+def get_session_username(request: Request) -> str:
+    """The username behind the caller's session cookie, or a 401 if there
+    isn't a valid one. auth_middleware already rejects unauthenticated
+    requests before a route handler runs, so a missing/invalid session
+    here would only happen from a route that isn't behind that gate --
+    treated as a hard error either way, not something to fall back from."""
+    session_id = request.cookies.get("session_id")
+    session = state.active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Session expired. Re-authenticate.")
+    return session["username"]
+
+
+def revoke_sessions_for_user(username: str):
+    """Invalidate every active session belonging to `username` -- called
+    when that account's password changes or the account is deleted, so a
+    session hijacked before the change doesn't just keep working until its
+    own idle timeout. Without this, sessions (keyed by an opaque token with
+    no username attached) had no way to be targeted by account changes at
+    all."""
+    stale = [token for token, s in state.active_sessions.items() if s.get("username") == username]
+    for token in stale:
+        del state.active_sessions[token]
+    if stale:
+        logging.info(f"[+] Revoked {len(stale)} active session(s) for '{username}'")
+
+
 async def auth_middleware(request: Request, call_next):
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -64,10 +91,11 @@ async def auth_middleware(request: Request, call_next):
     if path.endswith(".html") or path == "/" or path.startswith("/api/"):
         session_id = request.cookies.get("session_id")
         is_valid = False
-        if session_id in state.active_sessions:
+        session = state.active_sessions.get(session_id)
+        if session is not None:
             # Check 10 minutes timeout (600s)
-            if time.time() - state.active_sessions[session_id] <= 600:
-                state.active_sessions[session_id] = time.time()  # refresh
+            if time.time() - session["last_active"] <= 600:
+                session["last_active"] = time.time()  # refresh
                 is_valid = True
             else:
                 del state.active_sessions[session_id]
@@ -111,7 +139,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
 
         if password_ok:
             session_token = secrets.token_hex(24)
-            state.active_sessions[session_token] = time.time()
+            state.active_sessions[session_token] = {"username": username, "last_active": time.time()}
             state.failed_login_attempts.pop(client_ip, None)
             response = RedirectResponse(url="/static/index.html", status_code=status.HTTP_303_SEE_OTHER)
             response.set_cookie(

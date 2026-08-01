@@ -94,9 +94,27 @@ def _check_password_strength(v: str) -> str:
     return v
 
 
+class DeleteUserPayload(BaseModel):
+    username: str
+    admin_password: str
+
+    @field_validator("username")
+    @classmethod
+    def _v_username(cls, v):
+        return _check_username(v)
+
+
 class CreateUserPayload(BaseModel):
     username: str
     password: str
+    # The CALLER's own current password, re-checked server-side before the
+    # action is allowed -- confirms whoever's driving this session really
+    # knows the credentials they're authenticated as, not just holding a
+    # (possibly hijacked) session cookie. No length/strength validator here
+    # deliberately: this re-checks an EXISTING password via bcrypt, not a
+    # new one being set, so it must accept whatever that account's real
+    # password already is, even if it predates the 8-char minimum.
+    admin_password: str
 
     @field_validator("username")
     @classmethod
@@ -112,6 +130,7 @@ class CreateUserPayload(BaseModel):
 class SetPasswordPayload(BaseModel):
     username: str
     new_password: str
+    admin_password: str
 
     @field_validator("username")
     @classmethod

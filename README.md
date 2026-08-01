@@ -600,6 +600,13 @@ Beyond the statistical poisoning defenses above, a security audit pass covered t
 - A 10 MB request body cap (checked via `Content-Length` before the body is read) guards every endpoint, not just the PDF export that motivated it.
 - PDF export writes chart images to unique per-request temp files (`tempfile.NamedTemporaryFile`, cleaned up in a `finally` block) instead of two fixed shared filenames, which let concurrent exports clobber or mix each other's charts. The incoming base64 payload is also size-capped (8 MB) before decoding.
 
+**Account management (`users.py`, `alerts.py`)**
+- Creating an account, deleting an account, or changing a password now all require the caller to **re-enter their own current password** (`admin_password`, verified server-side via `_verify_admin_password()` against the *caller's* stored hash, not the target account's). A session cookie alone — one that leaked through a brief XSS window, or was left signed in on a shared machine — used to be enough to durably take over every admin account; now it isn't.
+- Sessions are tracked as `token -> {"username", "last_active"}` instead of a bare timestamp, so a password change or account deletion can call `auth.revoke_sessions_for_user()` and immediately invalidate every other live session for that username, rather than leaving a hijacked session usable until its own idle timeout.
+- The "can't delete the last admin" guard and the duplicate-username check on create are each enforced as a single atomic SQL statement (`DELETE ... WHERE username = ? AND (SELECT COUNT(*) FROM users) > 1`, and relying on the `username` `PRIMARY KEY` constraint + catching `IntegrityError`) instead of a separate check-then-act pair — closing a TOCTOU race where two concurrent requests could each pass a check before either committed (e.g. two deletes racing against a 2-admin system, both reading `count == 2` before either delete lands, leaving zero accounts behind).
+- `DELETE /api/users` takes `username`/`admin_password` as a JSON request body (`DeleteUserPayload`) rather than query parameters — a query string risks landing in server access logs or browser history, which is the wrong place for a password.
+- `GET /api/config/alerts` no longer echoes the Discord webhook URL back in the clear (it's a bearer credential — anyone holding it can post to the configured channel as the bot). It's redacted to a `discord_webhook_url_set` boolean, matching the existing `smtp_app_password_set` pattern; the dashboard only sends a new URL/password to the server if the operator actually typed one.
+
 ---
 
 ## Dependencies

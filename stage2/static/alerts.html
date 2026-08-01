@@ -85,7 +85,8 @@
                     </div>
                     <div class="threshold-field">
                         <label for="discordWebhookUrl">Webhook URL</label>
-                        <input type="text" id="discordWebhookUrl" class="form-input" placeholder="https://discord.com/api/webhooks/...">
+                        <input type="password" id="discordWebhookUrl" class="form-input" placeholder="https://discord.com/api/webhooks/...">
+                        <span class="threshold-hint" id="discordWebhookUrlHint">Leave blank to keep the current one.</span>
                     </div>
                     <div class="channel-actions">
                         <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
@@ -146,7 +147,10 @@
                 }
                 const cfg = await res.json();
                 document.getElementById('discordEnabled').checked = !!cfg.discord_enabled;
-                document.getElementById('discordWebhookUrl').value = cfg.discord_webhook_url || '';
+                document.getElementById('discordWebhookUrl').value = '';
+                document.getElementById('discordWebhookUrlHint').innerText = cfg.discord_webhook_url_set
+                    ? 'A webhook URL is already saved -- leave blank to keep it.'
+                    : 'No webhook URL saved yet.';
                 document.getElementById('emailEnabled').checked = !!cfg.email_enabled;
                 document.getElementById('smtpHost').value = cfg.smtp_host || '';
                 document.getElementById('smtpPort').value = cfg.smtp_port || 587;
@@ -163,7 +167,6 @@
         async function saveAlertsConfig() {
             const payload = {
                 discord_enabled: document.getElementById('discordEnabled').checked,
-                discord_webhook_url: document.getElementById('discordWebhookUrl').value,
                 email_enabled: document.getElementById('emailEnabled').checked,
                 smtp_host: document.getElementById('smtpHost').value,
                 smtp_port: parseInt(document.getElementById('smtpPort').value, 10) || 587,
@@ -171,6 +174,10 @@
                 email_recipients: document.getElementById('emailRecipients').value
                     .split(',').map(s => s.trim()).filter(Boolean),
             };
+            const webhookUrl = document.getElementById('discordWebhookUrl').value;
+            if (webhookUrl) {
+                payload.discord_webhook_url = webhookUrl;
+            }
             const appPassword = document.getElementById('smtpAppPassword').value;
             if (appPassword) {
                 payload.smtp_app_password = appPassword;
@@ -182,6 +189,7 @@
             });
             if (res.ok) {
                 document.getElementById('smtpAppPassword').value = '';
+                document.getElementById('discordWebhookUrl').value = '';
                 await loadAlertsConfig();
             } else {
                 const data = await res.json();

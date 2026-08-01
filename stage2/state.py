@@ -48,7 +48,12 @@ consecutive_ddos_windows = {}  # victim_ip -> count of consecutive class-2 windo
 # to debounce repeated ipset calls for the same IP within a short window.
 recently_blocked = {}
 
-# session_token -> last_active_timestamp
+# session_token -> {"username": str, "last_active": float}. Associated with
+# a username (not just a bare timestamp) so a password change or account
+# deletion can revoke that specific user's live sessions -- see
+# auth.revoke_sessions_for_user(). Without this association neither action
+# could invalidate anything: the session store would have no way to know
+# which live tokens belonged to the affected account.
 active_sessions = {}
 
 # Login brute-force throttling -- keyed by client IP, not username, so an
