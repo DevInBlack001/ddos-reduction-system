@@ -80,9 +80,11 @@
                 <div class="graph-wrap">
                     <canvas id="trafficCanvas"></canvas>
                     <div class="legend">
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Victim target</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source / normal flow</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited flow</div>
+                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked flow / victim target</div>
                         <div class="legend-row" style="margin-top: 6px; color: var(--text-tertiary);">Line width/pulse speed scales with flow rate.</div>
+                        <div class="legend-row" style="color: var(--text-tertiary);">Blocked flows stop short -- they're dropped at the gateway.</div>
                     </div>
                 </div>
             </div>
@@ -141,6 +143,16 @@
                 const data = await res.json();
                 const flows = data.active_flows || [];
                 const victims = new Set((data.victim_targets || []).map(v => v.ip));
+                // ddos_blocklist is an unconditional DROP on both INPUT and
+                // FORWARD (see enforcement.py:setup_ipset) -- a blocked
+                // source's packets genuinely never reach the victim, unlike
+                // ddos_ratelimit (a pps cap -- traffic under the cap still
+                // gets through), so only blocked sources get the "stops
+                // short" treatment below. Rate-limited sources still get a
+                // distinct color, just not the truncated/dashed treatment,
+                // since their traffic (up to the cap) does arrive.
+                const blocked = new Set(data.blocked_ips || []);
+                const ratelimited = new Set(data.ratelimited_ips || []);
 
                 const presentSources = new Set();
                 const presentVictims = new Set();
@@ -155,7 +167,10 @@
                     if (existing) {
                         existing.rate += (f.rate || 0);
                     } else {
-                        edgeMap.set(key, { src: f.ip, dst: f.dst, rate: f.rate || 0, proto: f.proto });
+                        let status = 'normal';
+                        if (blocked.has(f.ip)) status = 'blocked';
+                        else if (ratelimited.has(f.ip)) status = 'ratelimited';
+                        edgeMap.set(key, { src: f.ip, dst: f.dst, rate: f.rate || 0, proto: f.proto, status });
                     }
                 });
                 victims.forEach(ip => presentVictims.add(ip));
@@ -196,13 +211,31 @@
             return { x, y };
         }
 
+        // A blocked source's packets are dropped at the gateway (unconditional
+        // iptables DROP, see enforcement.py) -- their pulses stop at this
+        // fraction of the curve instead of reaching the victim.
+        const BLOCKED_DROP_T = 0.65;
+
+        function bezierPoint(a, b, midX, t) {
+            const mt = 1 - t;
+            return {
+                x: mt ** 3 * a.x + 3 * mt ** 2 * t * midX + 3 * mt * t ** 2 * midX + t ** 3 * b.x,
+                y: mt ** 3 * a.y + 3 * mt ** 2 * t * a.y + 3 * mt * t ** 2 * b.y + t ** 3 * b.y,
+            };
+        }
+
         function spawnPulses() {
             edges.forEach(e => {
                 // Higher rate -> more frequent pulses. Cap so a huge flood
                 // doesn't spawn an unreadable number of dots.
                 const chance = Math.min(0.35, 0.03 + e.rate / 400);
                 if (Math.random() < chance) {
-                    pulses.push({ src: e.src, dst: e.dst, t: 0, speed: 0.01 + Math.min(0.03, e.rate / 5000) });
+                    pulses.push({
+                        src: e.src, dst: e.dst, t: 0,
+                        speed: 0.01 + Math.min(0.03, e.rate / 5000),
+                        status: e.status,
+                        maxT: e.status === 'blocked' ? BLOCKED_DROP_T : 1,
+                    });
                 }
             });
             if (pulses.length > 400) pulses = pulses.slice(pulses.length - 400);
@@ -215,41 +248,57 @@
 
             const edgeColor = ShieldTheme.cssVar('--border-strong');
             const accent = ShieldTheme.cssVar('--accent');
+            const warning = ShieldTheme.cssVar('--status-warning');
             const danger = ShieldTheme.cssVar('--status-danger');
             const textColor = ShieldTheme.cssVar('--text-secondary');
+            const statusColor = { normal: edgeColor, ratelimited: warning, blocked: danger };
+            const pulseColor = { normal: accent, ratelimited: warning, blocked: danger };
 
             edges.forEach(e => {
                 if (!sourceRow.has(e.src) || !victimRow.has(e.dst)) return;
                 const a = pointFor(e.src, true, layout);
                 const b = pointFor(e.dst, false, layout);
                 const midX = (a.x + b.x) / 2;
+                const color = statusColor[e.status] || edgeColor;
 
-                ctx.strokeStyle = edgeColor;
-                ctx.globalAlpha = Math.min(0.8, 0.2 + e.rate / 250);
-                ctx.lineWidth = Math.min(5, 0.5 + Math.log10(1 + e.rate));
-                ctx.beginPath();
-                ctx.moveTo(a.x, a.y);
-                ctx.bezierCurveTo(midX, a.y, midX, b.y, b.x, b.y);
-                ctx.stroke();
+                if (e.status === 'blocked') {
+                    // Truncated + dashed: the connection is severed at the
+                    // gateway, it doesn't visually continue to the victim.
+                    const stop = bezierPoint(a, b, midX, BLOCKED_DROP_T);
+                    ctx.strokeStyle = color;
+                    ctx.globalAlpha = 0.6;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.bezierCurveTo(midX, a.y, midX, stop.y, stop.x, stop.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    ctx.beginPath();
+                    ctx.moveTo(stop.x - 5, stop.y - 5);
+                    ctx.lineTo(stop.x + 5, stop.y + 5);
+                    ctx.moveTo(stop.x + 5, stop.y - 5);
+                    ctx.lineTo(stop.x - 5, stop.y + 5);
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                } else {
+                    // Rate-limited flows get a dashed line too (visually
+                    // distinct from normal traffic) but reach the victim,
+                    // since only pps above the cap actually gets dropped.
+                    ctx.strokeStyle = color;
+                    ctx.globalAlpha = Math.min(0.8, 0.2 + e.rate / 250);
+                    ctx.lineWidth = Math.min(5, 0.5 + Math.log10(1 + e.rate));
+                    if (e.status === 'ratelimited') ctx.setLineDash([8, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.bezierCurveTo(midX, a.y, midX, b.y, b.x, b.y);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
             });
             ctx.globalAlpha = 1;
-
-            // Animated pulses traveling along each edge's curve.
-            ctx.fillStyle = accent;
-            pulses.forEach(p => {
-                if (!sourceRow.has(p.src) || !victimRow.has(p.dst)) return;
-                const a = pointFor(p.src, true, layout);
-                const b = pointFor(p.dst, false, layout);
-                const midX = (a.x + b.x) / 2;
-                const t = p.t;
-                const mt = 1 - t;
-                // Point on the cubic bezier (a, mid1, mid2, b).
-                const x = mt ** 3 * a.x + 3 * mt ** 2 * t * midX + 3 * mt * t ** 2 * midX + t ** 3 * b.x;
-                const y = mt ** 3 * a.y + 3 * mt ** 2 * t * a.y + 3 * mt * t ** 2 * b.y + t ** 3 * b.y;
-                ctx.beginPath();
-                ctx.arc(x, y, 3, 0, Math.PI * 2);
-                ctx.fill();
-            });
 
             // Source nodes.
             sourceRow.forEach((row, ip) => {
@@ -276,13 +325,33 @@
                 ctx.fillText(ip, p.x + 12, p.y + 3);
             });
             ctx.textAlign = 'left';
+
+            // Animated pulses drawn LAST so they're always visible on top
+            // of nodes/edges, including the frame where they arrive right
+            // at (or, for blocked sources, short of) their destination.
+            pulses.forEach(p => {
+                if (!sourceRow.has(p.src) || !victimRow.has(p.dst)) return;
+                const a = pointFor(p.src, true, layout);
+                const b = pointFor(p.dst, false, layout);
+                const midX = (a.x + b.x) / 2;
+                const pt = bezierPoint(a, b, midX, p.t);
+                ctx.fillStyle = pulseColor[p.status] || accent;
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            });
         }
 
         function loop() {
             spawnPulses();
-            pulses.forEach(p => { p.t += p.speed; });
-            pulses = pulses.filter(p => p.t < 1);
+            // Clamp to maxT (1 for normal flows, BLOCKED_DROP_T for blocked
+            // ones) so every pulse actually renders at its endpoint for one
+            // frame before removal -- filtering with a strict "< 1" BEFORE
+            // draw() used to discard that frame, so pulses looked like they
+            // vanished just short of arriving.
+            pulses.forEach(p => { p.t = Math.min(p.maxT, p.t + p.speed); });
             draw();
+            pulses = pulses.filter(p => p.t < p.maxT);
             requestAnimationFrame(loop);
         }
 

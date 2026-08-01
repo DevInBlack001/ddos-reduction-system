@@ -128,9 +128,16 @@
 
         function ensureNode(ip, role) {
             if (!nodes.has(ip)) {
+                // Spread new arrivals across the whole canvas rather than
+                // clustering them near center -- several sources often show
+                // up in the same refresh (that's the normal shape of an
+                // attack starting), and spawning them within a few px of
+                // each other triggers a near-singular repulsion force
+                // (see step()) that flings everything apart instead of
+                // settling.
                 nodes.set(ip, {
-                    x: canvas.width / 2 + (Math.random() - 0.5) * 100,
-                    y: canvas.height / 2 + (Math.random() - 0.5) * 100,
+                    x: 40 + Math.random() * (canvas.width - 80),
+                    y: 40 + Math.random() * (canvas.height - 80),
                     vx: 0, vy: 0,
                     role: role,
                     degree: 0,
@@ -206,16 +213,21 @@
             const W = canvas.width, H = canvas.height;
             const nodeList = Array.from(nodes.values());
 
-            // Pairwise repulsion.
+            // Pairwise repulsion. Distance is floored at 20px (not just
+            // clamped to avoid /0) so two nodes that land on top of each
+            // other -- newly spawned, or dragged together -- produce a
+            // bounded force instead of the 1/distSq singularity blowing up
+            // as distance approaches 0. That singularity was the main
+            // source of visible instability: a burst of new sources
+            // landing near each other used to fling the whole graph apart.
             for (let i = 0; i < nodeList.length; i++) {
                 for (let j = i + 1; j < nodeList.length; j++) {
                     const a = nodeList[i], b = nodeList[j];
                     let dx = a.x - b.x, dy = a.y - b.y;
                     let distSq = dx * dx + dy * dy;
-                    if (distSq < 1) distSq = 1;
                     if (distSq > 90000) continue; // cutoff: >300px apart, ignore
-                    const dist = Math.sqrt(distSq);
-                    const force = 2200 / distSq;
+                    const dist = Math.max(20, Math.sqrt(distSq));
+                    const force = 2200 / (dist * dist);
                     const fx = (dx / dist) * force, fy = (dy / dist) * force;
                     if (a !== dragTarget) { a.vx += fx; a.vy += fy; }
                     if (b !== dragTarget) { b.vx -= fx; b.vy -= fy; }
@@ -244,10 +256,16 @@
 
             nodes.forEach(n => {
                 if (n === dragTarget) return;
-                n.vx *= 0.85;
-                n.vy *= 0.85;
+                n.vx *= 0.72;
+                n.vy *= 0.72;
                 n.x += n.vx;
                 n.y += n.vy;
+                // Zero the outward velocity component on hitting a wall --
+                // clamping position alone leaves a fast node still "pressing"
+                // into the boundary at full velocity every frame, which
+                // reads as a persistent vibration at the edges.
+                if (n.x < 20 || n.x > W - 20) n.vx = 0;
+                if (n.y < 20 || n.y > H - 20) n.vy = 0;
                 n.x = Math.max(20, Math.min(W - 20, n.x));
                 n.y = Math.max(20, Math.min(H - 20, n.y));
             });
