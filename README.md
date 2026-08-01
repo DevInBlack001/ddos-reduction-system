@@ -175,7 +175,7 @@ Where `p(xᵢ)` is the fraction of packets in the current window that came from 
 
 ### 4. The Anomaly Boundary: μ ± k·σ
 
-**Files:** `stage1/src/welford.rs`, `stage1/src/analysis.rs`
+**Files:** `stage1/src/welford.rs`, `stage1/src/analysis.rs`, `stage1/src/state.rs` (`AnalysisConfig.k`)
 
 After Welford processes enough windows to establish a baseline, Layer 3 compares each new scalar against a dynamic boundary:
 
@@ -296,16 +296,34 @@ DDoS Reduction Project/
 │   └── src/
 │       ├── main.rs                 ← CLI, privilege check, thread orchestrator
 │       ├── capture.rs              ← Stage 0: pcap capture thread
-│       ├── analysis.rs             ← Three-layer analysis thread
+│       ├── analysis.rs             ← Three-layer pipeline (run_analysis_thread)
+│       ├── state.rs                ← AnalysisConfig + per-victim TargetState
 │       ├── welford.rs              ← Welford online variance accumulator
 │       ├── ewma.rs                 ← EWMA rate estimator
 │       ├── entropy.rs              ← Shannon entropy calculator
 │       ├── ipc.rs                  ← Binary IPC serialisation → Python
 │       └── persistence.rs          ← V4: baseline persistence across restarts
+├── stage2/                         ← Stage 2: Python classifier + web console
+│   ├── requirements.txt            ← Python dependencies
+│   ├── setup_admin.py              ← Interactive admin account provisioning
+│   ├── train.py                    ← Random Forest training (LOSO evaluation)
+│   ├── stage2.py                   ← Entrypoint: app assembly + main()
+│   ├── storage.py                  ← Generic JSON file read/write helpers
+│   ├── state.py                    ← Shared in-memory state (sessions, metrics, blocklists)
+│   ├── config.py                   ← Path constants + enforcement_config.json load/save
+│   ├── models.py                   ← Pydantic request payloads + IP validator
+│   ├── db.py                       ← SQLite audit-log writers
+│   ├── enforcement.py              ← ipset/iptables control, block/ratelimit/unblock
+│   ├── auth.py                     ← Login/logout, session middleware, bcrypt, rate-limit
+│   ├── ipc_receiver.py             ← Unix socket listener + classification/tier dispatch
+│   ├── reports.py                  ← CSV/PDF incident report export routes
+│   ├── api.py                      ← Dashboard state/history/whitelist/victim routes
+│   └── static/                     ← Dashboard HTML/CSS/JS
 └── scripts/
     ├── install.sh                  ← Linux installer (Debian/Ubuntu, RHEL, Alpine)
     ├── install.bat                 ← Windows installer (dev/test only)
     ├── update.sh                   ← Atomic update script
+    ├── run.sh                      ← Unified dev runner for both stages
     └── uninstall.sh                ← Full teardown script
 ```
 
@@ -330,7 +348,10 @@ This will:
 4. Compile Stage 1 in release mode
 5. Install the binary to `/usr/local/bin/ddos_stage1`
 6. Grant `CAP_NET_RAW` so it runs without `sudo`
-7. Install and configure systemd service units (`ddos-stage1` and `ddos-stage2`)
+7. Create the `ddos-stage1` service account and `ddos-ipc` group, and set up `/var/lib/ddos_stage1` and `/run/ddos_stage1` with the right ownership (see "Security Hardening" below — Stage 1 no longer needs to run as root)
+8. Set up the Stage 2 Python virtual environment and prompt for an admin username/password (`setup_admin.py` — there is no default credential)
+9. Generate a self-signed TLS certificate for the management console (`/etc/ddos_stage2/tls/`) if `openssl` is available
+10. Install and configure systemd service units (`ddos-stage1` running as `ddos-stage1`, `ddos-stage2` running as `root` for `ipset`/`iptables`)
 
 ### Windows (Development / Testing Only)
 
@@ -556,6 +577,31 @@ To ensure high-performance, robust, and poison-resistant mitigation, Stage 2 int
 
 ---
 
+## Security Hardening
+
+Beyond the statistical poisoning defenses above, a security audit pass covered the parts of the system an attacker (or a misconfigured deployment) could target directly rather than through traffic patterns. Fixes span both stages:
+
+**Transport and authentication**
+- The management console serves over **HTTPS** if a certificate is present at `/etc/ddos_stage2/tls/` (`install.sh` generates a self-signed one via `openssl` if none exists), falling back to plain HTTP with an explicit startup warning otherwise — previously the login form, session cookie, and every block/unblock call travelled in cleartext, bound to `0.0.0.0:8000`.
+- Passwords are hashed with **bcrypt** (`setup_admin.py`, `auth.py`), replacing a single unsalted-work-factor round of SHA-256. There is no default/fallback admin credential baked into the code — `main()` fails closed (logs a warning, no login possible) if `setup_admin.py` was never run.
+- Login attempts are throttled per client IP (5 failures / 5 minutes, then a 5-minute lockout) to slow online brute-forcing of whatever hash strength is in play.
+
+**Input validation and output encoding**
+- Every IP-shaped field accepted from the dashboard (`IpPayload`, `VictimPayload`, and the raw query-param endpoints) is validated with Python's `ipaddress` module before it can reach `ipset` or get stored. Without this, a CIDR string would get silently expanded by `ipset`'s `hash:ip` sets into every host in the range instead of the single IP the operator intended.
+- All dashboard pages that render server-supplied strings into `innerHTML` (whitelist/victim IPs, victim descriptions, log rows) now escape through `ShieldSafe.escapeHtml()`/`jsAttr()` (`static/theme.js`) — previously these were interpolated raw, a stored-XSS path that could run arbitrary JS in an authenticated admin's session (and, since the session cookie is `httponly`, XSS was actually the *more* dangerous path in than cookie theft, not less: injected JS can call any `/api/*` endpoint same-origin regardless).
+- CSV export neutralizes spreadsheet formula injection (a leading `=`, `+`, `-`, `@`, tab, or CR gets a defusing prefix) and uses proper `csv.writer` quoting instead of manual string formatting.
+
+**Process and filesystem isolation**
+- Stage 1 runs as a dedicated, unprivileged `ddos-stage1` service account with `AmbientCapabilities=CAP_NET_RAW` instead of full root — a bug anywhere in the packet-capture/analysis path no longer carries root's blast radius. Stage 2 still runs as root (needed for `ipset`/`iptables`).
+- The Stage 1 ↔ Stage 2 IPC socket, the active-flows telemetry file, and the training-label switch file all live in `/run/ddos_stage1/` (root-owned, `0770` shared with a `ddos-ipc` group) instead of world-writable `/tmp`. Previously any local account could race to bind the socket path ahead of Stage 2 — e.g. during a restart window — and either receive live `FeatureVector` telemetry meant for Stage 2, or inject fabricated windows straight into the enforcement pipeline.
+- `stage2.db` (holds password hashes), `whitelist.json`, `victims.json`, and `enforcement_config.json` are all `chmod 0600` — previously world-readable, letting any local account read credentials or enforcement thresholds off disk.
+
+**Request handling**
+- A 10 MB request body cap (checked via `Content-Length` before the body is read) guards every endpoint, not just the PDF export that motivated it.
+- PDF export writes chart images to unique per-request temp files (`tempfile.NamedTemporaryFile`, cleaned up in a `finally` block) instead of two fixed shared filenames, which let concurrent exports clobber or mix each other's charts. The incoming base64 payload is also size-capped (8 MB) before decoding.
+
+---
+
 ## Dependencies
 
 | Crate | Purpose |
@@ -567,6 +613,8 @@ To ensure high-performance, robust, and poison-resistant mitigation, Stage 2 int
 | `log` + `env_logger` | Levelled logging controlled by `RUST_LOG` |
 
 All statistical algorithms (Welford, EWMA, Shannon Entropy) use only the Rust standard library — no external crates.
+
+Stage 2's Python dependencies are pinned in `stage2/requirements.txt` (FastAPI, uvicorn, scikit-learn, pandas, joblib, reportlab, `python-multipart`); `bcrypt` was added for password hashing (see "Security Hardening" above) in place of the standard library's `hashlib`.
 
 ---
 

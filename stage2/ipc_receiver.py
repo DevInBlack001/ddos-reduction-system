@@ -1,0 +1,370 @@
+"""
+ipc_receiver.py — Unix domain socket listener thread.
+
+Receives FeatureVector windows from Stage 1, runs the ML classifier plus
+the adaptive safety overrides, updates shared state, and dispatches the
+4-tier block/rate-limit enforcement logic.
+"""
+
+import os
+import json
+import socket
+import struct
+import ipaddress
+import logging
+import grp
+import time
+
+import joblib
+
+import config
+import state
+import db
+import enforcement
+
+
+def decode_ip(ip_bytes):
+    try:
+        ip_v6 = ipaddress.IPv6Address(ip_bytes)
+        if ip_v6.ipv4_mapped:
+            return str(ip_v6.ipv4_mapped)
+        return str(ip_v6)
+    except Exception as e:
+        logging.error(f"[-] Failed to parse IP bytes: {e}")
+        return "Unknown"
+
+
+def run_ipc_receiver():
+    # Setup ipset
+    enforcement.setup_ipset()
+
+    # Load Model
+    if not os.path.exists(config.MODEL_PATH):
+        logging.error(f"[-] Model not found at '{config.MODEL_PATH}'. UI will run in passive mode.")
+        clf = None
+    else:
+        try:
+            clf = joblib.load(config.MODEL_PATH)
+            # train.py fits with n_jobs=-1 (parallelize across cores), which
+            # is genuinely useful for a one-time fit over thousands of rows
+            # -- but that setting is pickled into the model and is a bad fit
+            # for live inference here, where every clf.predict() call is on
+            # a SINGLE-row DataFrame (one window at a time). Parallelizing a
+            # single row's prediction across worker processes costs more in
+            # joblib backend setup than it could ever save, and re-triggers
+            # sklearn's "delayed should be used with Parallel" UserWarning
+            # on every call instead of Python deduplicating it once -- which
+            # is what was flooding the journal. Force serial prediction.
+            clf.n_jobs = 1
+            logging.info("[+] ML Classifier loaded successfully.")
+        except Exception as e:
+            logging.error(f"[-] Failed to load classifier: {e}")
+            clf = None
+
+    # /run is tmpfs and cleared on every boot, so this can't be assumed to
+    # already exist -- create it fresh each startup. If the ddos-ipc group
+    # exists (install.sh creates it so the de-rooted Stage 1 service
+    # account can still reach this socket), share the directory and socket
+    # with that group; otherwise fall back to root-only, which is correct
+    # when Stage 1 is still running as root.
+    ipc_gid = None
+    try:
+        ipc_gid = grp.getgrnam("ddos-ipc").gr_gid
+    except KeyError:
+        pass
+
+    os.makedirs(config.RUNTIME_DIR, exist_ok=True)
+    os.chmod(config.RUNTIME_DIR, 0o770 if ipc_gid is not None else 0o700)
+    if ipc_gid is not None:
+        try:
+            os.chown(config.RUNTIME_DIR, -1, ipc_gid)
+        except OSError as e:
+            logging.warning(f"[!] Could not chgrp {config.RUNTIME_DIR} to ddos-ipc: {e}")
+
+    if os.path.exists(config.SOCKET_PATH):
+        try:
+            os.remove(config.SOCKET_PATH)
+        except OSError:
+            pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(config.SOCKET_PATH)
+        # Root-owned regardless; mode/group control who besides root can
+        # connect. 0600 (root-only) unless the ddos-ipc group exists, in
+        # which case 0660 lets the de-rooted Stage 1 service account in
+        # too -- either way, every other local account is still shut out.
+        if ipc_gid is not None:
+            os.chmod(config.SOCKET_PATH, 0o660)
+            try:
+                os.chown(config.SOCKET_PATH, -1, ipc_gid)
+            except OSError as e:
+                logging.warning(f"[!] Could not chgrp {config.SOCKET_PATH} to ddos-ipc: {e}")
+        else:
+            os.chmod(config.SOCKET_PATH, 0o600)
+        server.listen(5)
+        logging.info(f"[+] IPC socket listening on: {config.SOCKET_PATH}")
+    except Exception as e:
+        logging.error(f"[-] Failed to bind socket to {config.SOCKET_PATH}: {e}")
+        return
+
+    while True:
+        try:
+            conn, _ = server.accept()
+            while True:
+                data = conn.recv(config.PAYLOAD_SIZE)
+                if not data:
+                    break
+                if len(data) < config.PAYLOAD_SIZE:
+                    while len(data) < config.PAYLOAD_SIZE:
+                        chunk = conn.recv(config.PAYLOAD_SIZE - len(data))
+                        if not chunk:
+                            break
+                        data += chunk
+                    if len(data) < config.PAYLOAD_SIZE:
+                        break
+
+                unpacked = struct.unpack(config.FEATURE_VECTOR_FORMAT, data)
+                entropy = unpacked[0]
+                ewma_rate = unpacked[1]
+                mean_h = unpacked[2]
+                mean_r = unpacked[3]
+                sigma_h = unpacked[4]
+                sigma_r = unpacked[5]
+                proto_ratio = unpacked[6]
+                dominant_ip_ratio = unpacked[7]
+                timestamp = unpacked[8]
+                proto_tcp = unpacked[9]
+                proto_udp = unpacked[10]
+                proto_icmp = unpacked[11]
+                proto_sctp = unpacked[12]
+                proto_gre = unpacked[13]
+                proto_esp = unpacked[14]
+                k_multiplier = unpacked[15]
+                cooldown_counter = unpacked[16]
+                ip_str = decode_ip(unpacked[17])
+                victim_ip_str = decode_ip(unpacked[18])
+                victim_ip_str = enforcement.resolve_victim_ip(victim_ip_str)
+
+                # Calculate delta features
+                delta_rate = ewma_rate - mean_r
+                delta_entropy = entropy - mean_h
+
+                # dominant_rate: estimated pps of the single busiest source in
+                # this window. Computed once here -- fed to the classifier as
+                # an input feature (matches train.py's FEATURE_COLS order
+                # exactly), and reused below by the enforcement guards instead
+                # of each recomputing it independently.
+                dominant_rate = ewma_rate * dominant_ip_ratio
+
+                # Load once per packet -- operator-tunable thresholds for
+                # everything below (see config.DEFAULT_ENFORCEMENT_CONFIG for
+                # what each key means and why it's configurable, not
+                # hardcoded).
+                cfg = config.get_enforcement_config()
+
+                pred_class = 0
+                if clf:
+                    import pandas as pd
+                    features_df = pd.DataFrame([[
+                        entropy, ewma_rate, mean_h, mean_r, sigma_h, sigma_r,
+                        proto_ratio, dominant_ip_ratio, delta_rate, delta_entropy,
+                        dominant_rate
+                    ]], columns=[
+                        "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+                        "proto_ratio", "dominant_ip_ratio", "delta_rate", "delta_entropy",
+                        "dominant_rate"
+                    ])
+                    pred_class = int(clf.predict(features_df)[0])
+
+                # Adaptive Safety overrides
+                # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
+                #    Aggregate rate is fine as the outer "is this worth a second
+                #    look" gate -- it doesn't decide Flash-Crowd vs DDoS by itself.
+                rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
+                # 2. Extreme SINGLE-SOURCE rate trigger -- based on dominant_rate
+                #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
+                #    Aggregate rate can't distinguish "one attacker producing an
+                #    extreme volume" from "many genuine users each producing a
+                #    normal trickle" -- a legitimate flash crowd's aggregate scales
+                #    with participant count exactly like an attacker's does. This
+                #    used to check ewma_rate directly, which meant a large but
+                #    genuinely distributed crowd (e.g. running the same generator
+                #    from two machines at once) could get force-classified as DDoS
+                #    purely from aggregate volume, bypassing the entropy/dom_ratio
+                #    check below entirely. Threshold matches Track B's per-source
+                #    block_threshold for consistency -- same bar that triggers a
+                #    hard block now also triggers this classification override.
+                #    (block_rate_floor_pps / block_sigma_multiplier are shared
+                #    with Tier 2's block_threshold below, computed once as
+                #    extreme_dominant_rate_boundary and reused there too.)
+                extreme_dominant_rate_boundary = max(
+                    cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+                )
+                # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
+                entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
+
+                if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
+                    if dominant_rate > extreme_dominant_rate_boundary:
+                        pred_class = 2
+                    elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
+                        pred_class = 2
+                    else:
+                        pred_class = 1
+
+                class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
+                pred_name = class_names.get(pred_class, "Normal")
+
+                # Update live stats
+                state.last_metrics = {
+                    "entropy": entropy,
+                    "ewma_rate": ewma_rate,
+                    "mean_h": mean_h,
+                    "mean_r": mean_r,
+                    "sigma_h": sigma_h,
+                    "sigma_r": sigma_r,
+                    "proto_ratio": proto_ratio,
+                    "dominant_ip_ratio": dominant_ip_ratio,
+                    "timestamp": timestamp,
+                    "k_multiplier": k_multiplier,
+                    "cooldown": int(cooldown_counter),
+                    "latest_classification": pred_name,
+                    "victim_ip": victim_ip_str,
+                    "proto_tcp": proto_tcp,
+                    "proto_udp": proto_udp,
+                    "proto_icmp": proto_icmp,
+                    "proto_sctp": proto_sctp,
+                    "proto_gre": proto_gre,
+                    "proto_esp": proto_esp
+                }
+                state.last_metrics_by_target[victim_ip_str] = state.last_metrics.copy()
+
+                # Save history
+                db.log_metrics_history(timestamp, ewma_rate, entropy, mean_h, mean_r, sigma_h, sigma_r, k_multiplier, victim_ip_str)
+
+                # Track consecutive class-2 windows per victim for block
+                # hysteresis (rate-limiting is NOT gated by this -- only the
+                # hard-block tiers below are).
+                if pred_class == 2:
+                    state.consecutive_ddos_windows[victim_ip_str] = state.consecutive_ddos_windows.get(victim_ip_str, 0) + 1
+                else:
+                    state.consecutive_ddos_windows[victim_ip_str] = 0
+
+                # Trigger block / rate-limit
+                if pred_class == 2:
+                    if ip_str not in ("Unknown", "0.0.0.0", "::"):
+                        dominant_rate_threshold = mean_r + k_multiplier * sigma_r
+                        # Per-source block bar: sustained rate no legitimate
+                        # client/flash-crowd participant could produce.
+                        # (Same formula/values as extreme_dominant_rate_boundary
+                        # above -- reuse it directly to guarantee they can't drift
+                        # apart from each other.)
+                        block_threshold = extreme_dominant_rate_boundary
+                        # Softer bar for the rate-limit tier (unchanged from before).
+                        flow_threshold = max(cfg["ratelimit_rate_floor_pps"], mean_r + sigma_r)
+                        block_ready = state.consecutive_ddos_windows.get(victim_ip_str, 0) >= cfg["block_hysteresis_windows"]
+
+                        # Load and aggregate active flows BY SOURCE IP once, up
+                        # front -- every tier below reads from this same
+                        # aggregation instead of re-parsing the flows file
+                        # repeatedly. Aggregating by IP (summed across all of
+                        # that source's flow tuples) rather than per-flow means
+                        # an attacker spreading across multiple dst ports can't
+                        # dodge the per-source thresholds below by fragmenting
+                        # its traffic into several smaller-looking flows.
+                        per_source_rate = {}
+                        if os.path.exists(config.FLOWS_PATH):
+                            try:
+                                with open(config.FLOWS_PATH, "r") as f:
+                                    flow_data = json.load(f)
+                                for flow in flow_data.get("active_ips", []):
+                                    f_ip = flow.get("ip")
+                                    if f_ip and f_ip not in ("Unknown", "0.0.0.0", "::"):
+                                        per_source_rate[f_ip] = per_source_rate.get(f_ip, 0.0) + flow.get("rate", 0.0)
+                            except Exception as ce:
+                                logging.error(f"[-] Failed to parse active flows: {ce}")
+
+                        acted_on = set()
+
+                        # Tier 1 -- dominant-source fast path: one source
+                        # clearly drives the attack (both concentrated AND
+                        # fast). Gated by hysteresis like every block action.
+                        if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
+                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                            acted_on.add(ip_str)
+
+                        # Tier 2 -- independent per-source-rate escalation.
+                        # NOT gated behind dominant_ip_ratio: a source
+                        # sustaining an impossible rate gets blocked even if
+                        # it's one of many sources and the AGGREGATE looks
+                        # distributed. This is what closes the evasion gap --
+                        # spreading across sources no longer helps once every
+                        # source is still individually well above
+                        # human/flash-crowd rates.
+                        if block_ready:
+                            for f_ip, agg_rate in per_source_rate.items():
+                                if f_ip in acted_on:
+                                    continue
+                                if agg_rate >= block_threshold:
+                                    logging.warning(
+                                        f"[!] Per-source block: {f_ip} sustaining {agg_rate:.2f} pps "
+                                        f"(threshold {block_threshold:.2f}) across its active flows."
+                                    )
+                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                                    acted_on.add(f_ip)
+
+                        if not block_ready and per_source_rate:
+                            logging.info(
+                                f"[i] Class-2 window {state.consecutive_ddos_windows.get(victim_ip_str, 0)}/"
+                                f"{cfg['block_hysteresis_windows']} for victim {victim_ip_str} -- "
+                                f"block actions held pending hysteresis, rate-limiting only this window."
+                            )
+
+                        # Tier 3 -- softer rate-limit for sources elevated but
+                        # below the hard-block bar (the original Cluster Block
+                        # Mode). NOT gated by hysteresis -- this is the
+                        # intentionally-immediate, reversible tier.
+                        for f_ip, agg_rate in per_source_rate.items():
+                            if f_ip in acted_on:
+                                continue
+                            if agg_rate >= flow_threshold:
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                                acted_on.add(f_ip)
+
+                        # Tier 4 -- aggregate cap fallback. Class-2 verdict but
+                        # nothing above matched any single source individually
+                        # (fully distributed at sub-threshold per-source
+                        # rates). Previously this meant doing NOTHING at all
+                        # despite a confirmed DDoS classification -- rate-limit
+                        # every currently-active flow to the victim as a last
+                        # resort so a class-2 verdict never silently goes
+                        # unhandled.
+                        if not acted_on and per_source_rate:
+                            logging.warning(
+                                "[!] Aggregate cap fallback: class-2 verdict but no individual "
+                                "source was attributable -- rate-limiting all active flows."
+                            )
+                            for f_ip in per_source_rate:
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                        elif not per_source_rate and not acted_on:
+                            logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
+                elif pred_class == 1:
+                    # Log flash crowd incident
+                    db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str)
+                    # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
+                    # (dominant_rate computed once above, alongside the classifier features.)
+                    dominant_rate_threshold = mean_r + k_multiplier * sigma_r
+                    if ip_str not in ("Unknown", "0.0.0.0", "::") and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
+                        logging.warning(
+                            f"[!] Legitimate flash crowd dominant IP {ip_str} rate highly elevated "
+                            f"({dominant_rate:.2f} pps). Applying rate-limit ({cfg['ratelimit_hashlimit_pps']}pps cap) as precaution."
+                        )
+                        enforcement.ratelimit_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                elif pred_class == 0:
+                    # Log normal traffic
+                    db.log_incident(timestamp, ip_str, "Normal", victim_ip_str)
+
+            conn.close()
+        except Exception as e:
+            logging.error(f"[-] Socket read loop error: {e}")
+            time.sleep(1)

@@ -63,9 +63,10 @@ mod entropy;
 mod ewma;
 mod ipc;
 mod persistence;
+mod state;
 mod welford;
 
-use analysis::AnalysisConfig;
+use state::AnalysisConfig;
 use capture::CaptureConfig;
 use crossbeam_channel::bounded;
 use log::info;
