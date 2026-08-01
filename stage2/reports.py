@@ -78,13 +78,20 @@ def export_pdf(payload: PdfReportPayload):
     import base64
     import tempfile
 
-    if len(payload.rate_chart_base64) > MAX_CHART_BASE64_LEN or len(payload.entropy_chart_base64) > MAX_CHART_BASE64_LEN:
-        raise HTTPException(status_code=413, detail="Chart image payload too large.")
+    for field in (payload.rate_chart_base64, payload.entropy_chart_base64,
+                  payload.network_map_base64, payload.traffic_map_base64):
+        if field and len(field) > MAX_CHART_BASE64_LEN:
+            raise HTTPException(status_code=413, detail="Chart image payload too large.")
 
-    # Decode charts
+    # Decode charts. The network/traffic snapshots are optional -- older
+    # cached ir.html pages (or a client that fails to capture them) simply
+    # omit these two fields, and the report still builds without that
+    # section rather than failing outright.
     try:
         rate_data = base64.b64decode(payload.rate_chart_base64.split(",")[1])
         entropy_data = base64.b64decode(payload.entropy_chart_base64.split(",")[1])
+        network_data = base64.b64decode(payload.network_map_base64.split(",")[1]) if payload.network_map_base64 else None
+        traffic_data = base64.b64decode(payload.traffic_map_base64.split(",")[1]) if payload.traffic_map_base64 else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid base64 chart data: {e}")
 
@@ -93,6 +100,8 @@ def export_pdf(payload: PdfReportPayload):
     # each other's chart images.
     temp_rate_path = None
     temp_entropy_path = None
+    temp_network_path = None
+    temp_traffic_path = None
     pdf_buffer = BytesIO()
     try:
         with tempfile.NamedTemporaryFile(dir=config.SCRIPT_DIR, prefix="pdf_rate_", suffix=".png", delete=False) as f:
@@ -101,6 +110,14 @@ def export_pdf(payload: PdfReportPayload):
         with tempfile.NamedTemporaryFile(dir=config.SCRIPT_DIR, prefix="pdf_entropy_", suffix=".png", delete=False) as f:
             f.write(entropy_data)
             temp_entropy_path = f.name
+        if network_data:
+            with tempfile.NamedTemporaryFile(dir=config.SCRIPT_DIR, prefix="pdf_network_", suffix=".png", delete=False) as f:
+                f.write(network_data)
+                temp_network_path = f.name
+        if traffic_data:
+            with tempfile.NamedTemporaryFile(dir=config.SCRIPT_DIR, prefix="pdf_traffic_", suffix=".png", delete=False) as f:
+                f.write(traffic_data)
+                temp_traffic_path = f.name
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to decode chart images: {e}")
 
@@ -186,6 +203,23 @@ def export_pdf(payload: PdfReportPayload):
         ]))
         elements.append(t_charts)
         elements.append(Spacer(1, 20))
+
+        # Network Map / Traffic Flow snapshots (optional -- omitted if the
+        # client didn't send them)
+        if temp_network_path or temp_traffic_path:
+            elements.append(Paragraph("NETWORK TOPOLOGY & TRAFFIC FLOW", header_style))
+            row = []
+            if temp_network_path:
+                row.append(RLImage(temp_network_path, width=250, height=170))
+            if temp_traffic_path:
+                row.append(RLImage(temp_traffic_path, width=250, height=170))
+            t_maps = Table([row], colWidths=[270] * len(row))
+            t_maps.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            elements.append(t_maps)
+            elements.append(Spacer(1, 20))
 
         # Welford Baselines
         elements.append(Paragraph("CURRENT SYSTEM BASELINES", header_style))
@@ -275,7 +309,6 @@ def export_pdf(payload: PdfReportPayload):
         raise HTTPException(status_code=500, detail=f"PDF build error: {e}")
     finally:
         # Clean up temp image files
-        if temp_rate_path and os.path.exists(temp_rate_path):
-            os.remove(temp_rate_path)
-        if temp_entropy_path and os.path.exists(temp_entropy_path):
-            os.remove(temp_entropy_path)
+        for p in (temp_rate_path, temp_entropy_path, temp_network_path, temp_traffic_path):
+            if p and os.path.exists(p):
+                os.remove(p)

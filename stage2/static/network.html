@@ -15,29 +15,32 @@
         #graphCanvas {
             display: block;
             width: 100%;
-            height: 100%;
             cursor: grab;
         }
         #graphCanvas.dragging { cursor: grabbing; }
         .graph-wrap {
             position: relative;
             width: 100%;
-            height: calc(100vh - 140px);
-            min-height: 420px;
+            max-height: calc(100vh - 220px);
+            min-height: 480px;
+            overflow-y: auto;
+            overflow-x: hidden;
         }
+        /* Normal-flow bar above the canvas, not an overlay -- see
+           traffic.html for why an absolutely-positioned legend on top of
+           the drawing surface is a bad idea (it will eventually sit on
+           top of a node). */
         .legend {
-            position: absolute;
-            top: 12px;
-            left: 12px;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius);
-            padding: 10px 14px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 20px;
+            background: var(--bg-surface-alt);
+            border-bottom: 1px solid var(--border-color);
+            padding: 8px 14px;
             font-size: 0.75rem;
-            box-shadow: var(--shadow-sm);
         }
-        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .legend-row { display: flex; align-items: center; gap: 8px; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     </style>
 </head>
 <body>
@@ -79,16 +82,15 @@
 
         <div class="content-area">
             <div class="hud-panel" style="padding: 0; overflow: hidden;">
+                <div class="legend">
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Victim / blocked source</div>
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited source</div>
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--status-success);"></span> Whitelisted source</div>
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source</div>
+                    <div class="legend-row" style="color: var(--text-tertiary);">Drag a node to reposition it.</div>
+                </div>
                 <div class="graph-wrap">
                     <canvas id="graphCanvas"></canvas>
-                    <div class="legend">
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Victim target</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked source</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited source</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-success);"></span> Whitelisted source</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source</div>
-                        <div class="legend-row" style="margin-top: 6px; color: var(--text-tertiary);">Drag a node to reposition it.</div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -109,12 +111,23 @@
         let dragTarget = null;
         let dragOffset = { x: 0, y: 0 };
 
-        function resizeCanvas() {
-            const rect = canvas.parentElement.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
+        function resizeCanvasWidth() {
+            canvas.width = canvas.parentElement.clientWidth;
         }
-        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('resize', resizeCanvasWidth);
+
+        function updateCanvasHeight() {
+            // Loose heuristic, not an exact fit like traffic.html's column
+            // layout: a force-directed graph doesn't need one row per node,
+            // but it does need more 2D area as the node count grows, or
+            // spacing collapses regardless of how strong the repulsion is.
+            // Scrolls (via .graph-wrap's overflow-y) once this exceeds the
+            // panel's max-height instead of squeezing everything into a
+            // fixed viewport-sized canvas.
+            const area = Math.max(480 * 700, nodes.size * 9000);
+            const height = Math.max(480, Math.round(area / Math.max(canvas.width, 1)));
+            canvas.height = height;
+        }
 
         function roleColor(role) {
             switch (role) {
@@ -202,6 +215,7 @@
                     degree.set(e.dst, (degree.get(e.dst) || 0) + 1);
                 });
                 nodes.forEach((n, ip) => { n.degree = degree.get(ip) || 0; });
+                updateCanvasHeight();
 
                 document.getElementById('nodeCountPill').innerText = `${nodes.size} hosts`;
             } catch (err) {
@@ -225,17 +239,19 @@
                     const a = nodeList[i], b = nodeList[j];
                     let dx = a.x - b.x, dy = a.y - b.y;
                     let distSq = dx * dx + dy * dy;
-                    if (distSq > 90000) continue; // cutoff: >300px apart, ignore
+                    if (distSq > 160000) continue; // cutoff: >400px apart, ignore
                     const dist = Math.max(20, Math.sqrt(distSq));
-                    const force = 2200 / (dist * dist);
+                    const force = 4200 / (dist * dist);
                     const fx = (dx / dist) * force, fy = (dy / dist) * force;
                     if (a !== dragTarget) { a.vx += fx; a.vy += fy; }
                     if (b !== dragTarget) { b.vx -= fx; b.vy -= fy; }
                 }
             }
 
-            // Spring attraction along edges.
-            const targetLen = 140;
+            // Spring attraction along edges -- rest length loosened (140 ->
+            // 220) so connected nodes settle further apart instead of
+            // clustering tightly.
+            const targetLen = 220;
             edges.forEach(e => {
                 const a = nodes.get(e.src), b = nodes.get(e.dst);
                 if (!a || !b) return;
@@ -341,7 +357,8 @@
             canvas.classList.remove('dragging');
         });
 
-        resizeCanvas();
+        resizeCanvasWidth();
+        updateCanvasHeight();
         refreshGraphData();
         setInterval(refreshGraphData, 5000);
         loop();

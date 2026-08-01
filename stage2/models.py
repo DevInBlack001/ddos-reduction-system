@@ -79,6 +79,8 @@ class EnforcementConfigPayload(BaseModel):
 class PdfReportPayload(BaseModel):
     rate_chart_base64: str
     entropy_chart_base64: str
+    network_map_base64: Optional[str] = None
+    traffic_map_base64: Optional[str] = None
 
 
 def _check_username(v: str) -> str:

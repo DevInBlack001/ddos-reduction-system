@@ -392,35 +392,50 @@ body {
     box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* Labeled form-field grid: a responsive row of {label, input, hint} groups.
+/* Labeled form-field rows: a stacked list of {label, input, hint} rows,
+   label column on the left (fixed width, left-aligned text), input column
+   on the right (all inputs share the same grid column, so they're all the
+   same width and their left/right edges line up down the whole form).
    Used by any settings-style form (enforcement thresholds, alerts config,
    user account forms) -- kept global rather than duplicated per page so
-   every page gets identical field/label/hint alignment for free. */
+   every page gets identical alignment for free. */
 .threshold-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
     margin-bottom: 16px;
 }
 
 .threshold-field {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(140px, 200px) 1fr;
+    grid-template-rows: auto auto;
+    column-gap: 14px;
+    row-gap: 2px;
 }
 
 .threshold-field label {
-    display: block;
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+    text-align: left;
+    padding-top: 9px;
     font-size: 0.72rem;
     font-weight: 600;
     color: var(--text-secondary);
-    margin-bottom: 4px;
+}
+
+.threshold-field .form-input {
+    grid-column: 2;
+    grid-row: 1;
 }
 
 .threshold-field .threshold-hint {
+    grid-column: 2;
+    grid-row: 2;
     display: block;
     font-size: 0.68rem;
     color: var(--text-tertiary);
-    margin-top: 3px;
 }
 
 .btn {

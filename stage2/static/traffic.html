@@ -15,27 +15,30 @@
         #trafficCanvas {
             display: block;
             width: 100%;
-            height: 100%;
         }
         .graph-wrap {
             position: relative;
             width: 100%;
-            height: calc(100vh - 140px);
+            max-height: calc(100vh - 220px);
             min-height: 420px;
+            overflow-y: auto;
+            overflow-x: hidden;
         }
+        /* A normal-flow bar above the canvas, not an overlay -- an
+           absolutely-positioned legend sitting on top of the drawing
+           surface will inevitably collide with a node sooner or later as
+           the host count/layout changes. */
         .legend {
-            position: absolute;
-            top: 12px;
-            right: 12px;
-            background: var(--bg-surface);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius);
-            padding: 10px 14px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 20px;
+            background: var(--bg-surface-alt);
+            border-bottom: 1px solid var(--border-color);
+            padding: 8px 14px;
             font-size: 0.75rem;
-            box-shadow: var(--shadow-sm);
         }
-        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .legend-row { display: flex; align-items: center; gap: 8px; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     </style>
 </head>
 <body>
@@ -77,15 +80,14 @@
 
         <div class="content-area">
             <div class="hud-panel" style="padding: 0; overflow: hidden;">
+                <div class="legend">
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source / normal flow</div>
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited flow</div>
+                    <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked flow / victim target</div>
+                    <div class="legend-row" style="color: var(--text-tertiary);">Line width/pulse speed scales with rate. Blocked flows stop short -- dropped at the gateway.</div>
+                </div>
                 <div class="graph-wrap">
                     <canvas id="trafficCanvas"></canvas>
-                    <div class="legend">
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source / normal flow</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited flow</div>
-                        <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked flow / victim target</div>
-                        <div class="legend-row" style="margin-top: 6px; color: var(--text-tertiary);">Line width/pulse speed scales with flow rate.</div>
-                        <div class="legend-row" style="color: var(--text-tertiary);">Blocked flows stop short -- they're dropped at the gateway.</div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -108,12 +110,26 @@
         let edges = []; // {src, dst, rate, proto}
         let pulses = []; // {src, dst, t (0..1), speed}
 
-        function resizeCanvas() {
-            const rect = canvas.parentElement.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
+        // Generous, fixed per-row spacing -- the canvas grows to fit the
+        // content (and the panel scrolls once it's taller than the
+        // viewport allows) instead of squeezing every row's spacing down
+        // to fit a fixed viewport-sized canvas.
+        const ROW_HEIGHT = 40;
+        const MARGIN_X = 160;
+        const MARGIN_Y = 40;
+
+        function resizeCanvasWidth() {
+            // .graph-wrap's own clientWidth, not getBoundingClientRect --
+            // clientWidth already excludes the scrollbar, so the canvas
+            // doesn't end up a few px wider than the visible area.
+            canvas.width = canvas.parentElement.clientWidth;
         }
-        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('resize', resizeCanvasWidth);
+
+        function updateCanvasHeight() {
+            const rows = Math.max(1, sourceRow.size, victimRow.size);
+            canvas.height = Math.max(400, MARGIN_Y * 2 + rows * ROW_HEIGHT);
+        }
 
         function assignRow(map, ip) {
             if (!map.has(ip)) {
@@ -184,6 +200,7 @@
                 presentVictims.forEach(ip => assignRow(victimRow, ip));
                 compactRows(sourceRow, presentSources);
                 compactRows(victimRow, presentVictims);
+                updateCanvasHeight();
 
                 edges = Array.from(edgeMap.values());
                 document.getElementById('flowCountPill').innerText = `${edges.length} flows`;
@@ -193,14 +210,9 @@
         }
 
         function layoutPositions() {
-            const W = canvas.width, H = canvas.height;
-            const marginX = 140, marginY = 40;
-            const srcX = marginX, dstX = W - marginX;
-            const srcCount = Math.max(1, sourceRow.size);
-            const dstCount = Math.max(1, victimRow.size);
-            const srcSpacing = Math.max(28, (H - marginY * 2) / srcCount);
-            const dstSpacing = Math.max(28, (H - marginY * 2) / dstCount);
-            return { srcX, dstX, marginY, srcSpacing, dstSpacing };
+            const W = canvas.width;
+            const srcX = MARGIN_X, dstX = W - MARGIN_X;
+            return { srcX, dstX, marginY: MARGIN_Y, srcSpacing: ROW_HEIGHT, dstSpacing: ROW_HEIGHT };
         }
 
         function pointFor(ip, isSource, layout) {
@@ -355,7 +367,8 @@
             requestAnimationFrame(loop);
         }
 
-        resizeCanvas();
+        resizeCanvasWidth();
+        updateCanvasHeight();
         refreshTrafficData();
         setInterval(refreshTrafficData, 5000);
         loop();

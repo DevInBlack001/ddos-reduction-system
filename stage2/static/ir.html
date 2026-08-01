@@ -114,6 +114,23 @@
                     </div>
                 </div>
             </div>
+
+            <div class="hud-panel" style="margin-top: 20px;">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Network Topology Preview for Export</div>
+                    <span class="badge badge-normal">Incident graphics</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <div style="font-size: 0.72rem; color: var(--text-tertiary); margin-bottom: 6px;">Network Map (settled snapshot)</div>
+                        <canvas id="pdfNetworkCanvas" width="500" height="320" style="width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm);"></canvas>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.72rem; color: var(--text-tertiary); margin-bottom: 6px;">Traffic Flow (source &rarr; victim)</div>
+                        <canvas id="pdfTrafficCanvas" width="500" height="320" style="width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm);"></canvas>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -125,6 +142,10 @@
                 font: ShieldTheme.cssVar('--font-sans'),
                 accent: ShieldTheme.cssVar('--accent'),
                 danger: ShieldTheme.cssVar('--status-danger'),
+                warning: ShieldTheme.cssVar('--status-warning'),
+                success: ShieldTheme.cssVar('--status-success'),
+                surface: ShieldTheme.cssVar('--bg-surface'),
+                border: ShieldTheme.cssVar('--border-strong'),
                 grid: 'rgba(128, 140, 160, 0.15)'
             };
         }
@@ -225,6 +246,189 @@
             }
         }
 
+        // Simplified, one-shot versions of network.html / traffic.html's
+        // renderers -- a static PDF doesn't need the live drag/animation
+        // machinery, just a single settled snapshot. Physics constants
+        // (repulsion/spring/damping) match network.html so the topology
+        // reads the same way in the report as it does live.
+        async function renderNetworkSnapshot() {
+            const canvas = document.getElementById('pdfNetworkCanvas');
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+
+            const res = await fetch('/api/state');
+            const data = await res.json();
+            const flows = data.active_flows || [];
+            const blocked = new Set(data.blocked_ips || []);
+            const ratelimited = new Set(data.ratelimited_ips || []);
+            const whitelisted = new Set(data.whitelisted_ips || []);
+            const victims = (data.victim_targets || []).map(v => v.ip);
+
+            const nodes = new Map();
+            function ensureNode(ip, role) {
+                if (!nodes.has(ip)) {
+                    nodes.set(ip, { x: 30 + Math.random() * (W - 60), y: 30 + Math.random() * (H - 60), vx: 0, vy: 0, role });
+                } else if (role !== 'source') {
+                    nodes.get(ip).role = role;
+                }
+            }
+            victims.forEach(ip => ensureNode(ip, 'victim'));
+            const edgeMap = new Map();
+            flows.forEach(f => {
+                if (!f.ip || !f.dst) return;
+                let role = 'source';
+                if (blocked.has(f.ip)) role = 'blocked';
+                else if (ratelimited.has(f.ip)) role = 'ratelimited';
+                else if (whitelisted.has(f.ip)) role = 'whitelisted';
+                ensureNode(f.ip, role);
+                ensureNode(f.dst, 'victim');
+                const key = `${f.ip}|${f.dst}`;
+                edgeMap.set(key, (edgeMap.get(key) || 0) + (f.rate || 0));
+            });
+            const edges = Array.from(edgeMap.entries()).map(([key, rate]) => {
+                const [src, dst] = key.split('|');
+                return { src, dst, rate };
+            });
+
+            // Settle the layout synchronously -- no need to animate a
+            // one-shot image, just run enough iterations to converge.
+            const nodeList = Array.from(nodes.values());
+            for (let iter = 0; iter < 250; iter++) {
+                for (let i = 0; i < nodeList.length; i++) {
+                    for (let j = i + 1; j < nodeList.length; j++) {
+                        const a = nodeList[i], b = nodeList[j];
+                        const dx = a.x - b.x, dy = a.y - b.y;
+                        const distSq = dx * dx + dy * dy;
+                        if (distSq > 160000) continue;
+                        const dist = Math.max(20, Math.sqrt(distSq));
+                        const force = 4200 / (dist * dist);
+                        const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+                    }
+                }
+                edges.forEach(e => {
+                    const a = nodes.get(e.src), b = nodes.get(e.dst);
+                    if (!a || !b) return;
+                    const dx = b.x - a.x, dy = b.y - a.y;
+                    const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+                    const force = (dist - 160) * 0.02;
+                    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+                });
+                nodeList.forEach(n => {
+                    n.vx += (W / 2 - n.x) * 0.0015;
+                    n.vy += (H / 2 - n.y) * 0.0015;
+                    n.vx *= 0.72; n.vy *= 0.72;
+                    n.x += n.vx; n.y += n.vy;
+                    n.x = Math.max(15, Math.min(W - 15, n.x));
+                    n.y = Math.max(15, Math.min(H - 15, n.y));
+                });
+            }
+
+            const roleColor = { victim: colors.danger, blocked: colors.danger, ratelimited: colors.warning, whitelisted: colors.success, source: colors.accent };
+            ctx.fillStyle = colors.surface;
+            ctx.fillRect(0, 0, W, H);
+            ctx.strokeStyle = colors.border;
+            edges.forEach(e => {
+                const a = nodes.get(e.src), b = nodes.get(e.dst);
+                if (!a || !b) return;
+                ctx.globalAlpha = Math.min(0.8, 0.25 + e.rate / 250);
+                ctx.lineWidth = Math.min(4, 0.5 + Math.log10(1 + e.rate));
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                ctx.stroke();
+            });
+            ctx.globalAlpha = 1;
+            nodes.forEach((n, ip) => {
+                ctx.fillStyle = roleColor[n.role] || colors.accent;
+                ctx.beginPath();
+                ctx.arc(n.x, n.y, n.role === 'victim' ? 7 : 4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            return canvas.toDataURL('image/png');
+        }
+
+        async function renderTrafficSnapshot() {
+            const canvas = document.getElementById('pdfTrafficCanvas');
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+
+            const res = await fetch('/api/state');
+            const data = await res.json();
+            const flows = data.active_flows || [];
+            const blocked = new Set(data.blocked_ips || []);
+            const ratelimited = new Set(data.ratelimited_ips || []);
+            const victims = new Set((data.victim_targets || []).map(v => v.ip));
+
+            const sourceRow = new Map(), victimRow = new Map();
+            const edgeMap = new Map();
+            flows.forEach(f => {
+                if (!f.ip || !f.dst) return;
+                if (!sourceRow.has(f.ip)) sourceRow.set(f.ip, sourceRow.size);
+                if (!victimRow.has(f.dst)) victimRow.set(f.dst, victimRow.size);
+                let status = 'normal';
+                if (blocked.has(f.ip)) status = 'blocked';
+                else if (ratelimited.has(f.ip)) status = 'ratelimited';
+                const key = `${f.ip}|${f.dst}`;
+                const existing = edgeMap.get(key);
+                if (existing) existing.rate += (f.rate || 0);
+                else edgeMap.set(key, { src: f.ip, dst: f.dst, rate: f.rate || 0, status });
+            });
+            victims.forEach(ip => { if (!victimRow.has(ip)) victimRow.set(ip, victimRow.size); });
+            const edges = Array.from(edgeMap.values());
+
+            const marginX = 100, marginY = 24;
+            const srcSpacing = Math.max(18, (H - marginY * 2) / Math.max(1, sourceRow.size));
+            const dstSpacing = Math.max(18, (H - marginY * 2) / Math.max(1, victimRow.size));
+            function pointFor(ip, isSource) {
+                const row = isSource ? sourceRow.get(ip) : victimRow.get(ip);
+                const spacing = isSource ? srcSpacing : dstSpacing;
+                const x = isSource ? marginX : W - marginX;
+                return { x, y: marginY + row * spacing + spacing / 2 };
+            }
+            function lerp(a, b, t) {
+                return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+            }
+
+            ctx.fillStyle = colors.surface;
+            ctx.fillRect(0, 0, W, H);
+            const statusColor = { normal: colors.border, ratelimited: colors.warning, blocked: colors.danger };
+
+            edges.forEach(e => {
+                const a = pointFor(e.src, true), b = pointFor(e.dst, false);
+                const end = e.status === 'blocked' ? lerp(a, b, 0.65) : b;
+                ctx.strokeStyle = statusColor[e.status];
+                ctx.globalAlpha = e.status === 'blocked' ? 0.6 : Math.min(0.8, 0.2 + e.rate / 250);
+                ctx.lineWidth = e.status === 'blocked' ? 2 : Math.min(4, 0.5 + Math.log10(1 + e.rate));
+                if (e.status !== 'normal') ctx.setLineDash([5, 4]);
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(end.x, end.y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            });
+            ctx.globalAlpha = 1;
+
+            ctx.fillStyle = colors.accent;
+            sourceRow.forEach((row, ip) => {
+                const p = pointFor(ip, true);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.fillStyle = colors.danger;
+            victimRow.forEach((row, ip) => {
+                const p = pointFor(ip, false);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            return canvas.toDataURL('image/png');
+        }
+
         document.addEventListener('themechange', () => {
             colors = chartColors();
             Chart.defaults.color = colors.text;
@@ -252,13 +456,32 @@
             const rateImg = rateChart.toBase64Image();
             const entropyImg = entropyChart.toBase64Image();
 
+            // Re-render the network/traffic snapshots right before export so
+            // the report reflects current data, not whatever was on screen
+            // when the page first loaded. Best-effort -- if either fails
+            // (e.g. /api/state hiccups), the report still generates without
+            // that section rather than blocking the whole export.
+            let networkImg = null, trafficImg = null;
+            try {
+                networkImg = await renderNetworkSnapshot();
+            } catch (err) {
+                console.error("Network map snapshot failed:", err);
+            }
+            try {
+                trafficImg = await renderTrafficSnapshot();
+            } catch (err) {
+                console.error("Traffic flow snapshot failed:", err);
+            }
+
             try {
                 const response = await fetch('/api/logs/export/pdf', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         rate_chart_base64: rateImg,
-                        entropy_chart_base64: entropyImg
+                        entropy_chart_base64: entropyImg,
+                        network_map_base64: networkImg,
+                        traffic_map_base64: trafficImg
                     })
                 });
 
@@ -281,6 +504,8 @@
         }
 
         initPreviewCharts();
+        renderNetworkSnapshot().catch(err => console.error("Network map preview failed:", err));
+        renderTrafficSnapshot().catch(err => console.error("Traffic flow preview failed:", err));
     </script>
 </body>
 </html>
