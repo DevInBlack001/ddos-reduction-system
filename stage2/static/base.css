@@ -375,6 +375,8 @@ body {
 
 .form-input {
     flex-grow: 1;
+    width: 100%;
+    box-sizing: border-box;
     background-color: var(--bg-page);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
@@ -388,6 +390,37 @@ body {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Labeled form-field grid: a responsive row of {label, input, hint} groups.
+   Used by any settings-style form (enforcement thresholds, alerts config,
+   user account forms) -- kept global rather than duplicated per page so
+   every page gets identical field/label/hint alignment for free. */
+.threshold-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.threshold-field {
+    display: flex;
+    flex-direction: column;
+}
+
+.threshold-field label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.threshold-field .threshold-hint {
+    display: block;
+    font-size: 0.68rem;
+    color: var(--text-tertiary);
+    margin-top: 3px;
 }
 
 .btn {
