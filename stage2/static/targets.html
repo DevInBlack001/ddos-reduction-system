@@ -121,13 +121,15 @@
                         ? '<span style="color: var(--status-success); font-weight: 600;">Monitored</span>'
                         : '<span style="color: var(--text-tertiary);">Standby</span>';
 
+                    const safeIp = ShieldSafe.escapeHtml(t.ip);
+                    const jsIp = ShieldSafe.jsAttr(t.ip);
                     html += `<tr>
-                        <td style="font-weight: 600;">${t.description}</td>
-                        <td style="font-family: var(--font-mono);">${t.ip}</td>
+                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(t.description)}</td>
+                        <td style="font-family: var(--font-mono);">${safeIp}</td>
                         <td>${statusText}</td>
                         <td style="text-align: right;">
-                            <button class="btn" style="padding: 3px 10px; font-size: 0.75rem; margin-right: 6px;" onclick="toggleTarget('${t.ip}')">Toggle</button>
-                            <button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="deleteTarget('${t.ip}')">Remove</button>
+                            <button class="btn" style="padding: 3px 10px; font-size: 0.75rem; margin-right: 6px;" onclick="toggleTarget('${jsIp}')">Toggle</button>
+                            <button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="deleteTarget('${jsIp}')">Remove</button>
                         </td>
                     </tr>`;
                 });
@@ -160,13 +162,13 @@
         });
 
         async function toggleTarget(ip) {
-            await fetch(`/api/victim/toggle?ip=${ip}`, { method: 'POST' });
+            await fetch(`/api/victim/toggle?ip=${encodeURIComponent(ip)}`, { method: 'POST' });
             fetchTargets();
         }
 
         async function deleteTarget(ip) {
             if (confirm(`Remove monitoring configuration for ${ip}?`)) {
-                await fetch(`/api/victim?ip=${ip}`, { method: 'DELETE' });
+                await fetch(`/api/victim?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' });
                 fetchTargets();
             }
         }

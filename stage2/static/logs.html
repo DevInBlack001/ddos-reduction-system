@@ -183,12 +183,12 @@
 
                     html += `<tr class="${classStyle}">
                         <td>${dateStr}</td>
-                        <td style="font-weight: 600;">${l.src_ip}</td>
-                        <td>${l.dst_ip || 'Multiple'}</td>
-                        <td>${l.proto || 'Mixed'}</td>
+                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(l.src_ip)}</td>
+                        <td>${ShieldSafe.escapeHtml(l.dst_ip || 'Multiple')}</td>
+                        <td>${ShieldSafe.escapeHtml(l.proto || 'Mixed')}</td>
                         <td>${l.rate.toFixed(1)} pps</td>
                         <td>${l.entropy.toFixed(4)} bits</td>
-                        <td><span class="${badgeClass}">${l.classification}</span></td>
+                        <td><span class="${badgeClass}">${ShieldSafe.escapeHtml(l.classification)}</span></td>
                     </tr>`;
                 });
 

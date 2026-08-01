@@ -112,9 +112,9 @@
                         : '<span style="color: var(--status-danger);">Down</span>';
 
                     html += `<tr>
-                        <td style="font-weight: 600;">${i.name}</td>
-                        <td style="font-family: var(--font-mono);">${i.mac || 'N/A'}</td>
-                        <td style="font-family: var(--font-mono);">${i.ip || 'Unassigned'}</td>
+                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(i.name)}</td>
+                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(i.mac || 'N/A')}</td>
+                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(i.ip || 'Unassigned')}</td>
                         <td>${stateLabel}</td>
                         <td>${i.promisc ? 'Enabled' : 'Disabled'}</td>
                         <td>${statusLabel}</td>

@@ -6,8 +6,8 @@
 import os
 import sys
 import sqlite3
-import hashlib
 import secrets
+import bcrypt
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "stage2.db"))
 
@@ -15,12 +15,13 @@ def generate_random_password(length=16):
     alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
-def hash_password(password, salt=None):
-    if salt is None:
-        salt = secrets.token_hex(16)
-    hasher = hashlib.sha256()
-    hasher.update((password + salt).encode('utf-8'))
-    return hasher.hexdigest(), salt
+def hash_password(password):
+    # bcrypt generates and embeds its own per-hash salt (unlike the old
+    # single-round SHA-256 scheme, it also applies a deliberate work
+    # factor, so a leaked stage2.db can't be brute-forced at GPU speed).
+    # The 72-byte input cap is bcrypt's own limit, not a weakening of this
+    # implementation.
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 def init_db(db_path):
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -62,6 +63,10 @@ def init_db(db_path):
 
     conn.commit()
     conn.close()
+    # Both stage1/stage2 systemd units run as root; without this the DB
+    # inherits the process umask (often world-readable) and any local
+    # account can read the admin password hash/salt straight off disk.
+    os.chmod(db_path, 0o600)
 
 def main():
     print("========================================================================")
@@ -95,12 +100,12 @@ def main():
             password = generate_random_password()
             is_generated = True
             
-        password_hash, salt = hash_password(password)
+        password_hash = hash_password(password)
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
-                       (username, password_hash, salt))
+                       (username, password_hash, ""))
         conn.commit()
         conn.close()
 

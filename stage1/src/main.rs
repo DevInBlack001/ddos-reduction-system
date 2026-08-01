@@ -38,7 +38,7 @@
 //   --victim-ip  <IP>      BPF filter target IP (required in production)
 //   --k          <FLOAT>   Anomaly multiplier μ ± k·σ (default: 2.0)
 //   --alpha      <FLOAT>   EWMA smoothing α (default: 0.125)
-//   --socket     <PATH>    Unix socket path for Stage 2 IPC (default: /tmp/ddos_stage1.sock)
+//   --socket     <PATH>    Unix socket path for Stage 2 IPC (default: /run/ddos_stage1/stage1.sock)
 //   --no-filter            Disable BPF filter (dev/test mode only)
 //
 // LOG LEVEL
@@ -303,7 +303,7 @@ fn print_usage(bin: &str) {
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
     eprintln!("  --k          <FLOAT>   Anomaly multiplier k  [default: 2.0]");
     eprintln!("  --alpha      <FLOAT>   EWMA smoothing alpha  [default: 0.125]");
-    eprintln!("  --socket     <PATH>    IPC socket path       [default: /tmp/ddos_stage1.sock]");
+    eprintln!("  --socket     <PATH>    IPC socket path       [default: /run/ddos_stage1/stage1.sock]");
     eprintln!("  --no-filter            Disable BPF filter (dev/test only)");
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
     eprintln!("  --train-csv  <PATH>    Write ALL post-warmup feature vectors to CSV (training mode)");

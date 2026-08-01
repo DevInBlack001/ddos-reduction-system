@@ -558,7 +558,7 @@
 
                 if (differs) {
                     selectElement.innerHTML = '<option value="">-- Select target --</option>' +
-                        allTargets.map(ip => `<option value="${ip}">${ip}</option>`).join('');
+                        allTargets.map(ip => `<option value="${ShieldSafe.escapeHtml(ip)}">${ShieldSafe.escapeHtml(ip)}</option>`).join('');
                     if (allTargets.includes(selectedVictimIp)) {
                         selectElement.value = selectedVictimIp;
                     }
@@ -601,15 +601,17 @@
                         if (metric.latest_classification === 'DDoS') statusBadgeClass = 'badge badge-ddos';
                         else if (metric.latest_classification === 'Flash Crowd') statusBadgeClass = 'badge badge-flash';
 
+                        const safeIp = ShieldSafe.escapeHtml(ip);
+                        const jsIp = ShieldSafe.jsAttr(ip);
                         tableHtml += `
                             <tr>
-                                <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${ip}')">${ip}</td>
+                                <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
                                 <td style="padding: 12px 15px;">${metric.ewma_rate.toFixed(1)}</td>
                                 <td style="padding: 12px 15px;">${metric.entropy.toFixed(4)}</td>
                                 <td style="padding: 12px 15px;">${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
-                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${metric.latest_classification}</span></td>
+                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${ShieldSafe.escapeHtml(metric.latest_classification)}</span></td>
                                 <td style="padding: 12px 15px;">
-                                    <button class="btn" onclick="switchToTargetIp('${ip}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
+                                    <button class="btn" onclick="switchToTargetIp('${jsIp}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
                                 </td>
                             </tr>
                         `;
@@ -690,10 +692,10 @@
                             style = 'color: var(--status-danger);';
                             actionText = 'flagged';
                         }
-                        const targetStr = l.victim_ip ? ` targeting ${l.victim_ip}` : '';
+                        const targetStr = l.victim_ip ? ` targeting ${ShieldSafe.escapeHtml(l.victim_ip)}` : '';
                         html += `<div style="margin-bottom: 8px; ${style}">
                             [${new Date(l.timestamp*1000).toISOString().split('T')[1].substring(0,8)}]
-                            ${l.classification} from ${l.src_ip}${targetStr} &rarr; ${actionText}
+                            ${ShieldSafe.escapeHtml(l.classification)} from ${ShieldSafe.escapeHtml(l.src_ip)}${targetStr} &rarr; ${actionText}
                         </div>`;
                     });
                     document.getElementById('latestMitigation').innerHTML = html;

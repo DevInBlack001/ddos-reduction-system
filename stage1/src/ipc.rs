@@ -76,7 +76,15 @@ use std::{
 // -----------------------------------------------------------------------------
 
 /// Default socket path. Stage 2 (Python) must listen on this path.
-pub const SOCKET_PATH: &str = "/tmp/ddos_stage1.sock";
+///
+/// Deliberately NOT /tmp -- that directory is world-writable, so any local
+/// account could otherwise race to bind this path before Stage 2 does
+/// (e.g. during a Stage 2 restart window) and receive live FeatureVector
+/// telemetry meant for Stage 2 only. /run/ddos_stage1 is created
+/// root-owned (see install.sh / stage2.py's socket bind path), so only
+/// root -- or the dedicated stage1 service account, once it's a group
+/// member -- can ever create a file at this path.
+pub const SOCKET_PATH: &str = "/run/ddos_stage1/stage1.sock";
 
 /// Wire size of one serialised `FeatureVector` in bytes.
 /// 17 fields × 8 bytes (f64) = 136 bytes + 16 bytes for dominant IP + 16 bytes for victim IP = 168 bytes.

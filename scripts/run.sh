@@ -36,7 +36,7 @@ error()   { echo -e "${RED}[SYSTEM-ERROR]${NC} $*" >&2; exit 1; }
 INTERFACE="ens19"
 VICTIM_IP="10.0.0.3"
 K_MULTIPLIER="2.0"
-SOCKET_PATH="/tmp/ddos_stage1.sock"
+SOCKET_PATH="/run/ddos_stage1/stage1.sock"
 
 # Get the directory of this runner script
 RUN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

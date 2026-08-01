@@ -2,14 +2,14 @@
 """
 stage2.py — Stage 2: Real-time IPC Classifier & Mitigation Engine + Web API Console
 ---------------------------------------------------------------------------------
-Listens on the Unix Domain Socket at /tmp/ddos_stage1.sock for 88-byte feature
-vectors containing window statistics and the dominant IP address.
+Listens on the Unix Domain Socket at /run/ddos_stage1/stage1.sock for 168-byte
+feature vectors containing window statistics and the dominant IP address.
 Predicts traffic class (0: Normal, 1: Flash Crowd, 2: DDoS) in real-time
 and triggers kernel-level mitigation via ipset for DDoS.
 
 Features integrated:
 - FastAPI backend serving multi-page HTML console under /static/
-- User Authentication (salted SHA-256) with 10-minute session limits
+- User Authentication (bcrypt) with 10-minute session limits and login throttling
 - Persistence of incident logs and Welford histories in SQLite
 - Active connection flow visualizer pulling from Stage 1 active flow logs
 - Dynamic kernel blocklist viewer and administrative whitelist manager
@@ -26,10 +26,12 @@ import ipaddress
 import subprocess
 import logging
 import sqlite3
-import hashlib
+import bcrypt
 import secrets
+import grp
 import threading
-from io import BytesIO
+import csv
+from io import BytesIO, StringIO
 from typing import List, Optional
 import joblib
 
@@ -37,7 +39,7 @@ import joblib
 from fastapi import FastAPI, Depends, HTTPException, Request, Form, status
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # ReportLab PDF Imports
 from reportlab.lib.pagesizes import letter
@@ -46,7 +48,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 # Configuration Paths
-SOCKET_PATH = "/tmp/ddos_stage1.sock"
+# /run/ddos_stage1 (not /tmp) for the IPC socket and the active-flows file --
+# /tmp is world-writable, which would let any local account race to bind the
+# socket path before this process does, or plant a fake active-flows file.
+RUNTIME_DIR = "/run/ddos_stage1"
+SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
 FEATURE_VECTOR_FORMAT = "<17d16s16s"  # 17 x f64 (136 bytes) + 16-byte dominant IP + 16-byte victim IP = 168 bytes
@@ -55,8 +61,11 @@ PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
 WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
 VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
-FLOWS_PATH = "/tmp/ddos_active_flows.json"
+FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
 ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")
+
+TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
+TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
 
 # Enforcement thresholds -- these were previously hardcoded magic numbers
 # scattered through the enforcement logic. Kept as a deterministic,
@@ -115,6 +124,7 @@ def load_json_file(path, default):
     if not os.path.exists(path):
         with open(path, "w") as f:
             json.dump(default, f)
+        os.chmod(path, 0o600)
         return default
     try:
         with open(path, "r") as f:
@@ -126,6 +136,7 @@ def save_json_file(path, data):
     try:
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
+        os.chmod(path, 0o600)
     except Exception as e:
         logging.error(f"[-] Failed to save configuration to {path}: {e}")
 
@@ -162,6 +173,13 @@ last_metrics_by_target = {}  # victim_ip -> last_metrics dict
 consecutive_ddos_windows = {}  # victim_ip -> count of consecutive class-2 windows
 
 active_sessions = {}  # session_token -> last_active_timestamp
+
+# Login brute-force throttling -- keyed by client IP, not username, so an
+# attacker can't dodge the lockout by cycling usernames.
+failed_login_attempts = {}  # client_ip -> list of failure timestamps
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECS = 300
+LOGIN_LOCKOUT_SECS = 300
 
 # -----------------------------------------------------------------------------
 # Kernel netfilter blocklist control (ipset / iptables)
@@ -540,16 +558,47 @@ def run_ipc_receiver():
             logging.error(f"[-] Failed to load classifier: {e}")
             clf = None
 
+    # /run is tmpfs and cleared on every boot, so this can't be assumed to
+    # already exist -- create it fresh each startup. If the ddos-ipc group
+    # exists (install.sh creates it so the de-rooted Stage 1 service
+    # account can still reach this socket), share the directory and socket
+    # with that group; otherwise fall back to root-only, which is correct
+    # when Stage 1 is still running as root.
+    ipc_gid = None
+    try:
+        ipc_gid = grp.getgrnam("ddos-ipc").gr_gid
+    except KeyError:
+        pass
+
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    os.chmod(RUNTIME_DIR, 0o770 if ipc_gid is not None else 0o700)
+    if ipc_gid is not None:
+        try:
+            os.chown(RUNTIME_DIR, -1, ipc_gid)
+        except OSError as e:
+            logging.warning(f"[!] Could not chgrp {RUNTIME_DIR} to ddos-ipc: {e}")
+
     if os.path.exists(SOCKET_PATH):
         try:
             os.remove(SOCKET_PATH)
         except OSError:
             pass
-            
+
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(SOCKET_PATH)
-        os.chmod(SOCKET_PATH, 0o666)
+        # Root-owned regardless; mode/group control who besides root can
+        # connect. 0600 (root-only) unless the ddos-ipc group exists, in
+        # which case 0660 lets the de-rooted Stage 1 service account in
+        # too -- either way, every other local account is still shut out.
+        if ipc_gid is not None:
+            os.chmod(SOCKET_PATH, 0o660)
+            try:
+                os.chown(SOCKET_PATH, -1, ipc_gid)
+            except OSError as e:
+                logging.warning(f"[!] Could not chgrp {SOCKET_PATH} to ddos-ipc: {e}")
+        else:
+            os.chmod(SOCKET_PATH, 0o600)
         server.listen(5)
         logging.info(f"[+] IPC socket listening on: {SOCKET_PATH}")
     except Exception as e:
@@ -826,8 +875,19 @@ app = FastAPI(title="SHIELD Gateway Management Console", docs_url=None, redoc_ur
 app.mount("/static", StaticFiles(directory=os.path.join(SCRIPT_DIR, "static")), name="static")
 
 # Middleware: Verify Cookie Authenticated Sessions
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB -- comfortably above the largest legitimate body (a PDF export's two base64 chart images)
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+        except ValueError:
+            pass
+
     path = request.url.path
     # Automatically normalize active-ips.html (hyphen) to active_ips.html (underscore)
     if "active-ips.html" in path:
@@ -872,26 +932,48 @@ def read_root():
 # API Handlers
 # -----------------------------------------------------------------------------
 
+def _login_locked_out(client_ip: str) -> bool:
+    now = time.time()
+    attempts = [t for t in failed_login_attempts.get(client_ip, []) if now - t <= LOGIN_WINDOW_SECS]
+    failed_login_attempts[client_ip] = attempts
+    return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+def _record_login_failure(client_ip: str):
+    failed_login_attempts.setdefault(client_ip, []).append(time.time())
+
 @app.post("/api/login")
-def login(username: str = Form(...), password: str = Form(...)):
+def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    client_ip = request.client.host if request.client else "unknown"
     try:
+        if _login_locked_out(client_ip):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed login attempts. Try again in up to {LOGIN_LOCKOUT_SECS // 60} minutes."
+            )
+
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
+        cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
         row = cursor.fetchone()
         conn.close()
-        
+
         if not row:
+            _record_login_failure(client_ip)
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials.")
-            
-        stored_hash, salt = row
-        hasher = hashlib.sha256()
-        hasher.update((password + salt).encode('utf-8'))
-        
-        if hasher.hexdigest() == stored_hash:
-            # Generate session
+
+        stored_hash = row[0]
+        try:
+            password_ok = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except ValueError:
+            # Hash isn't in bcrypt format -- almost always a pre-migration
+            # SHA-256 row. Re-run setup_admin.py to reset the account.
+            logging.error(f"[-] Stored hash for user '{username}' isn't bcrypt-formatted; rerun setup_admin.py.")
+            password_ok = False
+
+        if password_ok:
             session_token = secrets.token_hex(24)
             active_sessions[session_token] = time.time()
+            failed_login_attempts.pop(client_ip, None)
             response = RedirectResponse(url="/static/index.html", status_code=status.HTTP_303_SEE_OTHER)
             response.set_cookie(
                 key="session_id",
@@ -902,6 +984,7 @@ def login(username: str = Form(...), password: str = Form(...)):
             )
             return response
         else:
+            _record_login_failure(client_ip)
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Handshake credentials rejected.")
     except Exception as e:
         if isinstance(e, HTTPException):
@@ -1101,10 +1184,38 @@ def get_history(target: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _validate_host_ip(ip: str) -> str:
+    """Reject anything that isn't a single valid IPv4/IPv6 host address --
+    no CIDR ranges, no garbage strings. Without this, an unvalidated value
+    reaches ipset (a hash:ip set, which accepts CIDR shorthand and expands
+    it to every host in the range) or gets rendered back into the
+    dashboard, so this is both a correctness and an XSS-defense-in-depth
+    gate. Raises plain ValueError so pydantic field_validators can call it
+    directly; query-param endpoints go through _validate_host_ip_or_400.
+    """
+    ipaddress.ip_address(ip)  # raises ValueError on anything invalid
+    return ip
+
+def _validate_host_ip_or_400(ip: str) -> str:
+    try:
+        return _validate_host_ip(ip)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"'{ip}' is not a valid IP address.")
+
 # Whitelist endpoints
 class IpPayload(BaseModel):
     ip: str
     victim_ip: Optional[str] = None
+
+    @field_validator("ip")
+    @classmethod
+    def _check_ip(cls, v):
+        return _validate_host_ip(v)
+
+    @field_validator("victim_ip")
+    @classmethod
+    def _check_victim_ip(cls, v):
+        return _validate_host_ip(v) if v else v
 
 @app.post("/api/whitelist")
 def add_whitelist(payload: IpPayload):
@@ -1116,6 +1227,7 @@ def add_whitelist(payload: IpPayload):
 
 @app.delete("/api/whitelist")
 def delete_whitelist(ip: str):
+    ip = _validate_host_ip_or_400(ip)
     whitelist = load_json_file(WHITELIST_PATH, [])
     if ip in whitelist:
         whitelist.remove(ip)
@@ -1126,6 +1238,18 @@ def delete_whitelist(ip: str):
 class VictimPayload(BaseModel):
     ip: str
     description: str
+
+    @field_validator("ip")
+    @classmethod
+    def _check_ip(cls, v):
+        return _validate_host_ip(v)
+
+    @field_validator("description")
+    @classmethod
+    def _check_description(cls, v):
+        if len(v) > 200:
+            raise ValueError("Description too long (max 200 characters).")
+        return v
 
 @app.post("/api/victim")
 def add_victim(payload: VictimPayload):
@@ -1139,6 +1263,7 @@ def add_victim(payload: VictimPayload):
 
 @app.delete("/api/victim")
 def delete_victim(ip: str):
+    ip = _validate_host_ip_or_400(ip)
     victims = load_json_file(VICTIMS_PATH, [])
     victims = [v for v in victims if v["ip"] != ip]
     save_json_file(VICTIMS_PATH, victims)
@@ -1146,6 +1271,7 @@ def delete_victim(ip: str):
 
 @app.post("/api/victim/toggle")
 def toggle_victim(ip: str):
+    ip = _validate_host_ip_or_400(ip)
     victims = load_json_file(VICTIMS_PATH, [])
     for v in victims:
         if v["ip"] == ip:
@@ -1292,11 +1418,33 @@ def export_csv():
         rows = cursor.fetchall()
         conn.close()
 
+        def _csv_safe(value):
+            # Neutralize spreadsheet formula injection (Excel/Sheets treat a
+            # leading =, +, -, @, tab, or CR as the start of a formula).
+            if isinstance(value, str) and value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+                return "'" + value
+            return value
+
         def iter_csv():
-            yield "Timestamp,Source IP,Destination IP,Protocol,Packet Rate (PPS),Shannon Entropy (bits),Classification\n"
+            buf = StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["Timestamp", "Source IP", "Destination IP", "Protocol",
+                              "Packet Rate (PPS)", "Shannon Entropy (bits)", "Classification"])
+            yield buf.getvalue()
             for r in rows:
+                buf.seek(0)
+                buf.truncate(0)
                 date_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(r[0]))
-                yield f"{date_str},{r[1]},{r[2] or ''},{r[3] or ''},{r[4]:.2f},{r[5]:.4f},{r[6]}\n"
+                writer.writerow([
+                    date_str,
+                    _csv_safe(r[1]),
+                    _csv_safe(r[2] or ""),
+                    _csv_safe(r[3] or ""),
+                    f"{r[4]:.2f}",
+                    f"{r[5]:.4f}",
+                    r[6],
+                ])
+                yield buf.getvalue()
 
         return StreamingResponse(
             iter_csv(),
@@ -1311,10 +1459,16 @@ class PdfReportPayload(BaseModel):
     rate_chart_base64: str
     entropy_chart_base64: str
 
+MAX_CHART_BASE64_LEN = 8 * 1024 * 1024  # generous headroom over a typical Chart.js canvas PNG export
+
 @app.post("/api/logs/export/pdf")
 def export_pdf(payload: PdfReportPayload):
     import base64
-    
+    import tempfile
+
+    if len(payload.rate_chart_base64) > MAX_CHART_BASE64_LEN or len(payload.entropy_chart_base64) > MAX_CHART_BASE64_LEN:
+        raise HTTPException(status_code=413, detail="Chart image payload too large.")
+
     # Decode charts
     try:
         rate_data = base64.b64decode(payload.rate_chart_base64.split(",")[1])
@@ -1322,18 +1476,22 @@ def export_pdf(payload: PdfReportPayload):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid base64 chart data: {e}")
 
-    # Write temporary image files
-    temp_rate_path = os.path.join(SCRIPT_DIR, "temp_rate.png")
-    temp_entropy_path = os.path.join(SCRIPT_DIR, "temp_entropy.png")
+    # Unique per-request temp file names -- the old fixed "temp_rate.png"/
+    # "temp_entropy.png" paths let two concurrent exports clobber or mix
+    # each other's chart images.
+    temp_rate_path = None
+    temp_entropy_path = None
+    pdf_buffer = BytesIO()
     try:
-        with open(temp_rate_path, "wb") as f:
+        with tempfile.NamedTemporaryFile(dir=SCRIPT_DIR, prefix="pdf_rate_", suffix=".png", delete=False) as f:
             f.write(rate_data)
-        with open(temp_entropy_path, "wb") as f:
+            temp_rate_path = f.name
+        with tempfile.NamedTemporaryFile(dir=SCRIPT_DIR, prefix="pdf_entropy_", suffix=".png", delete=False) as f:
             f.write(entropy_data)
+            temp_entropy_path = f.name
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to decode chart images: {e}")
 
-    pdf_buffer = BytesIO()
     try:
         doc = SimpleDocTemplate(
             pdf_buffer,
@@ -1505,9 +1663,9 @@ def export_pdf(payload: PdfReportPayload):
         raise HTTPException(status_code=500, detail=f"PDF build error: {e}")
     finally:
         # Clean up temp image files
-        if os.path.exists(temp_rate_path):
+        if temp_rate_path and os.path.exists(temp_rate_path):
             os.remove(temp_rate_path)
-        if os.path.exists(temp_entropy_path):
+        if temp_entropy_path and os.path.exists(temp_entropy_path):
             os.remove(temp_entropy_path)
 
 # -----------------------------------------------------------------------------
@@ -1516,8 +1674,18 @@ def export_pdf(payload: PdfReportPayload):
 
 def start_api_server():
     import uvicorn
-    logging.info("[+] Starting Uvicorn API Server on port 8000...")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    ssl_kwargs = {}
+    if os.path.exists(TLS_CERT_PATH) and os.path.exists(TLS_KEY_PATH):
+        ssl_kwargs = {"ssl_certfile": TLS_CERT_PATH, "ssl_keyfile": TLS_KEY_PATH}
+        logging.info(f"[+] Starting Uvicorn API Server on port 8000 (HTTPS, cert: {TLS_CERT_PATH})...")
+    else:
+        logging.warning(
+            f"[!] No TLS certificate found at {TLS_CERT_PATH}/{TLS_KEY_PATH} -- "
+            "falling back to plain HTTP. Login credentials and session cookies "
+            "will travel unencrypted. Re-run install.sh or provide a cert/key pair."
+        )
+        logging.info("[+] Starting Uvicorn API Server on port 8000 (HTTP)...")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", **ssl_kwargs)
 
 def main():
     # Ensure SQLite initialized and migrated
@@ -1525,6 +1693,10 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT, salt TEXT)")
+    # stage2.db holds password hashes/salts -- both services run as root, so
+    # without this it inherits the process umask (often world-readable),
+    # letting any local account read the admin credentials off disk.
+    os.chmod(DB_PATH, 0o600)
     cursor.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, src_ip TEXT, dst_ip TEXT, proto TEXT, rate REAL, entropy REAL, classification TEXT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS metrics_history (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, ewma_rate REAL, entropy REAL, mean_h REAL, mean_r REAL, sigma_h REAL, sigma_r REAL, k_multiplier REAL, victim_ip TEXT)")
     
@@ -1538,8 +1710,12 @@ def main():
         except Exception as me:
             logging.error(f"[-] Migration failed: {me}")
 
-    # Insert default password just in case (setup_admin.py handles this properly)
-    cursor.execute("INSERT OR IGNORE INTO users VALUES ('admin', '4a0f4439c2794eb8f73111f1816e8e8156641d40a23277717469a4731c3c97e6', 'abcdef0123456789')")
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        logging.warning(
+            "[!] No administrator account exists. Run setup_admin.py before "
+            "starting the API server -- there is no default credential."
+        )
     conn.commit()
     conn.close()
 

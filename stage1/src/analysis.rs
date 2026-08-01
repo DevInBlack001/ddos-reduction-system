@@ -80,7 +80,7 @@ pub struct AnalysisConfig {
     pub k: f64,
     /// EWMA smoothing factor α. Default: 0.125 (RFC 6298 TCP RTT constant).
     pub ewma_alpha: f64,
-    /// Socket path for IPC to Stage 2. Default: `/tmp/ddos_stage1.sock`.
+    /// Socket path for IPC to Stage 2. Default: `/run/ddos_stage1/stage1.sock`.
     pub socket_path: String,
     /// Monitored victim targets.
     pub victim_targets: Option<crate::VictimTargets>,
@@ -238,6 +238,19 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         "Analysis: thread started | targets={:?} | k={} | α={}",
         cfg.victim_targets, cfg.k, cfg.ewma_alpha
     );
+
+    // Defensively ensure /run/ddos_stage1 exists -- this thread writes
+    // active_flows.json/.tmp and reads train_label from it, and /run is
+    // tmpfs (cleared every boot), so we can't assume install.sh or Stage
+    // 2 has already created it this session. Idempotent: if it already
+    // exists (usually created root-owned by Stage 2's socket bind path),
+    // this only touches the mode bits, not ownership.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::create_dir_all("/run/ddos_stage1").is_ok() {
+            let _ = std::fs::set_permissions("/run/ddos_stage1", std::fs::Permissions::from_mode(0o770));
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Open the CSV training file if --train-csv was passed.
@@ -449,12 +462,15 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             last_flow_write = now_instant;
         }
 
-        // Live label check (every 1s)
+        // Live label check (every 1s). Reads from /run/ddos_stage1, not
+        // /tmp -- /tmp is world-writable, which would let any local
+        // account silently flip the label written into the training CSV
+        // mid-capture and poison the dataset.
         if now_instant.duration_since(last_label_check).as_secs_f64() >= 1.0 {
-            if let Ok(content) = std::fs::read_to_string("/tmp/ddos_label") {
+            if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label") {
                 if let Ok(parsed) = content.trim().parse::<u8>() {
                     if parsed != current_train_label {
-                        info!("Analysis: Live label switch triggered via /tmp/ddos_label. Changed from {} to {}", current_train_label, parsed);
+                        info!("Analysis: Live label switch triggered via /run/ddos_stage1/train_label. Changed from {} to {}", current_train_label, parsed);
                         current_train_label = parsed;
                     }
                 }
@@ -739,7 +755,9 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     info!("Analysis: channel closed. processed windows total. Exiting.");
 }
 
-/// Helper function to write top 20 active network flows atomically to /tmp/ddos_active_flows.json
+/// Helper function to write top 20 active network flows atomically to
+/// /run/ddos_stage1/active_flows.json (not /tmp -- same reasoning as
+/// ipc::SOCKET_PATH: /tmp is world-writable and this directory isn't).
 fn write_active_flows(flow_counts: &HashMap<(IpAddr, u16, u8), u32>, timestamp: f64) {
     // Sort flows by packet count descending
     let mut flows: Vec<_> = flow_counts.iter().collect();
@@ -780,8 +798,8 @@ fn write_active_flows(flow_counts: &HashMap<(IpAddr, u16, u8), u32>, timestamp: 
     json.push_str("\n  ]\n}");
     
     // Write atomically
-    let tmp_path = "/tmp/ddos_active_flows.tmp";
-    let final_path = "/tmp/ddos_active_flows.json";
+    let tmp_path = "/run/ddos_stage1/active_flows.tmp";
+    let final_path = "/run/ddos_stage1/active_flows.json";
     if let Ok(mut file) = std::fs::File::create(tmp_path) {
         use std::io::Write;
         if file.write_all(json.as_bytes()).is_ok() {

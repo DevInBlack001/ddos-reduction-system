@@ -226,8 +226,8 @@
                     let wlHtml = '';
                     whitelisted.forEach(ip => {
                         wlHtml += `<tr>
-                            <td style="font-weight: 600; font-family: var(--font-mono);">${ip}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${ip}')">Remove</button></td>
+                            <td style="font-weight: 600; font-family: var(--font-mono);">${ShieldSafe.escapeHtml(ip)}</td>
+                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${ShieldSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     wlBody.innerHTML = wlHtml;
@@ -242,9 +242,9 @@
                     let blHtml = '';
                     blocked.forEach(b => {
                         blHtml += `<tr>
-                            <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${b.ip}</td>
+                            <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${ShieldSafe.escapeHtml(b.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${b.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${b.ip}')">Release</button></td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${ShieldSafe.jsAttr(b.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     blBody.innerHTML = blHtml;
@@ -261,9 +261,9 @@
                     let rlHtml = '';
                     ratelimited.forEach(r => {
                         rlHtml += `<tr>
-                            <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${r.ip}</td>
+                            <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${ShieldSafe.escapeHtml(r.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${r.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${r.ip}')">Release</button></td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${ShieldSafe.jsAttr(r.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     rlBody.innerHTML = rlHtml;
@@ -292,7 +292,7 @@
 
         async function removeWhitelist(ip) {
             if (confirm(`Remove ${ip} from whitelist?`)) {
-                await fetch(`/api/whitelist?ip=${ip}`, { method: 'DELETE' });
+                await fetch(`/api/whitelist?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' });
                 fetchFirewall();
             }
         }

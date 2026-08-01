@@ -32,7 +32,7 @@
 // WHY ATOMIC WRITES
 // -------------------
 // Every save writes to a `.tmp` file and renames it over the real path
-// (same pattern already used for /tmp/ddos_active_flows.json below in
+// (same pattern already used for /run/ddos_stage1/active_flows.json below in
 // analysis.rs). A power loss mid-write can only ever leave the OLD complete
 // file in place -- never a half-written, corrupt one. If the file somehow
 // still fails to parse on load (disk corruption, manual edit, etc.), that's

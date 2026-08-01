@@ -267,11 +267,28 @@ else
     warn "setcap not found. You will need to run $BINARY_NAME as root."
 fi
 
+# Dedicated, unprivileged service account for Stage 1. It only needs
+# CAP_NET_RAW (granted above via setcap, and again below via the systemd
+# unit's AmbientCapabilities), not full root -- running the packet-capture
+# daemon as root means any bug in it has root's blast radius for no reason.
+# ddos-ipc is a shared group so this account can reach the Stage 1 <-> Stage
+# 2 IPC socket that Stage 2 (still root, for ipset/iptables) creates.
+if ! getent group ddos-ipc &>/dev/null; then
+    groupadd --system ddos-ipc
+    success "Created group: ddos-ipc"
+fi
+if ! id -u ddos-stage1 &>/dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+        --gid ddos-ipc ddos-stage1
+    success "Created service account: ddos-stage1"
+fi
+
 # V4: create the baseline-persistence directory. Deliberately NOT /tmp -- the
 # entire point of this file is surviving a reboot. Stage 1 degrades
 # gracefully (logs a warning, skips persistence) if this is missing, but the
-# feature does nothing useful without it existing up front.
-install -d -m 755 /var/lib/ddos_stage1
+# feature does nothing useful without it existing up front. Owned by the
+# Stage 1 service account alone -- Stage 2 never reads or writes baselines.
+install -d -m 700 -o ddos-stage1 -g ddos-stage1 /var/lib/ddos_stage1
 success "Baseline persistence directory ready: /var/lib/ddos_stage1"
 
 # =============================================================================
@@ -300,6 +317,35 @@ if [[ -d "$STAGE2_DIR" ]]; then
     success "Stage 2 Python environment setup complete."
 else
     warn "Stage 2 directory not found at $STAGE2_DIR. Skipping."
+fi
+
+# =============================================================================
+# STEP 5.6 — Generate a self-signed TLS certificate for the management console
+# =============================================================================
+# Without this, the admin login form, session cookie, and every block/unblock
+# API call travel in plaintext over whatever network the box is on. A
+# self-signed cert at least gets the channel encrypted; browsers will warn on
+# first connect (expected -- click through, or replace these files with a
+# CA-signed cert/key pair for that host/IP).
+TLS_DIR="/etc/ddos_stage2/tls"
+if command -v openssl &>/dev/null; then
+    install -d -m 750 "$TLS_DIR"
+    if [[ -f "$TLS_DIR/cert.pem" && -f "$TLS_DIR/key.pem" ]]; then
+        info "TLS certificate already present at $TLS_DIR -- leaving it in place."
+    else
+        info "Generating self-signed TLS certificate for the management console..."
+        openssl req -x509 -nodes -newkey rsa:2048 \
+            -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" \
+            -days 825 -subj "/CN=ddos-mitigation-gateway" \
+            >/dev/null 2>&1
+        chmod 600 "$TLS_DIR/key.pem"
+        chmod 644 "$TLS_DIR/cert.pem"
+        success "Self-signed TLS certificate generated at $TLS_DIR."
+    fi
+else
+    warn "openssl not found -- skipping TLS certificate generation. The" \
+         "management console will fall back to plain HTTP until" \
+         "$TLS_DIR/cert.pem and $TLS_DIR/key.pem exist."
 fi
 
 # =============================================================================
@@ -334,8 +380,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=ddos-stage1
+Group=ddos-stage1
+SupplementaryGroups=ddos-ipc
+# Raw packet capture needs CAP_NET_RAW; nothing else in this process needs
+# root. AmbientCapabilities grants it at exec time regardless of the
+# binary's file capabilities (setcap above still matters for anyone running
+# the binary directly outside systemd).
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
 ExecStart=$EXEC_START
 Restart=on-failure
 RestartSec=5s

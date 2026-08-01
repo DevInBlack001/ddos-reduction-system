@@ -41,7 +41,7 @@ SERVICE_NAME="ddos-stage1"
 SERVICE2_NAME="ddos-stage2"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SERVICE2_FILE="/etc/systemd/system/${SERVICE2_NAME}.service"
-SOCKET_FILE="/tmp/ddos_stage1.sock"
+SOCKET_FILE="/run/ddos_stage1/stage1.sock"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(dirname "$SCRIPT_DIR")/stage1/target"
 STAGE2_DIR="$(dirname "$SCRIPT_DIR")/stage2"
@@ -126,8 +126,7 @@ info "Cleaning up SQLite database and policy files..."
 rm -f "$STAGE2_DIR/stage2.db"
 rm -f "$STAGE2_DIR/whitelist.json"
 rm -f "$STAGE2_DIR/victims.json"
-rm -f "/tmp/ddos_active_flows.json"
-rm -f "/tmp/ddos_active_flows.tmp"
+rm -rf "/run/ddos_stage1"
 success "Database and configurations removed."
 
 # =============================================================================
@@ -167,6 +166,22 @@ if [[ -S "$SOCKET_FILE" ]] || [[ -f "$SOCKET_FILE" ]]; then
     info "Removing IPC socket: $SOCKET_FILE"
     rm -f "$SOCKET_FILE"
     success "Socket file removed."
+fi
+
+# =============================================================================
+# STEP 4.1 — Remove runtime/state directories and the Stage 1 service account
+# =============================================================================
+info "Removing runtime and persisted-state directories..."
+rm -rf "/run/ddos_stage1"
+rm -rf "/var/lib/ddos_stage1"
+rm -rf "/etc/ddos_stage2"
+success "Runtime and state directories removed."
+
+if id -u ddos-stage1 &>/dev/null; then
+    userdel ddos-stage1 2>/dev/null || warn "Could not remove user ddos-stage1 (may still own other files)."
+fi
+if getent group ddos-ipc &>/dev/null; then
+    groupdel ddos-ipc 2>/dev/null || warn "Could not remove group ddos-ipc (still in use by another account?)."
 fi
 
 # =============================================================================

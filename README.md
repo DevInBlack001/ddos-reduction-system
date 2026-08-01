@@ -278,7 +278,7 @@ The answer lies in the **Global Interpreter Lock (GIL)** and **runtime overhead*
 
 **Why only clean windows get persisted:** the periodic save is triggered from the exact same gate that already decides whether to feed a sample into Welford live (`anomaly_flags == 0 && cooldown_counter == 0`). That guarantees the file on disk can never be a mid-attack snapshot — worst case, a crash mid-flood just reloads whatever the last known-good baseline was *before* the flood started.
 
-**Why it doesn't wait for a clean shutdown:** a SIGTERM-only save does nothing if power is simply lost with no warning. The real durability mechanism is a periodic snapshot (every 45s, only on clean windows) — worst case you lose the last ~45s of drift, never the whole baseline. Every write is atomic (temp file + rename, the same pattern already used for `/tmp/ddos_active_flows.json`), so a power loss mid-write can only ever leave the previous complete file in place, never a corrupted one. If the file is ever missing or fails to parse on load, that's treated identically to "no prior baseline" — a fresh warm-up, not a crash.
+**Why it doesn't wait for a clean shutdown:** a SIGTERM-only save does nothing if power is simply lost with no warning. The real durability mechanism is a periodic snapshot (every 45s, only on clean windows) — worst case you lose the last ~45s of drift, never the whole baseline. Every write is atomic (temp file + rename, the same pattern already used for `/run/ddos_stage1/active_flows.json`), so a power loss mid-write can only ever leave the previous complete file in place, never a corrupted one. If the file is ever missing or fails to parse on load, that's treated identically to "no prior baseline" — a fresh warm-up, not a crash.
 
 **Why a 1-hour TTL, not indefinite:** the live recency cap (`MAX_N` = 500 windows, roughly 4–8 minutes of continuous traffic) already treats anything older as not fully trustworthy. Reloading a multi-hour-old baseline would both contradict that recency philosophy and risk resurrecting a baseline from a different point in the daily traffic cycle (an overnight-quiet baseline reloaded into a busy afternoon) — a distinct failure mode from the one V4 exists to fix. The default (`--baseline-ttl-secs`, 3600) is sized for "the process just restarted," not "resume from last week."
 
@@ -373,7 +373,7 @@ ddos_stage1 --interface <IFACE>       # required
             --victim-subnet <SUBNET>  # BPF filter subnet (e.g. <SUBNET>)
             --k <FLOAT>               # anomaly multiplier (default: 2.0)
             --alpha <FLOAT>           # EWMA smoothing (default: 0.125)
-            --socket <PATH>           # IPC socket path (default: /tmp/ddos_stage1.sock)
+            --socket <PATH>           # IPC socket path (default: /run/ddos_stage1/stage1.sock)
             --no-filter               # disable BPF (dev only)
             --baseline-path <PATH>    # V4: persisted baseline file (default: /var/lib/ddos_stage1/baselines.json)
             --baseline-ttl-secs <N>   # V4: reject a persisted baseline older than N seconds (default: 3600)
@@ -438,12 +438,14 @@ Traffic generation is intentionally not prescribed here — use whatever tools y
 To avoid poisoning the label with transitioning traffic, always wait for traffic to hit its target rate before applying the attack label, and reset the label to `0` before turning off the attack.
 
 1. **Phase 0 (Peacetime):** Let it run on normal traffic for ~4 minutes for Welford warm-up (wait for the `warm-up complete` log), then let it capture ~5 minutes of steady normal traffic.
-2. **Phase 1 (Flash Crowd):** Start a legitimate-looking surge from many distinct source IPs (e.g. a distributed set of HTTP clients). Wait for it to hit full rate, then run `echo 1 > /tmp/ddos_label`; capture for a few minutes; run `echo 0 > /tmp/ddos_label`; stop the traffic and wait for it to return to baseline before continuing.
-3. **Phase 2a (Single-Source DDoS):** Start a single-source flood at a rate representative of what you want to defend against. Wait for it to stabilize, then run `echo 2 > /tmp/ddos_label`; capture for a few minutes; run `echo 0 > /tmp/ddos_label`; stop the flood and wait for baseline to return.
-4. **Phase 2b (Distributed DDoS):** Same as 2a, but from many concurrent sources instead of one — wait for it to stabilize, `echo 2 > /tmp/ddos_label`, capture, `echo 0 > /tmp/ddos_label`, stop.
+2. **Phase 1 (Flash Crowd):** Start a legitimate-looking surge from many distinct source IPs (e.g. a distributed set of HTTP clients). Wait for it to hit full rate, then run `echo 1 | sudo tee /run/ddos_stage1/train_label`; capture for a few minutes; run `echo 0 | sudo tee /run/ddos_stage1/train_label`; stop the traffic and wait for it to return to baseline before continuing.
+3. **Phase 2a (Single-Source DDoS):** Start a single-source flood at a rate representative of what you want to defend against. Wait for it to stabilize, then run `echo 2 | sudo tee /run/ddos_stage1/train_label`; capture for a few minutes; run `echo 0 | sudo tee /run/ddos_stage1/train_label`; stop the flood and wait for baseline to return.
+4. **Phase 2b (Distributed DDoS):** Same as 2a, but from many concurrent sources instead of one — wait for it to stabilize, `echo 2 | sudo tee /run/ddos_stage1/train_label`, capture, `echo 0 | sudo tee /run/ddos_stage1/train_label`, stop.
+
+(`/run/ddos_stage1` is root-owned, not world-writable like `/tmp` was -- this is deliberate, see the IPC/active-flows security note above, but it does mean the label switch needs `sudo`/`tee` instead of a plain shell redirect.)
 
 **Capturing more than one session per label (required for a fair evaluation):**
-A single continuous process run — even one that cycles through all four phases above via `/tmp/ddos_label` — only produces *one* Welford baseline draw per label, because the baseline lives in memory for the life of the *process*, not the life of the *label*. Evaluating generalization (see Leave-One-Session-Out below) needs at least two **independent** sessions per label: kill and restart `ddos_stage1` (fresh warm-up) before capturing a second Normal or Flash-Crowd session, rather than just flipping the label on an already-running process. `training_data.csv` is append-only (Stage 1 opens it with `OpenOptions::append(true)`), so every new session — same file, any day — is picked up automatically; `train.py`'s own session detection (a >30s timestamp gap or a label change starts a new session) sorts it out from timestamps, not from how the file was written.
+A single continuous process run — even one that cycles through all four phases above via `/run/ddos_stage1/train_label` — only produces *one* Welford baseline draw per label, because the baseline lives in memory for the life of the *process*, not the life of the *label*. Evaluating generalization (see Leave-One-Session-Out below) needs at least two **independent** sessions per label: kill and restart `ddos_stage1` (fresh warm-up) before capturing a second Normal or Flash-Crowd session, rather than just flipping the label on an already-running process. `training_data.csv` is append-only (Stage 1 opens it with `OpenOptions::append(true)`), so every new session — same file, any day — is picked up automatically; `train.py`'s own session detection (a >30s timestamp gap or a label change starts a new session) sorts it out from timestamps, not from how the file was written.
 
 One archetype worth deliberately capturing that the four phases above don't produce: a **hot-source flash crowd** — a legitimate surge where one participant (a monitoring bot, a NAT gateway, a proxy) contributes a disproportionate share of otherwise-normal traffic, so `dominant_ip_ratio` climbs on a benign sample. Keep that source's absolute rate modest (tens of pps, not hundreds+) and shrink the overall crowd size rather than raising any single source's rate aggressively — pushing a "hot source" too hard just reproduces a single-source DDoS signature with a legitimate label on it, which defeats the purpose.
 
@@ -502,7 +504,7 @@ sudo bash scripts/uninstall.sh --remove-build --remove-rust
 
 ## Stage 2 Integration (Python)
 
-Stage 2 listens on the Unix domain socket `/tmp/ddos_stage1.sock`, unpacks the incoming 168-byte `FeatureVector` structs, and classifies traffic in real-time. It operates as a FastAPI application with a persistent SQLite storage layer and a dynamic Chart.js dashboard.
+Stage 2 listens on the Unix domain socket `/run/ddos_stage1/stage1.sock`, unpacks the incoming 168-byte `FeatureVector` structs, and classifies traffic in real-time. It operates as a FastAPI application with a persistent SQLite storage layer and a dynamic Chart.js dashboard.
 
 
 The 17 numeric fields unpacked from the Feature Vector (plus the 2 IP fields — see the wire format table above):
