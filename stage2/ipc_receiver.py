@@ -201,20 +201,12 @@ def run_ipc_receiver():
                 rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
                 # 2. Extreme SINGLE-SOURCE rate trigger -- based on dominant_rate
                 #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
-                #    Aggregate rate can't distinguish "one attacker producing an
-                #    extreme volume" from "many genuine users each producing a
-                #    normal trickle" -- a legitimate flash crowd's aggregate scales
-                #    with participant count exactly like an attacker's does. This
-                #    used to check ewma_rate directly, which meant a large but
-                #    genuinely distributed crowd (e.g. running the same generator
-                #    from two machines at once) could get force-classified as DDoS
-                #    purely from aggregate volume, bypassing the entropy/dom_ratio
-                #    check below entirely. Threshold matches Track B's per-source
-                #    block_threshold for consistency -- same bar that triggers a
-                #    hard block now also triggers this classification override.
-                #    (block_rate_floor_pps / block_sigma_multiplier are shared
-                #    with Tier 2's block_threshold below, computed once as
-                #    extreme_dominant_rate_boundary and reused there too.)
+                #    Aggregate rate can't distinguish one attacker at extreme
+                #    volume from many genuine users each at a normal trickle --
+                #    a legitimate flash crowd's aggregate scales with participant
+                #    count the same way an attacker's does. Threshold matches
+                #    Tier 2's block_threshold below (computed once here as
+                #    extreme_dominant_rate_boundary and reused there).
                 extreme_dominant_rate_boundary = max(
                     cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
                 )

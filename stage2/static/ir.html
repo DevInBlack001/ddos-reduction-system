@@ -92,8 +92,9 @@
                 <div class="export-card">
                     <div class="export-title">Export Incident Report (PDF)</div>
                     <div class="export-desc">
-                        Generates an executive-level summary report of the gateway's performance.
-                        Includes current network baselines, active blocklist statistics, and embeds the live packet rate / entropy timeline charts below.
+                        Generates an incident report with current network baselines, active blocklist statistics,
+                        the live packet rate / entropy timeline charts below, and a network topology / traffic flow
+                        diagram drawn server-side from live state.
                     </div>
                     <button class="btn btn-danger" style="width: 100%; margin-top: auto;" onclick="generatePdfReport()">Compile Executive Report (.pdf)</button>
                 </div>
@@ -117,7 +118,7 @@
 
             <div class="hud-panel" style="margin-top: 20px;">
                 <div class="hud-panel-header">
-                    <div class="hud-panel-title">Network Topology Preview for Export</div>
+                    <div class="hud-panel-title">Network Topology Preview</div>
                     <span class="badge badge-normal">Incident graphics</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -247,11 +248,8 @@
             }
         }
 
-        // Simplified, one-shot versions of network.html / traffic.html's
-        // renderers -- a static PDF doesn't need the live drag/animation
-        // machinery, just a single settled snapshot. Physics constants
-        // (repulsion/spring/damping) match network.html so the topology
-        // reads the same way in the report as it does live.
+        // One-shot, settled versions of network.html / traffic.html's
+        // renderers, used only for the preview panel below.
         async function renderNetworkSnapshot() {
             const canvas = document.getElementById('pdfNetworkCanvas');
             const ctx = canvas.getContext('2d');
@@ -476,26 +474,8 @@
                 return;
             }
 
-            // Extract base64 image strings from chart canvases
             const rateImg = rateChart.toBase64Image();
             const entropyImg = entropyChart.toBase64Image();
-
-            // Re-render the network/traffic snapshots right before export so
-            // the report reflects current data, not whatever was on screen
-            // when the page first loaded. Best-effort -- if either fails
-            // (e.g. /api/state hiccups), the report still generates without
-            // that section rather than blocking the whole export.
-            let networkImg = null, trafficImg = null;
-            try {
-                networkImg = await renderNetworkSnapshot();
-            } catch (err) {
-                console.error("Network map snapshot failed:", err);
-            }
-            try {
-                trafficImg = await renderTrafficSnapshot();
-            } catch (err) {
-                console.error("Traffic flow snapshot failed:", err);
-            }
 
             try {
                 const response = await fetch('/api/logs/export/pdf', {
@@ -503,9 +483,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         rate_chart_base64: rateImg,
-                        entropy_chart_base64: entropyImg,
-                        network_map_base64: networkImg,
-                        traffic_map_base64: trafficImg
+                        entropy_chart_base64: entropyImg
                     })
                 });
 

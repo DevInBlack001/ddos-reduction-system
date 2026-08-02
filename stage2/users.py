@@ -2,23 +2,10 @@
 users.py — Admin account management: list, create, delete, change password.
 
 Single-tier system (no roles) -- any authenticated session can manage any
-account. Two safety nets on top of that, both closing gaps found in review:
-
-  - Sensitive actions (create, delete, change password) require the CALLER
-    to re-enter their OWN current password. A session cookie alone (e.g.
-    one that leaked through a brief XSS window, or was left signed in on a
-    shared machine) used to be sufficient to durably take over every
-    account; now it isn't.
-  - The "can't delete the last admin" guard and the duplicate-username
-    check are each enforced as a single atomic SQL statement rather than a
-    separate check-then-act pair. Two concurrent requests could previously
-    both pass a check before either committed -- e.g. two deletes for two
-    different users, with only 2 accounts total, both reading count=2
-    before either delete landed, leaving zero accounts behind.
-  - Changing a password or deleting an account now also revokes every
-    live session for that username (see auth.revoke_sessions_for_user),
-    so a hijacked session doesn't just keep working until its own idle
-    timeout after the credential it was minted under has changed.
+account. Sensitive actions require the caller's own current password, the
+delete/create guards are atomic SQL statements (no separate check-then-act
+race), and changing or deleting an account revokes its live sessions (see
+auth.revoke_sessions_for_user).
 """
 
 import sqlite3
@@ -72,9 +59,8 @@ def create_user(payload: CreateUserPayload, request: Request):
     conn = sqlite3.connect(config.DB_PATH)
     cursor = conn.cursor()
     try:
-        # username is the PRIMARY KEY -- a duplicate INSERT raises
-        # IntegrityError, which is the actual atomic guard against the
-        # race a separate SELECT-then-INSERT would be vulnerable to.
+        # username is the PRIMARY KEY -- the IntegrityError on a duplicate
+        # is the atomic guard, not a separate SELECT-then-INSERT.
         cursor.execute(
             "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
             (payload.username, password_hash, "")
@@ -90,9 +76,7 @@ def create_user(payload: CreateUserPayload, request: Request):
 
 @router.delete("/api/users")
 def delete_user(payload: DeleteUserPayload, request: Request):
-    # Body, not query params -- a query string is the wrong place for a
-    # password (server access logs, browser history, proxy logs all tend
-    # to capture URLs but not bodies).
+    # Body, not query params -- a password shouldn't end up in access logs.
     caller = get_session_username(request)
     _verify_admin_password(caller, payload.admin_password)
     username = payload.username
@@ -104,10 +88,8 @@ def delete_user(payload: DeleteUserPayload, request: Request):
         conn.close()
         raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
 
-    # The guard and the delete are the SAME statement -- SQLite serializes
-    # writes, so a second concurrent DELETE (for a different username)
-    # can't evaluate its own "> 1" subquery until the first one has fully
-    # committed, and will correctly see the post-delete count.
+    # Guard and delete are the same statement -- SQLite serializes writes,
+    # so a concurrent delete can't race the "> 1" count check.
     cursor.execute(
         "DELETE FROM users WHERE username = ? AND (SELECT COUNT(*) FROM users) > 1",
         (username,)

@@ -38,11 +38,8 @@ TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
 TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
 
 # -----------------------------------------------------------------------------
-# Enforcement thresholds -- these were previously hardcoded magic numbers
-# scattered through the enforcement logic. Kept as a deterministic,
-# operator-tunable rule set (not statistically self-adjusted) so a given
-# decision can always be explained by pointing at a specific configured
-# value, editable live from the dashboard without touching code.
+# Enforcement thresholds -- a deterministic, operator-tunable rule set
+# (not statistically self-adjusted), editable live from the dashboard.
 # -----------------------------------------------------------------------------
 
 DEFAULT_ENFORCEMENT_CONFIG = {
@@ -83,11 +80,8 @@ def get_enforcement_config():
 
 
 # -----------------------------------------------------------------------------
-# Alerting (Discord webhook + SMTP email) -- disabled by default. Holds an
-# SMTP app password at rest; alerts_config.json gets the same chmod 0600
-# treatment as everything else storage.save_json_file touches, same trust
-# model as stage2.db/enforcement_config.json (protects against other local
-# accounts, not against root compromise).
+# Alerting (Discord webhook + SMTP email) -- disabled by default.
+# alerts_config.json is chmod 0600, same as stage2.db/enforcement_config.json.
 # -----------------------------------------------------------------------------
 
 DEFAULT_ALERTS_CONFIG = {

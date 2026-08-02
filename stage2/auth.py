@@ -37,10 +37,7 @@ def _record_login_failure(client_ip: str):
 
 def get_session_username(request: Request) -> str:
     """The username behind the caller's session cookie, or a 401 if there
-    isn't a valid one. auth_middleware already rejects unauthenticated
-    requests before a route handler runs, so a missing/invalid session
-    here would only happen from a route that isn't behind that gate --
-    treated as a hard error either way, not something to fall back from."""
+    isn't a valid one."""
     session_id = request.cookies.get("session_id")
     session = state.active_sessions.get(session_id)
     if not session:
@@ -49,12 +46,8 @@ def get_session_username(request: Request) -> str:
 
 
 def revoke_sessions_for_user(username: str):
-    """Invalidate every active session belonging to `username` -- called
-    when that account's password changes or the account is deleted, so a
-    session hijacked before the change doesn't just keep working until its
-    own idle timeout. Without this, sessions (keyed by an opaque token with
-    no username attached) had no way to be targeted by account changes at
-    all."""
+    """Invalidate every active session belonging to `username`, e.g. after
+    a password change or account deletion."""
     stale = [token for token, s in state.active_sessions.items() if s.get("username") == username]
     for token in stale:
         del state.active_sessions[token]

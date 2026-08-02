@@ -144,17 +144,8 @@ def get_state(target: Optional[str] = None):
             "proto_gre": 0.0,
             "proto_esp": 0.0
         })
-    # else: no target requested -- keep `metrics = state.last_metrics` from
-    # above. last_metrics is already the most-recently-received window
-    # across ALL targets (overwritten on every packet regardless of
-    # victim), so it's the correct thing to show for an overview/no-target
-    # -selected view. There used to be an `elif last_metrics_by_target:`
-    # here that replaced it with last_metrics_by_target[first_target] --
-    # "first" meaning whichever victim happened to be the first one ever
-    # registered, not the most recent. On a multi-target setup that pinned
-    # the dashboard's global status badge to one victim's stale history
-    # forever, even while a different victim was actively (and correctly)
-    # logging something else. Removed -- last_metrics was already right.
+    # else: no target requested -- state.last_metrics is already the most
+    # recent window across all targets, correct for the overview view.
 
     return {
         **metrics,
@@ -329,15 +320,9 @@ def update_enforcement_config(payload: EnforcementConfigPayload):
 # Logs API
 @router.get("/api/logs")
 def get_logs(classification: str = "ALL", limit: int = 50, offset: int = 0):
-    # The `logs` table has no size cap -- log_incident() writes a row for
-    # essentially every processed window, so over any sustained runtime this
-    # table grows into the hundreds of thousands of rows. It used to be
-    # fetched here with no LIMIT at all and rendered into the DOM in one
-    # shot by logs.html, which froze the tab once the table got large.
-    # Bounded + paginated now, with the row count operator-selectable from
-    # the page itself (default 50) rather than a fixed server-side cap. The
-    # full-history CSV export is intentionally left unbounded since that's
-    # a deliberate one-time download, not something rendered live.
+    # The `logs` table has no size cap and can grow into the hundreds of
+    # thousands of rows, so this endpoint is paginated (the CSV export
+    # stays unbounded -- that's a deliberate one-time download).
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     try:

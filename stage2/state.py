@@ -1,12 +1,9 @@
 """
 state.py — Shared, in-memory, mutable state for the running Stage 2 process.
 
-Every other module reaches this state via `import state; state.xxx`, never
-`from state import xxx` -- `last_metrics` in particular is replaced with a
-brand-new dict on every window (see ipc_receiver.run_ipc_receiver), and a
-`from` import would silently keep pointing at the stale dict object instead
-of following the rebind. Module-attribute access always sees the live
-value, so that's the only safe pattern here.
+Always reached via `import state; state.xxx`, never `from state import xxx`
+-- `last_metrics` gets rebound to a new dict every window, and a `from`
+import would keep pointing at the stale object.
 """
 
 # Most recent window's metrics, across all victims (last one received wins).
@@ -35,25 +32,18 @@ last_metrics = {
 # victim_ip -> last_metrics dict for that specific victim.
 last_metrics_by_target = {}
 
-# Hysteresis for hard blocks: how many CONSECUTIVE class-2 (DDoS) windows a
-# victim must see before a block action is allowed to fire (configurable --
-# see config.DEFAULT_ENFORCEMENT_CONFIG["block_hysteresis_windows"]).
-# Rate-limiting is unaffected by this -- it's intentionally the immediate,
-# reversible tier. Keeps a single noisy window from triggering an
-# irreversible-feeling action; the ipset entries self-heal regardless, this
-# just raises the bar before an entry gets created in the first place.
-consecutive_ddos_windows = {}  # victim_ip -> count of consecutive class-2 windows
+# victim_ip -> count of consecutive class-2 (DDoS) windows, gating hard
+# blocks (config.DEFAULT_ENFORCEMENT_CONFIG["block_hysteresis_windows"]).
+# Rate-limiting isn't gated by this -- it's the immediate, reversible tier.
+consecutive_ddos_windows = {}
 
 # ip -> last-acted-on timestamp, used by enforcement.block_ip/ratelimit_ip
 # to debounce repeated ipset calls for the same IP within a short window.
 recently_blocked = {}
 
-# session_token -> {"username": str, "last_active": float}. Associated with
-# a username (not just a bare timestamp) so a password change or account
-# deletion can revoke that specific user's live sessions -- see
-# auth.revoke_sessions_for_user(). Without this association neither action
-# could invalidate anything: the session store would have no way to know
-# which live tokens belonged to the affected account.
+# session_token -> {"username": str, "last_active": float}. Keyed by
+# username too so auth.revoke_sessions_for_user() can invalidate a specific
+# account's sessions after a password change or deletion.
 active_sessions = {}
 
 # Login brute-force throttling -- keyed by client IP, not username, so an
@@ -63,13 +53,10 @@ LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECS = 300
 LOGIN_LOCKOUT_SECS = 300
 
-# Alert de-duplication (see alerts.py / ipc_receiver.py). victim_ip -> last
-# classification name seen, so a classification-change alert only fires on
-# an actual transition, not every window a victim stays classified DDoS.
+# victim_ip -> last classification seen, so alerts.py only alerts on an
+# actual transition, not every window spent classified DDoS.
 last_classification_by_target = {}
 
-# ip -> timestamp of the last block alert sent for that IP, so a source that
-# stays blocked across many windows doesn't get a fresh alert every time its
-# ipset entry gets renewed -- suppressed for cfg["block_duration_seconds"],
-# see alerts.py's usage.
+# ip -> timestamp of the last block alert sent, suppressed for
+# cfg["block_duration_seconds"] (see alerts.py).
 last_block_alert = {}

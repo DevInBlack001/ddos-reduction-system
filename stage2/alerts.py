@@ -92,9 +92,7 @@ def run_alert_worker():
 def _redact(cfg: dict) -> dict:
     safe = dict(cfg)
     safe["smtp_app_password_set"] = bool(safe.pop("smtp_app_password", ""))
-    # The webhook URL IS the credential (anyone holding it can post as this
-    # bot to the target channel), so it gets the same treatment as the SMTP
-    # app password rather than being echoed back in the clear.
+    # The webhook URL is itself a credential, so it's redacted the same way.
     safe["discord_webhook_url_set"] = bool(safe.pop("discord_webhook_url", ""))
     return safe
 

@@ -79,8 +79,8 @@ class EnforcementConfigPayload(BaseModel):
 class PdfReportPayload(BaseModel):
     rate_chart_base64: str
     entropy_chart_base64: str
-    network_map_base64: Optional[str] = None
-    traffic_map_base64: Optional[str] = None
+    # Network/traffic diagrams are drawn server-side now (see reports.py),
+    # not accepted as a client-supplied image.
 
 
 def _check_username(v: str) -> str:
@@ -107,13 +107,10 @@ class DeleteUserPayload(BaseModel):
 class CreateUserPayload(BaseModel):
     username: str
     password: str
-    # The CALLER's own current password, re-checked server-side before the
-    # action is allowed -- confirms whoever's driving this session really
-    # knows the credentials they're authenticated as, not just holding a
-    # (possibly hijacked) session cookie. No length/strength validator here
-    # deliberately: this re-checks an EXISTING password via bcrypt, not a
-    # new one being set, so it must accept whatever that account's real
-    # password already is, even if it predates the 8-char minimum.
+    # The caller's own current password, re-checked server-side. No length
+    # validator here -- it's checked against an existing bcrypt hash, not a
+    # new password, so it must accept whatever that account's password
+    # already is.
     admin_password: str
 
     @field_validator("username")
