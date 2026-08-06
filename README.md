@@ -635,10 +635,11 @@ The planned evolutionary milestones for future gateway iterations are structured
 | **V2 (Completed)** | **Adaptive Baselines** | Dynamic defenses | Implemented entropy-guided thresholds, cluster rate-limiting, and Welford poisoning defenses. |
 | **V3 (Completed)** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
 | **V4 (Implemented)** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. See `stage1/src/persistence.rs`. |
-| **V5** | **Multi-Interface Scaling** | Perimeter-wide visibility | Aggregate traffic statistics from multiple interface ports. Spawns egress sniffers to enable ingress vs. egress rate telemetry auditing. |
+| **V5** | **Egress Processing** | Measure what actually gets through | Second capture thread on the egress interface. Comparing per-victim ingress vs. egress rates measures real drop effectiveness empirically, instead of inferring it from enforcement actions alone. Also covers NAT-safe enforcement: sources marked as shared/NAT egress points are rate-limited but never hard-blocked. |
 | **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port packet sniffer and early drop logic to eBPF/XDP driver path using Aya in Rust, scaling handling capacity to 10M+ pps. |
-| **V7** | **Ensemble Intelligence** | Complex classifier models | Deploy a multi-model voting ensemble layer to resolve advanced evasion/stealth attacks while maintaining low false positives. |
+| **V7** | **Ensemble Intelligence** | Complex classifier models | Deploy a multi-model voting ensemble layer to resolve advanced evasion/stealth attacks while maintaining low false positives. Adds source-port entropy, TTL variance, and TCP fingerprint diversity as features, so large NAT/CGNAT crowds stop reading as single-source floods. |
 | **V8** | **Automated Playbooks** | Detailed Incident Response Plan | Generate dynamic, granular incident reports and execute automated multi-stage incident response playbooks during severe breaches. |
+| **V9** | **Multi-Interface Aggregation** | Perimeter-wide visibility | Aggregate traffic statistics across multiple parallel ingress uplinks. Deferred behind the versions above: the routed-subnet topology uses its two interfaces as the ingress and egress of a single path, not as parallel uplinks, so there is nothing to aggregate yet. |
 
 ---
 
