@@ -99,6 +99,7 @@
                 const tableBody = document.getElementById('ifaceTableBody');
                 const ifaces = data.interfaces || [];
                 const activeIface = data.active_interface || '';
+                const egressIface = data.egress_interface || '';
 
                 if (ifaces.length === 0) {
                     tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--status-danger);">No network interfaces found.</td></tr>`;
@@ -107,10 +108,14 @@
 
                 let html = '';
                 ifaces.forEach(i => {
-                    const isActive = i.name === activeIface;
-                    const statusLabel = isActive
-                        ? '<span class="badge" style="color: var(--accent); background-color: var(--accent-soft);">Active Sniffer</span>'
-                        : '<span class="badge" style="color: var(--text-tertiary); background-color: var(--bg-surface-alt);">Idle</span>';
+                    let statusLabel;
+                    if (i.name === activeIface) {
+                        statusLabel = '<span class="badge" style="color: var(--accent); background-color: var(--accent-soft);">Ingress Sniffer</span>';
+                    } else if (egressIface && i.name === egressIface) {
+                        statusLabel = '<span class="badge" style="color: var(--status-victim); background-color: var(--status-victim-bg);">Egress Sniffer</span>';
+                    } else {
+                        statusLabel = '<span class="badge" style="color: var(--text-tertiary); background-color: var(--bg-surface-alt);">Idle</span>';
+                    }
 
                     const stateLabel = i.up
                         ? '<span style="color: var(--status-success); font-weight: 600;">Up</span>'

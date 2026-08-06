@@ -108,19 +108,10 @@ def get_state(target: Optional[str] = None):
     except Exception:
         pass
 
-    # Read active sniffer interface from stage 1 service (simulate or read default ens19)
-    active_interface = "ens19"
-    try:
-        if os.path.exists("/etc/systemd/system/ddos-stage1.service"):
-            with open("/etc/systemd/system/ddos-stage1.service", "r") as f:
-                content = f.read()
-                for part in content.split():
-                    if part.startswith("--interface"):
-                        idx = content.split().index(part)
-                        active_interface = content.split()[idx+1]
-                        break
-    except Exception:
-        pass
+    # Both sniffer interfaces, read from the Stage 1 unit file. Reporting
+    # only --interface left the egress NIC showing as idle on the
+    # interfaces page even while it was actively being captured.
+    active_interface, egress_interface = config.get_sniffer_interfaces()
 
     # Select which target's metrics to return
     metrics = state.last_metrics
@@ -165,6 +156,7 @@ def get_state(target: Optional[str] = None):
         "victim_targets": victims,
         "interfaces": interfaces,
         "active_interface": active_interface,
+        "egress_interface": egress_interface,
         "latest_logs": latest_logs,
         "last_metrics_by_target": state.last_metrics_by_target
     }

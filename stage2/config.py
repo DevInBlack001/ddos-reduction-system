@@ -37,6 +37,33 @@ FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
 ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")
 ALERTS_CONFIG_PATH = os.path.join(SCRIPT_DIR, "alerts_config.json")
 
+STAGE1_UNIT_PATH = "/etc/systemd/system/ddos-stage1.service"
+
+
+def get_sniffer_interfaces():
+    """(ingress, egress) interface names read from the Stage 1 unit file.
+
+    Either may be None -- the unit isn't installed (running from source),
+    or --egress-interface simply wasn't passed. Callers report what is
+    actually configured rather than substituting a guess.
+    """
+    ingress = None
+    egress = None
+    try:
+        with open(STAGE1_UNIT_PATH, "r") as f:
+            parts = f.read().split()
+        for i, part in enumerate(parts):
+            if i + 1 >= len(parts):
+                break
+            if part == "--interface":
+                ingress = parts[i + 1]
+            elif part == "--egress-interface":
+                egress = parts[i + 1]
+    except Exception:
+        pass
+    return ingress, egress
+
+
 TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
 TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
 
