@@ -62,6 +62,8 @@ def get_state(target: Optional[str] = None):
 
     # Load Whitelisted
     whitelist = load_json_file(config.WHITELIST_PATH, [])
+    # V5: shared/NAT egress points
+    shared_ips = load_json_file(config.SHARED_IPS_PATH, [])
     # Load Victims
     victims = load_json_file(config.VICTIMS_PATH, [])
 
@@ -137,6 +139,8 @@ def get_state(target: Optional[str] = None):
             "cooldown": 0,
             "latest_classification": "Normal",
             "victim_ip": target,
+            "egress_rate": None,
+            "drop_ratio": None,
             "proto_tcp": 1.0,
             "proto_udp": 0.0,
             "proto_icmp": 0.0,
@@ -151,6 +155,7 @@ def get_state(target: Optional[str] = None):
         **metrics,
         "active_flows": active_flows,
         "whitelisted_ips": whitelist,
+        "shared_ips": shared_ips,
         "blocked_ips": blocked_ips_only,
         "blocked_ips_detail": blocked_detail,
         "blocked_count": len(blocked_ips_only),
@@ -220,6 +225,28 @@ def delete_whitelist(ip: str):
     if ip in whitelist:
         whitelist.remove(ip)
         save_json_file(config.WHITELIST_PATH, whitelist)
+    return {"status": "success"}
+
+
+# V5: shared/NAT egress points -- rate-limited but never hard-blocked, so a
+# single ipset entry can't take out every legitimate user behind them.
+@router.post("/api/shared-ips")
+def add_shared_ip(payload: IpPayload):
+    shared = load_json_file(config.SHARED_IPS_PATH, [])
+    if payload.ip not in shared:
+        shared.append(payload.ip)
+        save_json_file(config.SHARED_IPS_PATH, shared)
+        logging.warning(f"[+] Marked {payload.ip} as a shared/NAT egress point (never hard-blocked)")
+    return {"status": "success"}
+
+@router.delete("/api/shared-ips")
+def delete_shared_ip(ip: str):
+    ip = _validate_host_ip_or_400(ip)
+    shared = load_json_file(config.SHARED_IPS_PATH, [])
+    if ip in shared:
+        shared.remove(ip)
+        save_json_file(config.SHARED_IPS_PATH, shared)
+        logging.warning(f"[+] {ip} is no longer marked as a shared/NAT egress point")
     return {"status": "success"}
 
 

@@ -87,6 +87,18 @@ pub enum Protocol {
     Other,
 }
 
+/// Which side of the gateway a packet was captured on.
+///
+/// Ingress is what arrived and is the only side that feeds detection.
+/// Egress is what was actually forwarded on toward the victim after
+/// filtering, used solely to measure how much traffic the enforcement
+/// dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Ingress,
+    Egress,
+}
+
 /// Lightweight per-packet metadata record sent from the capture thread to
 /// the analysis thread via the crossbeam channel.
 ///
@@ -94,6 +106,8 @@ pub enum Protocol {
 /// Keeping this struct small reduces copy overhead across the channel.
 #[derive(Debug, Clone)]
 pub struct PacketMeta {
+    /// Which capture thread produced this record.
+    pub direction: Direction,
     /// Source IP address extracted from the IP header.
     /// IPv4 addresses are stored as `IpAddr::V4`; IPv6 as `IpAddr::V6`.
     pub src_ip: IpAddr,
@@ -135,6 +149,9 @@ pub struct CaptureConfig {
     /// not just those addressed to this interface's MAC).
     /// Required when running on a bridge (`br0`) that sees others' traffic.
     pub promiscuous: bool,
+    /// Which side this capture thread is watching. Stamped onto every
+    /// `PacketMeta` it emits.
+    pub direction: Direction,
 }
 
 impl CaptureConfig {
@@ -155,6 +172,7 @@ impl CaptureConfig {
             snaplen:     256,   // Capture only header bytes (optimizes memory copy speed under flood)
             timeout_ms:  100,   // 100 ms flush window (prevents Linux TPACKET ring buffer packet drops)
             promiscuous: true,  // bridge must see all passing frames
+            direction:   Direction::Ingress,
         }
     }
 
@@ -166,11 +184,16 @@ impl CaptureConfig {
             snaplen:     256,   // Capture only header bytes (optimizes memory copy speed under flood)
             timeout_ms:  100,
             promiscuous: true,  // Enable promiscuous mode to capture bridged transit traffic
+            direction:   Direction::Ingress,
         }
     }
 
     /// Build BPF filter and capture configuration for multiple victim targets.
-    pub fn for_targets(interface: &str, targets: &crate::VictimTargets) -> Self {
+    ///
+    /// Called once per side: the ingress and egress threads use the same
+    /// victim filter, since the traffic of interest is what is headed to
+    /// those victims either way.
+    pub fn for_targets(interface: &str, targets: &crate::VictimTargets, direction: Direction) -> Self {
         let filter = match targets {
             crate::VictimTargets::List(ips) => {
                 let hosts = ips.iter().map(|ip| format!("dst host {ip}")).collect::<Vec<_>>().join(" or ");
@@ -187,6 +210,7 @@ impl CaptureConfig {
             snaplen:     256,
             timeout_ms:  100,
             promiscuous: true,
+            direction,
         }
     }
 }
@@ -356,7 +380,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         // -------------------------------------------------------------------------
         // Step 6: Forward metadata to the analysis thread via the bounded channel.
         // -------------------------------------------------------------------------
-        let meta = PacketMeta { src_ip, dst_ip, arrived_at, protocol, dst_port };
+        let meta = PacketMeta { direction: cfg.direction, src_ip, dst_ip, arrived_at, protocol, dst_port };
 
         // `send()` blocks if the channel is full (backpressure).  This is the
         // correct behaviour — it prevents unbounded memory growth under flood.

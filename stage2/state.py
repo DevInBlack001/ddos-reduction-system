@@ -21,6 +21,9 @@ last_metrics = {
     "k_multiplier": 2.0,
     "cooldown": 0,
     "latest_classification": "Normal",
+    # V5: None until a window arrives from a sensor with an egress interface.
+    "egress_rate": None,
+    "drop_ratio": None,
     "proto_tcp": 1.0,
     "proto_udp": 0.0,
     "proto_icmp": 0.0,

@@ -49,6 +49,9 @@ pub struct AnalysisConfig {
     /// V4: reject a persisted baseline older than this many seconds rather
     /// than trusting it. Default: `persistence::DEFAULT_TTL_SECS` (1 hour).
     pub baseline_ttl_secs: f64,
+    /// V5: true when `--egress-interface` was supplied. Distinguishes "no
+    /// egress sensor, drop rate unknown" from a genuine 0% drop rate.
+    pub egress_enabled: bool,
 }
 
 impl Default for AnalysisConfig {
@@ -62,6 +65,7 @@ impl Default for AnalysisConfig {
             train_label: 0,
             baseline_path: persistence::DEFAULT_BASELINE_PATH.to_string(),
             baseline_ttl_secs: persistence::DEFAULT_TTL_SECS,
+            egress_enabled: false,
         }
     }
 }
@@ -89,6 +93,11 @@ pub struct TargetState {
     pub(crate) window_id: u64,
     pub(crate) ip_counts: HashMap<IpAddr, u32>,
     pub(crate) window_packet_count: usize,
+    /// V5: packets seen on the egress side for this victim in the current
+    /// window, i.e. what survived filtering. Reset at every window close.
+    /// Deliberately absent from `to_persisted()` -- this is a measurement,
+    /// not a statistical baseline, so it must not survive a restart.
+    pub(crate) egress_packet_count: u64,
     pub(crate) last_window_close: Instant,
     pub(crate) cooldown_counter: usize,
     pub(crate) last_sent_time: f64,
@@ -142,6 +151,7 @@ impl TargetState {
             window_id: 0,
             ip_counts: HashMap::new(),
             window_packet_count: 0,
+            egress_packet_count: 0,
             last_window_close: Instant::now(),
             cooldown_counter,
             last_sent_time: 0.0,

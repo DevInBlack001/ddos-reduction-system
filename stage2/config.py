@@ -24,11 +24,14 @@ RUNTIME_DIR = "/run/ddos_stage1"
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
-FEATURE_VECTOR_FORMAT = "<17d16s16s"  # 17 x f64 (136 bytes) + 16-byte dominant IP + 16-byte victim IP = 168 bytes
+FEATURE_VECTOR_FORMAT = "<19d16s16s"  # 19 x f64 (152 bytes) + 16-byte dominant IP + 16-byte victim IP = 184 bytes
 PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
 WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
+# V5: IPs known to front many hosts (carrier NAT, corporate egress, proxies).
+# Never hard-blocked -- see enforcement.block_ip().
+SHARED_IPS_PATH = os.path.join(SCRIPT_DIR, "shared_ips.json")
 VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
 FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
 ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")

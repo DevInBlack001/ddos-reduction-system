@@ -54,7 +54,7 @@
 // =============================================================================
 
 use crate::{
-    capture::{PacketMeta, Protocol},
+    capture::{Direction, PacketMeta, Protocol},
     entropy::MIN_PACKETS_FOR_ENTROPY,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
     persistence::{self, PersistedState},
@@ -166,7 +166,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             Protocol::Esp => 50,
             Protocol::Other => 0,
         };
-        *flow_counts.entry((meta.src_ip, meta.dst_ip, meta.dst_port, proto_num)).or_insert(0) += 1;
+        // Flow telemetry is ingress-only. Counting the egress copy of the
+        // same conversation would double every flow's rate.
+        if meta.direction == Direction::Ingress {
+            *flow_counts.entry((meta.src_ip, meta.dst_ip, meta.dst_port, proto_num)).or_insert(0) += 1;
+        }
 
         // Check if destination IP is one of our victim targets
         let is_target = match &cfg.victim_targets {
@@ -195,6 +199,16 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         }
 
         let target_state = targets_map.get_mut(&meta.dst_ip).unwrap();
+
+        // V5: egress packets only answer "how much got through". They never
+        // feed entropy, the IP histogram, the Welford baselines or the
+        // window-close decision -- detection stays driven purely by what
+        // arrived at the gateway, so mitigation can never influence the
+        // statistics used to decide on mitigation.
+        if meta.direction == Direction::Egress {
+            target_state.egress_packet_count += 1;
+            continue;
+        }
 
         // =====================================================================
         // LAYER 1 — Per-Packet Updates
@@ -244,7 +258,32 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         } else {
             0.0
         };
-        
+
+        // V5: what actually reached the victim this window, and the share of
+        // arriving traffic that never made it. Both are -1.0 when no egress
+        // sensor is configured, so Stage 2 can tell "unknown" apart from a
+        // real 0% drop rate. The ratio is clamped because the two sides are
+        // measured independently -- a packet can cross the egress boundary
+        // just after the ingress window closed, which would otherwise
+        // produce a small negative drop.
+        let (egress_rate, drop_ratio) = if cfg.egress_enabled {
+            let e_rate = if window_elapsed > 0.0 {
+                target_state.egress_packet_count as f64 / window_elapsed
+            } else {
+                0.0
+            };
+            let ratio = if window_rate > 0.0 {
+                (1.0 - (e_rate / window_rate)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (e_rate, ratio)
+        } else {
+            (-1.0, -1.0)
+        };
+        target_state.egress_packet_count = 0;
+
+
         // Asymmetric decay: 
         // 1. Cliff-drop decay: If we detect a precipitous drop in raw rate (<10% of EWMA)
         //    AND we are not in active cooldown (cooldown_counter == 0), use alpha = 0.8
@@ -373,6 +412,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 proto_esp,
                 k_multiplier: cfg.k, // no cooldown/entropy scaling applies during warm-up
                 cooldown_counter: target_state.cooldown_counter as f64,
+                egress_rate,
+                drop_ratio,
                 dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
                 victim_ip:   meta.dst_ip,
             };
@@ -543,6 +584,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 proto_esp,
                 k_multiplier: base_k,
                 cooldown_counter: target_state.cooldown_counter as f64,
+                egress_rate,
+                drop_ratio,
                 dominant_ip,
                 victim_ip:   meta.dst_ip,
             };

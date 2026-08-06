@@ -22,7 +22,7 @@
 // into an explicitly sized byte buffer rather than transmuting the Rust struct
 // directly. The Python-side format string is therefore:
 //
-//   struct.unpack('<17d16s16s', data)   →   17 × 8 + 16 + 16 = 168 bytes
+//   struct.unpack('<19d16s16s', data)   →   19 × 8 + 16 + 16 = 184 bytes
 //
 //   Field order on the wire (all little-endian f64 unless noted):
 //     [0..8]     entropy           — Shannon entropy h (bits, 0.0..5.64)
@@ -42,8 +42,10 @@
 //     [112..120] proto_esp         — ESP fraction of window
 //     [120..128] k_multiplier      — operative anomaly-boundary multiplier
 //     [128..136] cooldown_counter  — windows remaining in cooldown (0..10)
-//     [136..152] dominant_ip       — 16-byte IPv6/IPv6-mapped-IPv4 address
-//     [152..168] victim_ip         — 16-byte IPv6/IPv6-mapped-IPv4 address
+//     [136..144] egress_rate       — V5: pps that reached the victim (-1.0 = no egress sensor)
+//     [144..152] drop_ratio        — V5: share dropped, 0.0..1.0 (-1.0 = no egress sensor)
+//     [152..168] dominant_ip       — 16-byte IPv6/IPv6-mapped-IPv4 address
+//     [168..184] victim_ip         — 16-byte IPv6/IPv6-mapped-IPv4 address
 //
 // ANOMALY FLAGS BITMASK (retained as constants for logging; not sent on wire)
 // ---------------------------------------------------------------------------
@@ -87,9 +89,9 @@ use std::{
 pub const SOCKET_PATH: &str = "/run/ddos_stage1/stage1.sock";
 
 /// Wire size of one serialised `FeatureVector` in bytes.
-/// 17 fields × 8 bytes (f64) = 136 bytes + 16 bytes for dominant IP + 16 bytes for victim IP = 168 bytes.
-/// Python format: `struct.unpack('<17d16s16s', data)`
-pub const FEATURE_VECTOR_BYTES: usize = 168;
+/// 19 fields × 8 bytes (f64) = 152 bytes + 16 bytes for dominant IP + 16 bytes for victim IP = 184 bytes.
+/// Python format: `struct.unpack('<19d16s16s', data)`
+pub const FEATURE_VECTOR_BYTES: usize = 184;
 
 /// Anomaly flag: EWMA rate exceeded upper boundary (volume flood).
 /// Retained as a logging constant — no longer sent in the wire payload.
@@ -105,8 +107,8 @@ pub const FLAG_ENTROPY_ANOMALY: u8 = 0x02;
 
 /// The data payload handed to Stage 2 after every anomalous window.
 ///
-/// Wire format: 17 × f64 (little-endian) + 16 bytes dominant IP + 16 bytes victim IP = 168 bytes total.
-/// Python unpacks with: `struct.unpack('<17d16s16s', data)`
+/// Wire format: 19 × f64 (little-endian) + 16 bytes dominant IP + 16 bytes victim IP = 184 bytes total.
+/// Python unpacks with: `struct.unpack('<19d16s16s', data)`
 ///
 /// Field order matches the Python unpack string exactly — **do not reorder**.
 #[derive(Debug, Clone)]
@@ -146,6 +148,15 @@ pub struct FeatureVector {
     pub k_multiplier: f64,
     /// Windows remaining in the cooldown recovery period (0..10).
     pub cooldown_counter: f64,
+    /// V5: packets per second measured on the egress side for this victim,
+    /// i.e. what survived filtering. `-1.0` when no egress sensor is
+    /// configured.
+    pub egress_rate: f64,
+    /// V5: share of arriving traffic that did not reach the victim,
+    /// `1 - (egress_rate / ewma_rate)`, clamped to 0.0..1.0. `-1.0` when no
+    /// egress sensor is configured -- distinguishing "unknown" from a
+    /// genuine 0% drop rate.
+    pub drop_ratio: f64,
     /// The dominant IP address in this window (used for mitigation blocks).
     pub dominant_ip: std::net::IpAddr,
     /// The victim destination IP address.
@@ -156,10 +167,10 @@ impl FeatureVector {
     /// Serialise the feature vector into a fixed-size byte buffer.
     ///
     /// All numeric fields are written as **little-endian f64** to match
-    /// Python's `struct.unpack('<17d16s16s', data)` format string exactly.
+    /// Python's `struct.unpack('<19d16s16s', data)` format string exactly.
     ///
     /// # Returns
-    /// `[u8; FEATURE_VECTOR_BYTES]` — exactly 168 bytes, no padding, no surprises.
+    /// `[u8; FEATURE_VECTOR_BYTES]` — exactly 184 bytes, no padding, no surprises.
     pub fn to_bytes(&self) -> [u8; FEATURE_VECTOR_BYTES] {
         let mut buf = Vec::with_capacity(FEATURE_VECTOR_BYTES);
 
@@ -198,6 +209,10 @@ impl FeatureVector {
             .expect("write k_multiplier");
         buf.write_f64::<LittleEndian>(self.cooldown_counter)
             .expect("write cooldown_counter");
+        buf.write_f64::<LittleEndian>(self.egress_rate)
+            .expect("write egress_rate");
+        buf.write_f64::<LittleEndian>(self.drop_ratio)
+            .expect("write drop_ratio");
 
         // Serialize dominant_ip as 16 bytes (IPv6 or IPv6-mapped IPv4 address)
         let ip_v6 = match self.dominant_ip {
@@ -344,6 +359,8 @@ mod tests {
             proto_esp:   0.02,
             k_multiplier: 1.5,
             cooldown_counter: 7.0,
+            egress_rate: 210.5,
+            drop_ratio:  0.83,
             dominant_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 4)),
             victim_ip:   std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 3)),
         }
@@ -354,7 +371,7 @@ mod tests {
     fn serialised_size_is_correct() {
         let bytes = sample_fv().to_bytes();
         assert_eq!(bytes.len(), FEATURE_VECTOR_BYTES);
-        assert_eq!(FEATURE_VECTOR_BYTES, 168);
+        assert_eq!(FEATURE_VECTOR_BYTES, 184);
     }
 
     /// Round-trip: serialise then re-parse with byteorder.
@@ -385,6 +402,8 @@ mod tests {
         let proto_esp         = cur.read_f64::<LittleEndian>().unwrap();
         let k_multiplier      = cur.read_f64::<LittleEndian>().unwrap();
         let cooldown_counter  = cur.read_f64::<LittleEndian>().unwrap();
+        let egress_rate       = cur.read_f64::<LittleEndian>().unwrap();
+        let drop_ratio        = cur.read_f64::<LittleEndian>().unwrap();
 
         let mut ip_bytes = [0u8; 16];
         std::io::Read::read_exact(&mut cur, &mut ip_bytes).unwrap();
@@ -411,6 +430,8 @@ mod tests {
         assert!((proto_esp         - 0.02            ).abs() < 1e-9);
         assert!((k_multiplier     - 1.5              ).abs() < 1e-9);
         assert!((cooldown_counter - 7.0              ).abs() < 1e-9);
+        assert!((egress_rate      - 210.5            ).abs() < 1e-9);
+        assert!((drop_ratio       - 0.83             ).abs() < 1e-9);
         assert_eq!(dominant_ip, std::net::IpAddr::V6(std::net::Ipv4Addr::new(192, 168, 1, 4).to_ipv6_mapped()));
         assert_eq!(victim_ip, std::net::IpAddr::V6(std::net::Ipv4Addr::new(10, 0, 0, 3).to_ipv6_mapped()));
     }

@@ -50,6 +50,88 @@
         .data-table td {
             padding: 12px 15px;
         }
+        /* V5 egress panel */
+        .egress-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+        .egress-toggle input { width: 15px; height: 15px; cursor: pointer; }
+        .egress-note {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            background: var(--bg-surface-alt);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            line-height: 1.6;
+        }
+        .egress-note code {
+            font-family: var(--font-mono);
+            font-size: 0.76rem;
+            color: var(--accent);
+        }
+        .egress-headline {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+        .egress-drop {
+            font-family: var(--font-mono);
+            font-size: 2.1rem;
+            font-weight: 600;
+            line-height: 1;
+            color: var(--status-success);
+        }
+        .egress-drop-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .egress-bar-row {
+            display: grid;
+            grid-template-columns: 150px 1fr 110px;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .egress-bar-label {
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        .egress-track {
+            height: 16px;
+            background: var(--bg-surface-alt);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+        }
+        .egress-fill {
+            height: 100%;
+            width: 0;
+            border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+            transition: width 0.4s ease;
+        }
+        .egress-fill.ingress { background: var(--status-danger); }
+        .egress-fill.egress  { background: var(--status-success); }
+        .egress-bar-value {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--text-primary);
+            text-align: right;
+        }
+        @media (max-width: 900px) {
+            .hud-grid { grid-template-columns: 1fr; }
+            .egress-bar-row { grid-template-columns: 110px 1fr 88px; gap: 8px; }
+            .egress-bar-label, .egress-bar-value { font-size: 0.7rem; }
+        }
     </style>
 </head>
 <body>
@@ -201,6 +283,40 @@
                         <span class="stat-label">Rate-Limited Hosts</span>
                         <span id="statRatelimited" class="stat-value">0</span>
                         <span class="stat-meta">Rate cap active</span>
+                    </div>
+                </div>
+
+                <!-- V5: ingress vs egress mitigation effectiveness -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Mitigation Effectiveness</div>
+                        <label class="egress-toggle">
+                            <input type="checkbox" id="egressToggle" checked>
+                            Show egress
+                        </label>
+                    </div>
+                    <div id="egressBody">
+                        <div class="egress-note" id="egressUnavailable">
+                            No egress sensor is reporting. Start Stage 1 with
+                            <code>--egress-interface &lt;IFACE&gt;</code> to measure how much
+                            traffic is actually being dropped before it reaches the target.
+                        </div>
+                        <div id="egressContent" style="display: none;">
+                            <div class="egress-headline">
+                                <div class="egress-drop" id="egressDropPct">--</div>
+                                <div class="egress-drop-label">of arriving traffic never reached the target</div>
+                            </div>
+                            <div class="egress-bar-row">
+                                <span class="egress-bar-label">Arrived (ingress)</span>
+                                <div class="egress-track"><div class="egress-fill ingress" id="egressBarIn"></div></div>
+                                <span class="egress-bar-value" id="egressValIn">0.0 pps</span>
+                            </div>
+                            <div class="egress-bar-row">
+                                <span class="egress-bar-label">Delivered (egress)</span>
+                                <div class="egress-track"><div class="egress-fill egress" id="egressBarOut"></div></div>
+                                <span class="egress-bar-value" id="egressValOut">0.0 pps</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -528,6 +644,56 @@
             }
         }
 
+        // The toggle controls whether the panel is shown, not whether the
+        // sensor runs -- egress capture is a Stage 1 launch flag
+        // (--egress-interface) and there is no control channel from the
+        // dashboard back to Stage 1.
+        function initEgressToggle() {
+            const toggle = document.getElementById('egressToggle');
+            const body = document.getElementById('egressBody');
+            const saved = localStorage.getItem('shield-show-egress');
+            toggle.checked = saved === null ? true : saved === 'true';
+            body.style.display = toggle.checked ? '' : 'none';
+            toggle.addEventListener('change', () => {
+                body.style.display = toggle.checked ? '' : 'none';
+                localStorage.setItem('shield-show-egress', toggle.checked);
+            });
+        }
+
+        function updateEgressPanel(data) {
+            const unavailable = document.getElementById('egressUnavailable');
+            const content = document.getElementById('egressContent');
+
+            // null (not 0) means no egress sensor reported -- a real 0.0 drop
+            // ratio is a valid measurement and must still render.
+            if (data.drop_ratio === null || data.drop_ratio === undefined) {
+                unavailable.style.display = '';
+                content.style.display = 'none';
+                return;
+            }
+            unavailable.style.display = 'none';
+            content.style.display = '';
+
+            const ingress = data.ewma_rate || 0;
+            const egress = data.egress_rate || 0;
+            const pct = data.drop_ratio * 100;
+
+            const dropEl = document.getElementById('egressDropPct');
+            dropEl.innerText = `${pct.toFixed(1)}%`;
+            // Green only when mitigation is actually removing traffic.
+            dropEl.style.color = pct >= 1
+                ? 'var(--status-success)'
+                : 'var(--text-secondary)';
+
+            // Both bars scale against ingress, so egress reads as a visible
+            // fraction of what arrived.
+            const scale = Math.max(ingress, egress, 1);
+            document.getElementById('egressBarIn').style.width = `${(ingress / scale) * 100}%`;
+            document.getElementById('egressBarOut').style.width = `${(egress / scale) * 100}%`;
+            document.getElementById('egressValIn').innerText = `${ingress.toFixed(1)} pps`;
+            document.getElementById('egressValOut').innerText = `${egress.toFixed(1)} pps`;
+        }
+
         async function fetchState() {
             try {
                 let url = '/api/state';
@@ -625,6 +791,8 @@
                 document.getElementById('globalTargetsTableBody').innerHTML = tableHtml;
 
                 // 3. Target View Updates
+                updateEgressPanel(data);
+
                 document.getElementById('statPps').innerText = data.ewma_rate.toFixed(1);
                 document.getElementById('statPpsBaseline').innerText = `Baseline: ${data.mean_r.toFixed(1)}`;
                 document.getElementById('statEntropy').innerText = data.entropy.toFixed(4);
@@ -723,6 +891,7 @@
         }
 
         async function initCharts() {
+            initEgressToggle();
             await fetchState();
 
             // Auto-select first active/configured target if possible

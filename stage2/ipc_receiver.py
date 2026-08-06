@@ -159,8 +159,14 @@ def run_ipc_receiver():
                 proto_esp = unpacked[14]
                 k_multiplier = unpacked[15]
                 cooldown_counter = unpacked[16]
-                ip_str = decode_ip(unpacked[17])
-                victim_ip_str = decode_ip(unpacked[18])
+                # V5: -1.0 means no egress sensor is configured, which is not
+                # the same as a measured 0% drop rate -- kept as None so the
+                # dashboard can show "unavailable" rather than "nothing was
+                # dropped".
+                egress_rate = unpacked[17] if unpacked[17] >= 0 else None
+                drop_ratio = unpacked[18] if unpacked[18] >= 0 else None
+                ip_str = decode_ip(unpacked[19])
+                victim_ip_str = decode_ip(unpacked[20])
                 victim_ip_str = enforcement.resolve_victim_ip(victim_ip_str)
 
                 # Calculate delta features
@@ -255,6 +261,8 @@ def run_ipc_receiver():
                     "cooldown": int(cooldown_counter),
                     "latest_classification": pred_name,
                     "victim_ip": victim_ip_str,
+                    "egress_rate": egress_rate,
+                    "drop_ratio": drop_ratio,
                     "proto_tcp": proto_tcp,
                     "proto_udp": proto_udp,
                     "proto_icmp": proto_icmp,

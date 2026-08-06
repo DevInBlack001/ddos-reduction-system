@@ -142,6 +142,11 @@ impl VictimTargets {
 /// Parse CLI arguments from `std::env::args()` into a plain struct.
 struct CliArgs {
     interface:      String,
+    /// V5: optional second interface, the egress side of the gateway. When
+    /// set, a second capture thread measures what actually reached the
+    /// victims after filtering. Absent, the sensor behaves exactly as it
+    /// did before and no drop metrics are reported.
+    egress_interface: Option<String>,
     victim_targets: Option<VictimTargets>,
     k:              f64,
     alpha:          f64,
@@ -163,6 +168,7 @@ impl CliArgs {
     fn parse() -> Self {
         let args: Vec<String> = env::args().collect();
         let mut interface = String::new();
+        let mut egress_interface: Option<String> = None;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
         let mut k         = 2.0_f64;
@@ -181,6 +187,10 @@ impl CliArgs {
                 "--interface" => {
                     i += 1;
                     interface = args.get(i).cloned().unwrap_or_default();
+                }
+                "--egress-interface" => {
+                    i += 1;
+                    egress_interface = args.get(i).cloned();
                 }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
@@ -253,6 +263,13 @@ impl CliArgs {
             process::exit(1);
         }
 
+        // Capturing both sides on one interface would double-count every
+        // packet and make the drop ratio meaningless.
+        if egress_interface.as_deref() == Some(interface.as_str()) {
+            eprintln!("Error: --egress-interface must differ from --interface.");
+            process::exit(1);
+        }
+
         // Build VictimTargets enum
         let victim_targets = if let Some(ref ip_str) = victim_ips {
             let mut list = Vec::new();
@@ -290,7 +307,7 @@ impl CliArgs {
             None
         };
 
-        Self { interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs }
+        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs }
     }
 }
 
@@ -299,7 +316,9 @@ fn print_usage(bin: &str) {
         r"\nUsage: {bin} --interface <IFACE> [--victim-ips <IP1,IP2,...> | --victim-subnet <SUBNET>] [OPTIONS]\n"
     );
     eprintln!("Options:");
-    eprintln!("  --interface  <IFACE>   Network interface to sniff (e.g., br0)");
+    eprintln!("  --interface  <IFACE>   Ingress interface to sniff (e.g., br0)");
+    eprintln!("  --egress-interface <IFACE>  V5: egress interface. Enables drop-rate measurement");
+    eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
     eprintln!("  --k          <FLOAT>   Anomaly multiplier k  [default: 2.0]");
@@ -317,6 +336,40 @@ fn print_usage(bin: &str) {
     eprintln!("  RUST_LOG=info|debug|warn   Log verbosity (default: info)");
     eprintln!();
     eprintln!("Requires root or CAP_NET_RAW capability for raw pcap capture.");
+}
+
+/// Open `iface` on the main thread and exit with a readable error if it
+/// fails. A pcap failure here almost always means missing CAP_NET_RAW.
+///
+/// Done before spawning anything so the failure is loud and synchronous,
+/// rather than the silent exit that happens when a capture thread dies and
+/// drops the channel before analysis has processed a packet.
+fn precheck_interface(iface: &str) {
+    use pcap::Capture;
+    let test_open = Capture::from_device(iface)
+        .and_then(|inactive| inactive.snaplen(64).timeout(1).open());
+
+    if let Err(e) = test_open {
+        let msg = e.to_string().to_lowercase();
+        if msg.contains("permission denied") || msg.contains("operation not permitted") {
+            eprintln!();
+            eprintln!("[ERROR] Permission denied opening '{iface}'");
+            eprintln!("        pcap requires raw socket access. Fix with one of:");
+            eprintln!("          1. Run as root:              sudo ./ddos_stage1 ...");
+            eprintln!("          2. Grant capability (once):  sudo setcap cap_net_raw+ep ./ddos_stage1");
+            eprintln!();
+        } else {
+            eprintln!("[ERROR] Cannot open interface '{iface}': {e}");
+            eprintln!("        Check that the interface name is correct.");
+            if let Ok(devices) = pcap::Device::list() {
+                let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
+                eprintln!("        Available interfaces: {}", names.join(", "));
+            }
+        }
+        process::exit(1);
+    }
+    // The test handle drops here — the real capture thread opens a fresh
+    // one. Opening twice is fine; pcap handles are independent.
 }
 
 // =============================================================================
@@ -431,8 +484,21 @@ fn main() {
     } else {
         let targets = args.victim_targets.as_ref().unwrap();
         info!("main: BPF filter enabled for targets: {:?}", targets);
-        CaptureConfig::for_targets(&args.interface, targets)
+        CaptureConfig::for_targets(&args.interface, targets, capture::Direction::Ingress)
     };
+
+    // V5: the egress side is optional. Same victim filter as ingress —
+    // what matters is traffic headed to the victims on either side.
+    let egress_cap_cfg = args.egress_interface.as_ref().map(|iface| {
+        if args.no_filter || args.victim_targets.is_none() {
+            let mut c = CaptureConfig::for_test(iface);
+            c.direction = capture::Direction::Egress;
+            c
+        } else {
+            let targets = args.victim_targets.as_ref().unwrap();
+            CaptureConfig::for_targets(iface, targets, capture::Direction::Egress)
+        }
+    });
 
     let analysis_cfg = AnalysisConfig {
         k:              args.k,
@@ -443,6 +509,7 @@ fn main() {
         train_label:    args.train_label,
         baseline_path:      args.baseline_path.clone(),
         baseline_ttl_secs:  args.baseline_ttl_secs,
+        egress_enabled:     args.egress_interface.is_some(),
     };
 
     // -------------------------------------------------------------------------
@@ -454,32 +521,9 @@ fn main() {
     // the silent exit that happens when the capture thread dies and drops the
     // crossbeam channel before the analysis thread ever processes a packet.
     // -------------------------------------------------------------------------
-    {
-        use pcap::Capture;
-        let test_open = Capture::from_device(cap_cfg.interface.as_str())
-            .and_then(|inactive| inactive.snaplen(64).timeout(1).open());
-
-        if let Err(e) = test_open {
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("permission denied") || msg.contains("operation not permitted") {
-                eprintln!();
-                eprintln!("[ERROR] Permission denied opening '{}'", cap_cfg.interface);
-                eprintln!("        pcap requires raw socket access. Fix with one of:");
-                eprintln!("          1. Run as root:              sudo ./ddos_stage1 ...");
-                eprintln!("          2. Grant capability (once):  sudo setcap cap_net_raw+ep ./ddos_stage1");
-                eprintln!();
-            } else {
-                eprintln!("[ERROR] Cannot open interface '{}': {}", cap_cfg.interface, e);
-                eprintln!("        Check that the interface name is correct.");
-                if let Ok(devices) = pcap::Device::list() {
-                    let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
-                    eprintln!("        Available interfaces: {}", names.join(", "));
-                }
-            }
-            process::exit(1);
-        }
-        // The test handle is dropped here — the real capture thread opens a
-        // fresh handle. Opening twice is fine; pcap handles are independent.
+    precheck_interface(&cap_cfg.interface);
+    if let Some(cfg) = egress_cap_cfg.as_ref() {
+        precheck_interface(&cfg.interface);
     }
 
     info!(
@@ -517,6 +561,22 @@ fn main() {
     // Sender is dropped, which closes the channel and causes the analysis
     // thread to exit cleanly.
     // -------------------------------------------------------------------------
+    // V5: the egress sensor runs on its own thread with a cloned sender,
+    // feeding the same analysis loop so both sides share one window
+    // boundary and one clock. Spawned before ingress takes over main.
+    let egress_running = egress_cap_cfg.is_some();
+    if let Some(cfg) = egress_cap_cfg {
+        let egress_tx = tx.clone();
+        let iface = cfg.interface.clone();
+        std::thread::Builder::new()
+            .name("capture-egress".to_string())
+            .spawn(move || {
+                capture::run_capture_thread(cfg, egress_tx);
+                log::warn!("main: egress capture thread on '{iface}' exited");
+            })
+            .expect("failed to spawn egress capture thread");
+    }
+
     capture::run_capture_thread(cap_cfg, tx);
 
     // -------------------------------------------------------------------------
@@ -524,6 +584,17 @@ fn main() {
     // Wait for the analysis thread to drain and exit cleanly.
     // -------------------------------------------------------------------------
     info!("main: capture thread exited; waiting for analysis thread to finish...");
+
+    // With an egress thread alive the channel still has a live sender, so
+    // the analysis loop would never see a disconnect and the join below
+    // would block forever. Normal shutdown is a signal from systemd, which
+    // takes the whole process down anyway; this path only runs when ingress
+    // pcap fails outright, and exiting is the honest response.
+    if egress_running {
+        log::warn!("main: ingress capture ended while egress is still running; exiting.");
+        process::exit(1);
+    }
+
     if let Err(e) = analysis_handle.join() {
         log::error!("main: analysis thread panicked: {e:?}");
         process::exit(1);

@@ -153,6 +153,19 @@ def block_ip(ip, duration=3600, victim_ip="Unknown"):
             logging.info(f"[Whitelist Bypass] Skipping block for whitelisted administrative IP: {ip}")
             return
 
+        # NAT-safe enforcement: a shared egress IP fronts many hosts, so the
+        # unconditional DROP in ddos_blocklist would cut off every legitimate
+        # user behind it. Throttle instead -- the attacker's share of the
+        # traffic is capped while everyone else keeps working.
+        shared_ips = load_json_file(config.SHARED_IPS_PATH, [])
+        if ip in shared_ips:
+            logging.warning(
+                f"[NAT-Safe] {ip} is marked as a shared/NAT egress point -- "
+                f"rate-limiting instead of hard-blocking."
+            )
+            ratelimit_ip(ip, duration=duration, victim_ip=victim_ip)
+            return
+
         res = subprocess.run(
             ["ipset", "add", "ddos_blocklist", ip, "timeout", str(duration), "-exist"],
             capture_output=True,

@@ -5,6 +5,13 @@
 **Project:** Adaptive Two-Stage Framework for Near Real-Time Layer-4 Volumetric DDoS Mitigation Using Behavioral Traffic Analysis
 
 
+## Authorship
+
+This project is my own. The concept, the architecture, the two-stage design, the detection approach, the enforcement policy, the feature set, and every functional decision across all versions originated with me. I built it as a learning exercise in network security, statistical detection, and systems programming, and I directed its design and evolution throughout.
+
+I used AI as a coding assistant during implementation — writing and refactoring code to my specifications, and acting as a sounding board while I worked through design trade-offs. The decisions about what to build, why, and how the system should behave were mine; the assistance was in translating those decisions into code faster than I would have unaided.
+
+
 ## What This Project Is
 
 Most DDoS mitigation systems use **static thresholds** — hard-coded numbers like "block any IP sending more than 1000 packets/sec." The problem is that your legitimate traffic might naturally spike to 1000 pps during a registration rush, so those systems either miss real attacks or block real users.
@@ -201,7 +208,7 @@ Stage 2 uses this flag plus four additional features in the Random Forest to mak
 
 When Stage 1 flags an anomaly, it serialises a `FeatureVector` struct and sends it over a Unix Domain Socket to Stage 2 (Python).
 
-The wire format is **exactly 168 bytes, little-endian**:
+The wire format is **exactly 184 bytes, little-endian**:
 
 | Offset | Size | Field | Type | Description |
 |---|---|---|---|---|
@@ -222,10 +229,16 @@ The wire format is **exactly 168 bytes, little-endian**:
 | 112 | 8 bytes | `proto_esp` | f64 | ESP packet ratio |
 | 120 | 8 bytes | `k_multiplier` | f64 | Operative anomaly-boundary multiplier for this window (`cfg.k`, halved during cooldown recovery) |
 | 128 | 8 bytes | `cooldown_counter` | f64 | Windows remaining in cooldown recovery (0–10) |
-| 136 | 16 bytes | `dominant_ip` | [u8; 16] | Busiest source IP (IPv6 or mapped IPv4) |
-| 152 | 16 bytes | `victim_ip` | [u8; 16] | Monitored victim IP address |
+| 136 | 8 bytes | `egress_rate` | f64 | **V5:** pps measured on the egress side, i.e. what reached the victim (`-1.0` = no egress sensor) |
+| 144 | 8 bytes | `drop_ratio` | f64 | **V5:** share of arriving traffic that never got through, 0.0–1.0 (`-1.0` = no egress sensor) |
+| 152 | 16 bytes | `dominant_ip` | [u8; 16] | Busiest source IP (IPv6 or mapped IPv4) |
+| 168 | 16 bytes | `victim_ip` | [u8; 16] | Monitored victim IP address |
 
-Python unpacks it with: `struct.unpack('<17d16s16s', data)`
+Python unpacks it with: `struct.unpack('<19d16s16s', data)`
+
+The V5 fields use `-1.0` rather than `0.0` as their "not measured" sentinel, because a genuine 0% drop ratio is a meaningful reading — it means enforcement is not removing anything — and must stay distinguishable from having no egress sensor at all. Stage 2 converts `-1.0` to `None` on receipt.
+
+**This is a breaking wire-format change.** Both stages must be deployed together; a Stage 2 still expecting 168 bytes will misparse every window.
 
 `k_multiplier` and `cooldown_counter` exist so Stage 2 never has to guess Stage 1's live sensitivity: earlier versions hardcoded `2.0`/`0` on the Python side for these, which silently diverged from Stage 1's real (and cooldown-adjusted) `k` the moment `--k` was set to anything non-default. Stage 2 now uses the transmitted `k_multiplier` for its own anomaly-boundary and mitigation-threshold checks instead of a fixed constant.
 
@@ -286,6 +299,45 @@ The answer lies in the **Global Interpreter Lock (GIL)** and **runtime overhead*
 
 ---
 
+### 9. Egress Processing and Drop Measurement (V5)
+
+**Files:** `stage1/src/capture.rs`, `stage1/src/analysis.rs`, `stage2/static/index.html`
+
+**The problem it solves:** before V5, "did the mitigation work?" could only be *inferred*. The gateway logged that it called `block_ip()`, and everything downstream assumed the traffic stopped. Nothing ever measured whether it actually did.
+
+Because the sensor sits as a router between two subnets, both halves of that question are directly observable: the ingress interface carries what arrived, and the egress interface carries what was forwarded on after filtering. The difference between them is the drop rate — measured, not assumed.
+
+```
+[ Attacker ]───► <INGRESS_IFACE> ──► netfilter (FORWARD) ──► <EGRESS_IFACE> ───► [ Victim ]
+                       │                      │                     │
+                  ingress sensor      block / rate-limit       egress sensor
+                  (what arrived)        happens here          (what got through)
+```
+
+**One process, two capture threads — not two processes.** Both sensors feed the same analysis loop through a cloned crossbeam sender, so they share one window boundary and one clock. Two separate Stage 1 processes would each keep their own 10-second window on their own timer; those windows drift apart, and subtracting egress from ingress would compare mismatched slices of time — noisiest exactly when traffic is changing fastest, which is when the number matters.
+
+**Egress never feeds detection.** Egress packets increment a per-victim counter and nothing else. They are excluded from entropy, the source-IP histogram, the Welford baselines, the window-close decision, and `active_flows.json`. This is deliberate: egress traffic is *downstream of the gateway's own enforcement*, so letting it into the statistics would let past mitigation decisions influence future ones. Detection stays driven purely by what arrives.
+
+For the same reason, `drop_ratio` is **not** an ML feature and `FEATURE_COLS` is unchanged. It is high precisely *because* something was already blocked; feeding it to the classifier would train the model to predict its own past decisions rather than the traffic. The existing model and training datasets remain valid.
+
+**Enabling it:** pass `--egress-interface <IFACE>` alongside `--interface`. It is entirely optional — omit it and the sensor behaves exactly as it did in V4, with the egress fields reported as "unavailable" rather than as a 0% drop rate. The dashboard shows the ingress/egress comparison in a **Mitigation Effectiveness** panel with a show/hide toggle. That toggle controls the panel's visibility only; egress capture is a Stage 1 launch flag, and there is no control channel from the dashboard back to Stage 1.
+
+---
+
+### 10. NAT-Safe Enforcement (V5)
+
+**Files:** `stage2/enforcement.py`, `stage2/api.py`, `stage2/static/firewall.html`
+
+`ddos_blocklist` is an unconditional `DROP` matched on **source IP**. When the source is a carrier NAT, corporate egress point, or proxy, a single ipset entry therefore cuts off *every* legitimate user sharing that address.
+
+Addresses marked as shared (Firewall → **Shared / NAT Addresses**, stored in `shared_ips.json`) are never added to `ddos_blocklist`. `block_ip()` detects the mark and delegates to `ratelimit_ip()` instead, so the source is throttled rather than dropped outright.
+
+**What this does and does not fix.** Both enforcement sets match on source IP in the `INPUT`/`FORWARD` chains, and the `hashlimit` rule uses `--hashlimit-mode srcip` — one bucket per address. Everyone behind a shared IP therefore shares one throttle. This is **harm reduction, not a solution**: legitimate users behind that address still see degraded service, they just are not disconnected entirely.
+
+The underlying problem is that source attribution is destroyed at the gateway and only the NAT operator can resolve it. That is what V9's federated peer signalling is for — asking the network that owns the address to identify the offending host locally. Improving the *detection* side, so a large NAT crowd stops resembling a single-source flood in the first place, needs per-flow features the pipeline does not yet extract (source-port entropy, TTL variance, TCP fingerprint diversity) and belongs with the V7 classifier work.
+
+---
+
 ## Project File Structure
 
 ```
@@ -317,7 +369,9 @@ DDoS Reduction Project/
 │   ├── auth.py                     ← Login/logout, session middleware, bcrypt, rate-limit
 │   ├── ipc_receiver.py             ← Unix socket listener + classification/tier dispatch
 │   ├── reports.py                  ← CSV/PDF incident report export routes
-│   ├── api.py                      ← Dashboard state/history/whitelist/victim routes
+│   ├── users.py                    ← Admin account management routes
+│   ├── alerts.py                   ← Discord webhook + SMTP alert dispatch
+│   ├── api.py                      ← Dashboard state/history/whitelist/victim/shared-IP routes
 │   └── static/                     ← Dashboard HTML/CSS/JS
 └── scripts/
     ├── install.sh                  ← Linux installer (Debian/Ubuntu, RHEL, Alpine)
@@ -387,9 +441,14 @@ If you prefer to run the components separately:
 # Production (on sensor VM, specifying multiple IPs or a subnet)
 sudo ddos_stage1 --interface <IFACE> --victim-ips <VICTIM_IP_1>,<VICTIM_IP_2>
 sudo ddos_stage1 --interface <IFACE> --victim-subnet <SUBNET>
+
+# V5: also watch the egress side to measure how much traffic is actually dropped
+sudo ddos_stage1 --interface <INGRESS_IFACE> --egress-interface <EGRESS_IFACE> \
+                 --victim-ips <VICTIM_IP_1>,<VICTIM_IP_2>
 ```
 # All options
-ddos_stage1 --interface <IFACE>       # required
+ddos_stage1 --interface <IFACE>       # required (ingress side)
+            --egress-interface <IFACE> # V5: egress side, enables drop measurement (optional)
             --victim-ips <IPs>        # BPF filter IP list (comma-separated, alias: --victim-ip)
             --victim-subnet <SUBNET>  # BPF filter subnet (e.g. <SUBNET>)
             --k <FLOAT>               # anomaly multiplier (default: 2.0)
@@ -635,7 +694,7 @@ The planned evolutionary milestones for future gateway iterations are structured
 | **V2 (Completed)** | **Adaptive Baselines** | Dynamic defenses | Implemented entropy-guided thresholds, cluster rate-limiting, and Welford poisoning defenses. |
 | **V3 (Completed)** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
 | **V4 (Implemented)** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. See `stage1/src/persistence.rs`. |
-| **V5** | **Egress Processing** | Measure what actually gets through | Second capture thread on the egress interface. Comparing per-victim ingress vs. egress rates measures real drop effectiveness empirically, instead of inferring it from enforcement actions alone. Also covers NAT-safe enforcement: sources marked as shared/NAT egress points are rate-limited but never hard-blocked. |
+| **V5 (Implemented)** | **Egress Processing** | Measure what actually gets through | Second capture thread on the egress interface. Comparing per-victim ingress vs. egress rates measures real drop effectiveness empirically, instead of inferring it from enforcement actions alone. Also covers NAT-safe enforcement: sources marked as shared/NAT egress points are rate-limited but never hard-blocked. |
 | **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port packet sniffer and early drop logic to eBPF/XDP driver path using Aya in Rust, scaling handling capacity to 10M+ pps. |
 | **V7** | **Ensemble Intelligence** | Complex classifier models | Deploy a multi-model voting ensemble layer to resolve advanced evasion/stealth attacks while maintaining low false positives. Adds source-port entropy, TTL variance, and TCP fingerprint diversity as features, so large NAT/CGNAT crowds stop reading as single-source floods. |
 | **V8** | **Automated Playbooks** | Detailed Incident Response Plan | Generate dynamic, granular incident reports and execute automated multi-stage incident response playbooks during severe breaches. |

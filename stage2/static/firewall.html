@@ -82,6 +82,37 @@
                     </table>
                 </div>
 
+                <!-- V5: shared / NAT egress points -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Shared / NAT Addresses</div>
+                    </div>
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); background: var(--bg-surface-alt); border-left: 3px solid var(--status-warning); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px; line-height: 1.6;">
+                        Addresses listed here are never hard-blocked, because one entry in
+                        <code style="font-family: var(--font-mono);">ddos_blocklist</code> would drop traffic
+                        for every host behind them. Attacks from these sources are rate-limited instead.
+                    </div>
+
+                    <form id="sharedIpForm" class="form-group">
+                        <input type="text" id="sharedIp" class="form-input" placeholder="Enter IPv4 address" pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$" required>
+                        <button type="submit" class="btn">Mark as shared</button>
+                    </form>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Shared Address</th>
+                                <th style="text-align: right;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sharedIpTableBody">
+                            <tr>
+                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading shared addresses...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
                 <!-- Blocked IPs -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
@@ -219,6 +250,22 @@
                     wlBody.innerHTML = wlHtml;
                 }
 
+                // Render shared/NAT addresses
+                const shBody = document.getElementById('sharedIpTableBody');
+                const sharedIps = data.shared_ips || [];
+                if (sharedIps.length === 0) {
+                    shBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No shared addresses marked.</td></tr>`;
+                } else {
+                    let shHtml = '';
+                    sharedIps.forEach(ip => {
+                        shHtml += `<tr>
+                            <td style="font-weight: 600; font-family: var(--font-mono); color: var(--status-warning);">${ShieldSafe.escapeHtml(ip)}</td>
+                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeSharedIp('${ShieldSafe.jsAttr(ip)}')">Remove</button></td>
+                        </tr>`;
+                    });
+                    shBody.innerHTML = shHtml;
+                }
+
                 // Render blocks
                 const blBody = document.getElementById('blockedTableBody');
                 const blocked = data.blocked_ips_detail || []; // Should contain {ip, remaining_seconds}
@@ -279,6 +326,30 @@
         async function removeWhitelist(ip) {
             if (confirm(`Remove ${ip} from whitelist?`)) {
                 await fetch(`/api/whitelist?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' });
+                fetchFirewall();
+            }
+        }
+
+        document.getElementById('sharedIpForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const ip = document.getElementById('sharedIp').value;
+            const res = await fetch('/api/shared-ips', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip })
+            });
+            if (res.ok) {
+                document.getElementById('sharedIp').value = '';
+                fetchFirewall();
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to mark IP as shared.");
+            }
+        });
+
+        async function removeSharedIp(ip) {
+            if (confirm(`${ip} will become eligible for hard blocking again. Continue?`)) {
+                await fetch(`/api/shared-ips?ip=${encodeURIComponent(ip)}`, { method: 'DELETE' });
                 fetchFirewall();
             }
         }
