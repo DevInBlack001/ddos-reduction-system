@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
             var t = localStorage.getItem('shield-theme');
@@ -14,6 +15,44 @@
     <style>
         .action-cell {
             text-align: right;
+        }
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+        }
+        .filter-label {
+            font-size: 0.74rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-right: 2px;
+        }
+        .filter-btn {
+            background-color: var(--bg-surface-alt);
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            color: var(--text-secondary);
+            padding: 5px 14px;
+            font-family: inherit;
+            font-size: 0.76rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition-speed);
+        }
+        .filter-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .filter-btn.active {
+            background-color: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .filter-count {
+            font-size: 0.72rem;
+            color: var(--text-tertiary);
+            margin-left: auto;
         }
     </style>
 </head>
@@ -57,23 +96,34 @@
         <div class="content-area">
             <div class="hud-panel">
                 <div class="hud-panel-header">
-                    <div class="hud-panel-title">Live Connections (Top 20 Flows)</div>
+                    <div class="hud-panel-title">Live Connections</div>
+                </div>
+
+                <div class="filter-bar" style="margin-bottom: 16px;">
+                    <span class="filter-label">Classification</span>
+                    <button type="button" class="filter-btn active" data-filter="ALL">All</button>
+                    <button type="button" class="filter-btn" data-filter="Normal">Normal</button>
+                    <button type="button" class="filter-btn" data-filter="Flash Crowd">Flash Crowd</button>
+                    <button type="button" class="filter-btn" data-filter="DDoS">DDoS</button>
+                    <span class="filter-count" id="filterCount"></span>
                 </div>
 
                 <table class="flow-table">
                     <thead>
                         <tr>
                             <th>Source Address</th>
-                            <th>Destination Port</th>
+                            <th>Destination</th>
+                            <th>Port</th>
                             <th>Protocol</th>
                             <th>Flow Rate (pps)</th>
+                            <th>Classification</th>
                             <th>Mitigation Status</th>
                             <th class="action-cell">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="flowTableBody">
                         <tr>
-                            <td colspan="6" style="text-align: center; color: var(--text-tertiary);">Loading active flows...</td>
+                            <td colspan="8" style="text-align: center; color: var(--text-tertiary);">Loading active flows...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -83,6 +133,28 @@
 
     <script src="/static/theme.js"></script>
     <script>
+        // Last /api/state payload, kept so switching filters re-renders
+        // from memory instead of waiting on another round trip.
+        let latestData = null;
+        let currentFilter = 'ALL';
+
+        // A flow's classification is its DESTINATION's current
+        // classification -- the classifier scores traffic per victim, not
+        // per individual flow. Flows toward a host with no metrics yet
+        // (e.g. a destination that isn't a configured target) stay
+        // unclassified and only appear under "All".
+        function classificationFor(flow) {
+            const metrics = (latestData && latestData.last_metrics_by_target) || {};
+            const entry = metrics[flow.dst];
+            return (entry && entry.latest_classification) || null;
+        }
+
+        const CLASS_BADGE = {
+            'Normal': 'badge-normal',
+            'Flash Crowd': 'badge-flash',
+            'DDoS': 'badge-ddos'
+        };
+
         async function fetchFlows() {
             try {
                 const res = await fetch('/api/state');
@@ -90,56 +162,88 @@
                     window.location.href = '/static/login.html';
                     return;
                 }
-                const data = await res.json();
-
-                // Get whitelist and blocked lists
-                const whitelisted = data.whitelisted_ips || [];
-                const blocked = data.blocked_ips || [];
-
-                const tableBody = document.getElementById('flowTableBody');
-                const flows = data.active_flows || [];
-
-                document.getElementById('flowCountPill').innerText = `${flows.length} active flows`;
-
-                if (flows.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-tertiary);">No active IP flows detected on this interface.</td></tr>`;
-                    return;
-                }
-
-                let html = '';
-                flows.forEach(f => {
-                    let statusLabel = '<span class="badge badge-normal">Monitored</span>';
-                    let actionBtn = '';
-                    const jsIp = ShieldSafe.jsAttr(f.ip);
-
-                    if (whitelisted.includes(f.ip)) {
-                        statusLabel = '<span class="badge" style="color: var(--status-success); background-color: var(--status-success-bg);">Whitelisted</span>';
-                        actionBtn = `<button class="btn btn-danger" onclick="blockIp('${jsIp}')" disabled style="opacity: 0.5;">Block</button>`;
-                    } else if (blocked.includes(f.ip)) {
-                        statusLabel = '<span class="badge badge-ddos">Blocked</span>';
-                        actionBtn = `<button class="btn" onclick="unblockIp('${jsIp}')">Release</button>`;
-                    } else {
-                        actionBtn = `
-                            <button class="btn btn-danger" style="margin-right: 6px;" onclick="blockIp('${jsIp}')">Block</button>
-                            <button class="btn" onclick="whitelistIp('${jsIp}')">Whitelist</button>
-                        `;
-                    }
-
-                    html += `<tr>
-                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.ip)}</td>
-                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.port)}</td>
-                        <td>${ShieldSafe.escapeHtml(f.proto)}</td>
-                        <td style="color: var(--accent); font-weight: 600; font-family: var(--font-mono);">${f.rate.toFixed(1)}</td>
-                        <td>${statusLabel}</td>
-                        <td class="action-cell">${actionBtn}</td>
-                    </tr>`;
-                });
-
-                tableBody.innerHTML = html;
+                latestData = await res.json();
+                renderFlows();
             } catch (err) {
                 console.error("Failed to load active flows:", err);
             }
         }
+
+        function renderFlows() {
+            if (!latestData) return;
+
+            const whitelisted = latestData.whitelisted_ips || [];
+            const blocked = latestData.blocked_ips || [];
+            const tableBody = document.getElementById('flowTableBody');
+            const allFlows = latestData.active_flows || [];
+
+            const flows = currentFilter === 'ALL'
+                ? allFlows
+                : allFlows.filter(f => classificationFor(f) === currentFilter);
+
+            document.getElementById('flowCountPill').innerText = `${allFlows.length} active flows`;
+            document.getElementById('filterCount').innerText =
+                currentFilter === 'ALL'
+                    ? `${allFlows.length} shown`
+                    : `${flows.length} of ${allFlows.length} shown`;
+
+            if (allFlows.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-tertiary);">No active IP flows detected on this interface.</td></tr>`;
+                return;
+            }
+            if (flows.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-tertiary);">No flows currently classified as ${ShieldSafe.escapeHtml(currentFilter)}.</td></tr>`;
+                return;
+            }
+
+            let html = '';
+            flows.forEach(f => {
+                let statusLabel = '<span class="badge badge-normal">Monitored</span>';
+                let actionBtn = '';
+                const jsIp = ShieldSafe.jsAttr(f.ip);
+
+                if (whitelisted.includes(f.ip)) {
+                    statusLabel = '<span class="badge" style="color: var(--status-success); background-color: var(--status-success-bg);">Whitelisted</span>';
+                    actionBtn = `<button class="btn btn-danger" onclick="blockIp('${jsIp}')" disabled style="opacity: 0.5;">Block</button>`;
+                } else if (blocked.includes(f.ip)) {
+                    statusLabel = '<span class="badge badge-ddos">Blocked</span>';
+                    actionBtn = `<button class="btn" onclick="unblockIp('${jsIp}')">Release</button>`;
+                } else {
+                    actionBtn = `
+                        <button class="btn btn-danger" style="margin-right: 6px;" onclick="blockIp('${jsIp}')">Block</button>
+                        <button class="btn" onclick="whitelistIp('${jsIp}')">Whitelist</button>
+                    `;
+                }
+
+                const cls = classificationFor(f);
+                const classCell = cls
+                    ? `<span class="badge ${CLASS_BADGE[cls] || 'badge-normal'}">${ShieldSafe.escapeHtml(cls)}</span>`
+                    : `<span style="color: var(--text-tertiary);">&mdash;</span>`;
+
+                html += `<tr>
+                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.ip)}</td>
+                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.dst || '—')}</td>
+                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.port)}</td>
+                    <td>${ShieldSafe.escapeHtml(f.proto)}</td>
+                    <td style="color: var(--accent); font-weight: 600; font-family: var(--font-mono);">${f.rate.toFixed(1)}</td>
+                    <td>${classCell}</td>
+                    <td>${statusLabel}</td>
+                    <td class="action-cell">${actionBtn}</td>
+                </tr>`;
+            });
+
+            tableBody.innerHTML = html;
+        }
+
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                currentFilter = btn.dataset.filter;
+                document.querySelectorAll('.filter-btn').forEach(b => {
+                    b.classList.toggle('active', b === btn);
+                });
+                renderFlows();
+            });
+        });
 
         async function blockIp(ip) {
             if (confirm(`Block ${ip} immediately?`)) {

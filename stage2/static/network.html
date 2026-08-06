@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
             var t = localStorage.getItem('shield-theme');
@@ -30,6 +31,14 @@
             min-height: 480px;
             overflow-y: auto;
             overflow-x: hidden;
+        }
+        @media (max-width: 900px) {
+            /* 480px is taller than most phone viewports once the top bar
+               and legend are accounted for. */
+            .graph-wrap {
+                height: calc(100dvh - 250px);
+                min-height: 300px;
+            }
         }
         /* Normal-flow bar above the canvas, not an overlay -- see
            traffic.html for why an absolutely-positioned legend on top of

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
             var t = localStorage.getItem('shield-theme');
@@ -23,7 +24,9 @@
             right: 20px;
         }
         .login-box {
-            width: 400px;
+            width: 100%;
+            max-width: 400px;
+            margin: 16px;
             background: var(--bg-surface);
             border: 1px solid var(--border-color);
             border-radius: var(--radius);

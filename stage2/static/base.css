@@ -127,6 +127,7 @@ body {
     overflow-x: hidden;
     display: flex;
     min-height: 100vh;
+    min-height: 100dvh;
     font-size: 14px;
     line-height: 1.5;
     transition: background-color var(--transition-speed), color var(--transition-speed);
@@ -227,9 +228,13 @@ body {
 /* Main Content Panel */
 .main-panel {
     flex-grow: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     height: 100vh;
+    /* dvh tracks the viewport as mobile browser chrome hides/shows; vh
+       above stays as the fallback for browsers without dvh. */
+    height: 100dvh;
     overflow-y: auto;
 }
 
@@ -398,13 +403,8 @@ body {
     box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* Labeled form-field rows: a stacked list of {label, input, hint} rows,
-   label column on the left (fixed width, left-aligned text), input column
-   on the right (all inputs share the same grid column, so they're all the
-   same width and their left/right edges line up down the whole form).
-   Used by any settings-style form (enforcement thresholds, alerts config,
-   user account forms) -- kept global rather than duplicated per page so
-   every page gets identical alignment for free. */
+/* Labeled form-field rows: {label, input, hint}, label column left,
+   input column right, shared by every settings-style form. */
 .threshold-grid {
     display: flex;
     flex-direction: column;
@@ -412,23 +412,12 @@ body {
     margin-bottom: 16px;
 }
 
-/* No explicit grid-row anywhere here -- deliberately relying on Grid's
-   default auto-placement (row-sparse, DOM order) instead of an explicit
-   row-span on the label. A spanning item's contribution to auto row-track
-   sizing is a genuinely unpredictable corner of the Grid spec; plain
-   auto-placement (label -> col 1 row 1, input -> col 2 row 1, hint -> col 2
-   row 2, since row 1/col 2 is already taken) gives the exact same visual
-   result with none of that fragility. */
+/* Relies on Grid auto-placement (no explicit grid-row) -- an explicit
+   row-span on the label sizes unpredictably. */
 .threshold-field {
     display: grid;
-    /* Fixed px, not minmax() -- each .threshold-field is its own
-       independent grid container (not one shared grid spanning the whole
-       form), so a minmax() range gets resolved PER INSTANCE against that
-       field's own label content. Different labels -> different resolved
-       widths -> inputs starting at different X positions down the form,
-       which defeats the entire point of a label/input column layout. A
-       fixed value is identical across every instance regardless of its
-       own label's length, so every input's left edge lines up. */
+    /* Fixed px, not minmax(): each field is its own grid container, so a
+       range resolves per-instance and inputs stop lining up. */
     grid-template-columns: 210px 1fr;
     align-items: start;
     column-gap: 14px;
@@ -568,4 +557,158 @@ tr:hover td {
 @keyframes slideIn {
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive layout
+   --------------------------------------------------------------------------- */
+
+/* Hamburger button. Injected into .top-bar-title by theme.js on every page
+   that has a sidebar, so it doesn't have to be repeated in each page's
+   markup. Hidden entirely on desktop, where the sidebar is always visible. */
+.nav-toggle {
+    display: none;
+    background-color: var(--bg-surface-alt);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 1.05rem;
+    line-height: 1;
+    padding: 7px 11px;
+    margin-right: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.nav-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 90;
+}
+
+.sidebar-backdrop.visible {
+    display: block;
+}
+
+@media (max-width: 900px) {
+    /* Sidebar becomes an off-canvas drawer. It stays in the DOM (and keeps
+       its role as the nav) -- only its positioning changes, so no page
+       needs a second mobile-specific nav block. */
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 260px;
+        max-width: 82vw;
+        transform: translateX(-100%);
+        transition: transform var(--transition-speed);
+        z-index: 100;
+        overflow-y: auto;
+        box-shadow: var(--shadow-md);
+    }
+
+    .sidebar.open {
+        transform: translateX(0);
+    }
+
+    .nav-toggle {
+        display: block;
+    }
+
+    .top-bar-title {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+    }
+
+    .top-bar-title h1 {
+        font-size: 1rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .top-bar {
+        padding: 12px 16px;
+        gap: 10px;
+    }
+
+    .system-status {
+        gap: 8px;
+        flex-shrink: 0;
+    }
+
+    .content-area {
+        padding: 16px;
+    }
+
+    .hud-panel {
+        padding: 16px;
+    }
+
+    /* Wide tables scroll inside their own panel rather than forcing the
+       whole page sideways (body is overflow-x: hidden, so without this the
+       overflowing columns would just be unreachable). */
+    .hud-panel {
+        overflow-x: auto;
+    }
+
+    table {
+        min-width: 560px;
+    }
+
+    /* The 210px label column would eat most of a phone screen, so the
+       label/input/hint rows stack instead. */
+    .threshold-field {
+        grid-template-columns: 1fr;
+        row-gap: 4px;
+    }
+
+    .threshold-field label,
+    .threshold-field .form-input,
+    .threshold-field .threshold-hint {
+        grid-column: 1;
+    }
+
+    .threshold-field label {
+        padding-top: 0;
+    }
+}
+
+@media (max-width: 560px) {
+    body {
+        font-size: 13px;
+    }
+
+    .top-bar {
+        flex-wrap: wrap;
+    }
+
+    .content-area {
+        padding: 12px;
+    }
+
+    .stat-value {
+        font-size: 1.25rem;
+    }
+
+    .theme-toggle {
+        font-size: 0.75rem;
+        padding: 5px 9px;
+    }
+
+    /* Stacked, full-width action buttons read better than a cramped row. */
+    .action-cell .btn {
+        display: block;
+        width: 100%;
+        margin: 3px 0 0 0;
+    }
 }

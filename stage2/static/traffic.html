@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
             var t = localStorage.getItem('shield-theme');
@@ -28,6 +29,12 @@
             min-height: 420px;
             overflow-y: auto;
             overflow-x: hidden;
+        }
+        @media (max-width: 900px) {
+            .graph-wrap {
+                height: calc(100dvh - 250px);
+                min-height: 300px;
+            }
         }
         /* A normal-flow bar above the canvas, not an overlay -- an
            absolutely-positioned legend sitting on top of the drawing

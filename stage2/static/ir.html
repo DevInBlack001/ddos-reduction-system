@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
             var t = localStorage.getItem('shield-theme');
@@ -15,11 +16,12 @@
     <style>
         .export-actions {
             display: flex;
+            flex-wrap: wrap;
             gap: 20px;
             margin-bottom: 24px;
         }
         .export-card {
-            flex: 1;
+            flex: 1 1 300px;
             background-color: var(--bg-surface);
             border: 1px solid var(--border-color);
             border-radius: var(--radius);
@@ -106,7 +108,7 @@
                     <div class="hud-panel-title">Timeline Preview for Export</div>
                     <span class="badge badge-normal">Incident graphics</span>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
                     <div style="height: 250px; position: relative;">
                         <canvas id="pdfRateCanvas"></canvas>
                     </div>
@@ -121,7 +123,7 @@
                     <div class="hud-panel-title">Network Topology Preview</div>
                     <span class="badge badge-normal">Incident graphics</span>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
                     <div>
                         <div style="font-size: 0.72rem; color: var(--text-tertiary); margin-bottom: 6px;">Network Map (settled snapshot)</div>
                         <canvas id="pdfNetworkCanvas" width="500" height="320" style="width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm);"></canvas>

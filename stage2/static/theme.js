@@ -71,9 +71,55 @@
         jsAttr: jsAttr
     };
 
+    /* Off-canvas sidebar drawer for narrow viewports. The button and
+       backdrop are injected here rather than added to all eleven pages'
+       markup, so every page picks it up from this one place. */
+    function initSidebarDrawer() {
+        var sidebar = document.querySelector('.sidebar');
+        var titleArea = document.querySelector('.top-bar-title');
+        if (!sidebar || !titleArea) return;  // login.html has no sidebar
+
+        var backdrop = document.createElement('div');
+        backdrop.className = 'sidebar-backdrop';
+        document.body.appendChild(backdrop);
+
+        var toggle = document.createElement('button');
+        toggle.className = 'nav-toggle';
+        toggle.type = 'button';
+        toggle.setAttribute('aria-label', 'Toggle navigation');
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.textContent = '☰';
+        titleArea.insertBefore(toggle, titleArea.firstChild);
+
+        function setOpen(open) {
+            sidebar.classList.toggle('open', open);
+            backdrop.classList.toggle('visible', open);
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        toggle.addEventListener('click', function () {
+            setOpen(!sidebar.classList.contains('open'));
+        });
+        backdrop.addEventListener('click', function () { setOpen(false); });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') setOpen(false);
+        });
+        // Tapping a nav link navigates away; close so the drawer isn't
+        // left open behind the next page's paint.
+        sidebar.addEventListener('click', function (e) {
+            if (e.target.closest('.nav-item a')) setOpen(false);
+        });
+        // Rotating to landscape / resizing past the breakpoint should not
+        // leave a stuck backdrop over an already-visible sidebar.
+        window.addEventListener('resize', function () {
+            if (window.innerWidth > 900) setOpen(false);
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         updateToggleButton();
         var btn = document.getElementById('themeToggle');
         if (btn) btn.addEventListener('click', toggleTheme);
+        initSidebarDrawer();
     });
 })();
