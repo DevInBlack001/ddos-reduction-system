@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Traffic</title>
+    <title>FLOD System - Traffic</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         #trafficCanvas {
@@ -56,8 +56,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -73,7 +73,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -289,11 +289,11 @@
             ctx.clearRect(0, 0, W, H);
             const layout = layoutPositions();
 
-            const edgeColor = ShieldTheme.cssVar('--border-strong');
-            const accent = ShieldTheme.cssVar('--accent');
-            const warning = ShieldTheme.cssVar('--status-warning');
-            const danger = ShieldTheme.cssVar('--status-danger');
-            const textColor = ShieldTheme.cssVar('--text-secondary');
+            const edgeColor = FlodTheme.cssVar('--border-strong');
+            const accent = FlodTheme.cssVar('--accent');
+            const warning = FlodTheme.cssVar('--status-warning');
+            const danger = FlodTheme.cssVar('--status-danger');
+            const textColor = FlodTheme.cssVar('--text-secondary');
             const statusColor = { normal: edgeColor, ratelimited: warning, blocked: danger };
             const pulseColor = { normal: accent, ratelimited: warning, blocked: danger };
 

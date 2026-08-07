@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Firewall</title>
+    <title>FLOD System - Firewall</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .firewall-grid {
@@ -23,8 +23,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -40,7 +40,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -243,8 +243,8 @@
                     let wlHtml = '';
                     whitelisted.forEach(ip => {
                         wlHtml += `<tr>
-                            <td style="font-weight: 600; font-family: var(--font-mono);">${ShieldSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${ShieldSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td style="font-weight: 600; font-family: var(--font-mono);">${FlodSafe.escapeHtml(ip)}</td>
+                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     wlBody.innerHTML = wlHtml;
@@ -259,8 +259,8 @@
                     let shHtml = '';
                     sharedIps.forEach(ip => {
                         shHtml += `<tr>
-                            <td style="font-weight: 600; font-family: var(--font-mono); color: var(--status-warning);">${ShieldSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeSharedIp('${ShieldSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td style="font-weight: 600; font-family: var(--font-mono); color: var(--status-warning);">${FlodSafe.escapeHtml(ip)}</td>
+                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeSharedIp('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     shBody.innerHTML = shHtml;
@@ -275,9 +275,9 @@
                     let blHtml = '';
                     blocked.forEach(b => {
                         blHtml += `<tr>
-                            <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${ShieldSafe.escapeHtml(b.ip)}</td>
+                            <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${FlodSafe.escapeHtml(b.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${b.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${ShieldSafe.jsAttr(b.ip)}')">Release</button></td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(b.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     blBody.innerHTML = blHtml;
@@ -294,9 +294,9 @@
                     let rlHtml = '';
                     ratelimited.forEach(r => {
                         rlHtml += `<tr>
-                            <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${ShieldSafe.escapeHtml(r.ip)}</td>
+                            <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${FlodSafe.escapeHtml(r.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${r.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${ShieldSafe.jsAttr(r.ip)}')">Release</button></td>
+                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(r.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     rlBody.innerHTML = rlHtml;

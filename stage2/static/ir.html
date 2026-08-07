@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Incident Response</title>
+    <title>FLOD System - Incident Response</title>
     <link rel="stylesheet" href="/static/base.css">
     <script src="/static/chart.js"></script>
     <style>
@@ -46,8 +46,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -63,7 +63,7 @@
             <li class="nav-item active"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -141,15 +141,15 @@
     <script>
         function chartColors() {
             return {
-                text: ShieldTheme.cssVar('--text-secondary'),
-                font: ShieldTheme.cssVar('--font-sans'),
-                accent: ShieldTheme.cssVar('--accent'),
-                danger: ShieldTheme.cssVar('--status-danger'),
-                warning: ShieldTheme.cssVar('--status-warning'),
-                success: ShieldTheme.cssVar('--status-success'),
-                victim: ShieldTheme.cssVar('--status-victim'),
-                surface: ShieldTheme.cssVar('--bg-surface'),
-                border: ShieldTheme.cssVar('--border-strong'),
+                text: FlodTheme.cssVar('--text-secondary'),
+                font: FlodTheme.cssVar('--font-sans'),
+                accent: FlodTheme.cssVar('--accent'),
+                danger: FlodTheme.cssVar('--status-danger'),
+                warning: FlodTheme.cssVar('--status-warning'),
+                success: FlodTheme.cssVar('--status-success'),
+                victim: FlodTheme.cssVar('--status-victim'),
+                surface: FlodTheme.cssVar('--bg-surface'),
+                border: FlodTheme.cssVar('--border-strong'),
                 grid: 'rgba(128, 140, 160, 0.15)'
             };
         }
@@ -494,7 +494,7 @@
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `SHIELD_GATEWAY_REPORT_${new Date().toISOString().split('T')[0]}.pdf`;
+                    a.download = `FLOD_SYSTEM_REPORT_${new Date().toISOString().split('T')[0]}.pdf`;
                     document.body.appendChild(a);
                     a.click();
                     a.remove();

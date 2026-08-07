@@ -1,4 +1,8 @@
-# Adaptive Two-Stage Layer-4 Volumetric DDoS Mitigation Gateway
+# FLOD System
+
+**First Line Of Defense**
+
+An adaptive two stage Layer 4 volumetric DDoS mitigation gateway.
 
 **Author:** Abdullah Armiyao
 
@@ -647,7 +651,7 @@ Beyond the statistical poisoning defenses above, a security audit pass covered t
 
 **Input validation and output encoding**
 - Every IP-shaped field accepted from the dashboard (`IpPayload`, `VictimPayload`, and the raw query-param endpoints) is validated with Python's `ipaddress` module before it can reach `ipset` or get stored. Without this, a CIDR string would get silently expanded by `ipset`'s `hash:ip` sets into every host in the range instead of the single IP the operator intended.
-- All dashboard pages that render server-supplied strings into `innerHTML` (whitelist/victim IPs, victim descriptions, log rows) now escape through `ShieldSafe.escapeHtml()`/`jsAttr()` (`static/theme.js`) — previously these were interpolated raw, a stored-XSS path that could run arbitrary JS in an authenticated admin's session (and, since the session cookie is `httponly`, XSS was actually the *more* dangerous path in than cookie theft, not less: injected JS can call any `/api/*` endpoint same-origin regardless).
+- All dashboard pages that render server-supplied strings into `innerHTML` (whitelist/victim IPs, victim descriptions, log rows) now escape through `FlodSafe.escapeHtml()`/`jsAttr()` (`static/theme.js`) — previously these were interpolated raw, a stored-XSS path that could run arbitrary JS in an authenticated admin's session (and, since the session cookie is `httponly`, XSS was actually the *more* dangerous path in than cookie theft, not less: injected JS can call any `/api/*` endpoint same-origin regardless).
 - CSV export neutralizes spreadsheet formula injection (a leading `=`, `+`, `-`, `@`, tab, or CR gets a defusing prefix) and uses proper `csv.writer` quoting instead of manual string formatting.
 
 **Process and filesystem isolation**

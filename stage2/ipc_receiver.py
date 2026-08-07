@@ -35,7 +35,7 @@ def _maybe_alert_block(ip, victim_ip, rate, cfg):
         return
     state.last_block_alert[ip] = now
     alerts.dispatch_alert(
-        "SHIELD Gateway: IP Blocked",
+        "FLOD System: IP Blocked",
         f"Blocked {ip} targeting {victim_ip} (sustained ~{rate:.1f} pps)."
     )
 
@@ -236,12 +236,12 @@ def run_ipc_receiver():
                 prev_class_name = state.last_classification_by_target.get(victim_ip_str)
                 if pred_name == "DDoS" and prev_class_name != "DDoS":
                     alerts.dispatch_alert(
-                        "SHIELD Gateway: DDoS Detected",
+                        "FLOD System: DDoS Detected",
                         f"Victim {victim_ip_str} classified DDoS -- rate={ewma_rate:.1f}pps, entropy={entropy:.3f}, dominant_ip_ratio={dominant_ip_ratio:.1%}."
                     )
                 elif pred_name != "DDoS" and prev_class_name == "DDoS":
                     alerts.dispatch_alert(
-                        "SHIELD Gateway: DDoS Resolved",
+                        "FLOD System: DDoS Resolved",
                         f"Victim {victim_ip_str} classification returned to {pred_name} -- rate={ewma_rate:.1f}pps, entropy={entropy:.3f}."
                     )
                 state.last_classification_by_target[victim_ip_str] = pred_name
@@ -380,7 +380,7 @@ def run_ipc_receiver():
                                 "source was attributable -- rate-limiting all active flows."
                             )
                             alerts.dispatch_alert(
-                                "SHIELD Gateway: Aggregate Fallback Triggered",
+                                "FLOD System: Aggregate Fallback Triggered",
                                 f"Victim {victim_ip_str}: DDoS verdict with no individually-attributable source -- "
                                 f"rate-limited {len(per_source_rate)} active flows as a fallback."
                             )

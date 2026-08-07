@@ -70,7 +70,7 @@ def init_db(db_path):
 
 def main():
     print("========================================================================")
-    print("           SHIELD GATEWAY - ADMINISTRATOR INITIALIZATION")
+    print("           FLOD SYSTEM - ADMINISTRATOR INITIALIZATION")
     print("========================================================================")
 
     init_db(DB_PATH)

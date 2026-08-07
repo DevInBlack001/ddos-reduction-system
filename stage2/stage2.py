@@ -57,7 +57,7 @@ from storage import load_json_file
 # FastAPI Core Web App
 # -----------------------------------------------------------------------------
 
-app = FastAPI(title="SHIELD Gateway Management Console", docs_url=None, redoc_url=None)
+app = FastAPI(title="FLOD System Management Console", docs_url=None, redoc_url=None)
 
 # Mount static files folder
 app.mount("/static", StaticFiles(directory=os.path.join(config.SCRIPT_DIR, "static")), name="static")

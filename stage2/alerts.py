@@ -129,13 +129,13 @@ def send_test_alert(channel: str = "all"):
     results = {}
     if test_discord:
         ok, err = send_discord_alert(
-            "**SHIELD Gateway Test Alert**\nThis is a test message -- if you're reading this, Discord alerting is working."
+            "**FLOD System Test Alert**\nThis is a test message -- if you're reading this, Discord alerting is working."
         )
         results["discord"] = "ok" if ok else f"failed: {err}"
     if test_email:
         ok, err = send_email_alert(
-            "SHIELD Gateway Test Alert",
-            "This is a test message from the SHIELD Gateway dashboard. If you're reading this, email alerting is working."
+            "FLOD System Test Alert",
+            "This is a test message from the FLOD System dashboard. If you're reading this, email alerting is working."
         )
         results["email"] = "ok" if ok else f"failed: {err}"
     return results

@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Users</title>
+    <title>FLOD System - Users</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .account-forms {
@@ -25,8 +25,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -42,7 +42,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -150,9 +150,9 @@
 
                 let html = '';
                 users.forEach(u => {
-                    const jsU = ShieldSafe.jsAttr(u);
+                    const jsU = FlodSafe.jsAttr(u);
                     html += `<tr>
-                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(u)}</td>
+                        <td style="font-weight: 600;">${FlodSafe.escapeHtml(u)}</td>
                         <td class="action-cell">
                             <button class="btn" onclick="startPasswordChange('${jsU}')">Change Password</button>
                             <button class="btn btn-danger" onclick="deleteUser('${jsU}')">Delete</button>

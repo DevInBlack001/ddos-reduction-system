@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Targets</title>
+    <title>FLOD System - Targets</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .target-grid {
@@ -23,8 +23,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -40,7 +40,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -126,10 +126,10 @@
                         ? '<span style="color: var(--status-success); font-weight: 600;">Monitored</span>'
                         : '<span style="color: var(--text-tertiary);">Standby</span>';
 
-                    const safeIp = ShieldSafe.escapeHtml(t.ip);
-                    const jsIp = ShieldSafe.jsAttr(t.ip);
+                    const safeIp = FlodSafe.escapeHtml(t.ip);
+                    const jsIp = FlodSafe.jsAttr(t.ip);
                     html += `<tr>
-                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(t.description)}</td>
+                        <td style="font-weight: 600;">${FlodSafe.escapeHtml(t.description)}</td>
                         <td style="font-family: var(--font-mono);">${safeIp}</td>
                         <td>${statusText}</td>
                         <td style="text-align: right;">

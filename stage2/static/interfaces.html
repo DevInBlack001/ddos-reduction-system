@@ -5,19 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Interfaces</title>
+    <title>FLOD System - Interfaces</title>
     <link rel="stylesheet" href="/static/base.css">
 </head>
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -33,7 +33,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -77,7 +77,7 @@
                     <div class="hud-panel-title">Monitoring Architecture</div>
                 </div>
                 <div style="font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);">
-                    The Shield Gateway operates in <span style="color: var(--accent); font-weight: 600;">transparent bridge/tap mode</span>.<br>
+                    The FLOD System operates in <span style="color: var(--accent); font-weight: 600;">transparent bridge/tap mode</span>.<br>
                     Stage 1 captures raw frames using zero-copy <b>libpcap ring buffers</b> directly from the active network interface.<br>
                     To change the primary interface under inspection, update the <code style="font-family: var(--font-mono); background: var(--bg-code); padding: 1px 5px; border-radius: 3px;">--interface</code> argument inside <code style="font-family: var(--font-mono); background: var(--bg-code); padding: 1px 5px; border-radius: 3px;">/etc/systemd/system/ddos-stage1.service</code> and restart the daemon.
                 </div>
@@ -122,9 +122,9 @@
                         : '<span style="color: var(--status-danger);">Down</span>';
 
                     html += `<tr>
-                        <td style="font-weight: 600;">${ShieldSafe.escapeHtml(i.name)}</td>
-                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(i.mac || 'N/A')}</td>
-                        <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(i.ip || 'Unassigned')}</td>
+                        <td style="font-weight: 600;">${FlodSafe.escapeHtml(i.name)}</td>
+                        <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(i.mac || 'N/A')}</td>
+                        <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(i.ip || 'Unassigned')}</td>
                         <td>${stateLabel}</td>
                         <td>${i.promisc ? 'Enabled' : 'Disabled'}</td>
                         <td>${statusLabel}</td>

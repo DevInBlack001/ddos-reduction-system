@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Dashboard</title>
+    <title>FLOD System - Dashboard</title>
     <link rel="stylesheet" href="/static/base.css">
     <script src="/static/chart.js"></script>
     <style>
@@ -137,8 +137,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item active"><a href="/"><span>■</span> Dashboard</a></li>
@@ -154,7 +154,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -378,13 +378,13 @@
         // Chart.js setup, colors resolved from the active theme's CSS variables
         function chartColors() {
             return {
-                text: ShieldTheme.cssVar('--text-secondary'),
-                font: ShieldTheme.cssVar('--font-sans'),
-                accent: ShieldTheme.cssVar('--accent'),
-                danger: ShieldTheme.cssVar('--status-danger'),
-                warning: ShieldTheme.cssVar('--status-warning'),
+                text: FlodTheme.cssVar('--text-secondary'),
+                font: FlodTheme.cssVar('--font-sans'),
+                accent: FlodTheme.cssVar('--accent'),
+                danger: FlodTheme.cssVar('--status-danger'),
+                warning: FlodTheme.cssVar('--status-warning'),
                 grid: 'rgba(128, 140, 160, 0.15)',
-                surface: ShieldTheme.cssVar('--bg-surface')
+                surface: FlodTheme.cssVar('--bg-surface')
             };
         }
 
@@ -651,12 +651,12 @@
         function initEgressToggle() {
             const toggle = document.getElementById('egressToggle');
             const body = document.getElementById('egressBody');
-            const saved = localStorage.getItem('shield-show-egress');
+            const saved = localStorage.getItem('flod-show-egress');
             toggle.checked = saved === null ? true : saved === 'true';
             body.style.display = toggle.checked ? '' : 'none';
             toggle.addEventListener('change', () => {
                 body.style.display = toggle.checked ? '' : 'none';
-                localStorage.setItem('shield-show-egress', toggle.checked);
+                localStorage.setItem('flod-show-egress', toggle.checked);
             });
         }
 
@@ -729,7 +729,7 @@
 
                 if (differs) {
                     selectElement.innerHTML = '<option value="">-- Select target --</option>' +
-                        allTargets.map(ip => `<option value="${ShieldSafe.escapeHtml(ip)}">${ShieldSafe.escapeHtml(ip)}</option>`).join('');
+                        allTargets.map(ip => `<option value="${FlodSafe.escapeHtml(ip)}">${FlodSafe.escapeHtml(ip)}</option>`).join('');
                     if (allTargets.includes(selectedVictimIp)) {
                         selectElement.value = selectedVictimIp;
                     }
@@ -772,15 +772,15 @@
                         if (metric.latest_classification === 'DDoS') statusBadgeClass = 'badge badge-ddos';
                         else if (metric.latest_classification === 'Flash Crowd') statusBadgeClass = 'badge badge-flash';
 
-                        const safeIp = ShieldSafe.escapeHtml(ip);
-                        const jsIp = ShieldSafe.jsAttr(ip);
+                        const safeIp = FlodSafe.escapeHtml(ip);
+                        const jsIp = FlodSafe.jsAttr(ip);
                         tableHtml += `
                             <tr>
                                 <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
                                 <td style="padding: 12px 15px;">${metric.ewma_rate.toFixed(1)}</td>
                                 <td style="padding: 12px 15px;">${metric.entropy.toFixed(4)}</td>
                                 <td style="padding: 12px 15px;">${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
-                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${ShieldSafe.escapeHtml(metric.latest_classification)}</span></td>
+                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${FlodSafe.escapeHtml(metric.latest_classification)}</span></td>
                                 <td style="padding: 12px 15px;">
                                     <button class="btn" onclick="switchToTargetIp('${jsIp}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
                                 </td>
@@ -865,10 +865,10 @@
                             style = 'color: var(--status-danger);';
                             actionText = 'flagged';
                         }
-                        const targetStr = l.victim_ip ? ` targeting ${ShieldSafe.escapeHtml(l.victim_ip)}` : '';
+                        const targetStr = l.victim_ip ? ` targeting ${FlodSafe.escapeHtml(l.victim_ip)}` : '';
                         html += `<div style="margin-bottom: 8px; ${style}">
                             [${new Date(l.timestamp*1000).toISOString().split('T')[1].substring(0,8)}]
-                            ${ShieldSafe.escapeHtml(l.classification)} from ${ShieldSafe.escapeHtml(l.src_ip)}${targetStr} &rarr; ${actionText}
+                            ${FlodSafe.escapeHtml(l.classification)} from ${FlodSafe.escapeHtml(l.src_ip)}${targetStr} &rarr; ${actionText}
                         </div>`;
                     });
                     document.getElementById('latestMitigation').innerHTML = html;

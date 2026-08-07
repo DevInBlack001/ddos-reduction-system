@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Active Flows</title>
+    <title>FLOD System - Active Flows</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         .action-cell {
@@ -59,8 +59,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -76,7 +76,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -192,7 +192,7 @@
                 return;
             }
             if (flows.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-tertiary);">No flows currently classified as ${ShieldSafe.escapeHtml(currentFilter)}.</td></tr>`;
+                tableBody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-tertiary);">No flows currently classified as ${FlodSafe.escapeHtml(currentFilter)}.</td></tr>`;
                 return;
             }
 
@@ -200,7 +200,7 @@
             flows.forEach(f => {
                 let statusLabel = '<span class="badge badge-normal">Monitored</span>';
                 let actionBtn = '';
-                const jsIp = ShieldSafe.jsAttr(f.ip);
+                const jsIp = FlodSafe.jsAttr(f.ip);
 
                 if (whitelisted.includes(f.ip)) {
                     statusLabel = '<span class="badge" style="color: var(--status-success); background-color: var(--status-success-bg);">Whitelisted</span>';
@@ -217,14 +217,14 @@
 
                 const cls = classificationFor(f);
                 const classCell = cls
-                    ? `<span class="badge ${CLASS_BADGE[cls] || 'badge-normal'}">${ShieldSafe.escapeHtml(cls)}</span>`
+                    ? `<span class="badge ${CLASS_BADGE[cls] || 'badge-normal'}">${FlodSafe.escapeHtml(cls)}</span>`
                     : `<span style="color: var(--text-tertiary);">&mdash;</span>`;
 
                 html += `<tr>
-                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.ip)}</td>
-                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.dst || '—')}</td>
-                    <td style="font-family: var(--font-mono);">${ShieldSafe.escapeHtml(f.port)}</td>
-                    <td>${ShieldSafe.escapeHtml(f.proto)}</td>
+                    <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.ip)}</td>
+                    <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.dst || '—')}</td>
+                    <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.port)}</td>
+                    <td>${FlodSafe.escapeHtml(f.proto)}</td>
                     <td style="color: var(--accent); font-weight: 600; font-family: var(--font-mono);">${f.rate.toFixed(1)}</td>
                     <td>${classCell}</td>
                     <td>${statusLabel}</td>

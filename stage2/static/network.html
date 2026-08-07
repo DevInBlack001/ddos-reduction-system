@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
         (function () {
-            var t = localStorage.getItem('shield-theme');
+            var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
         })();
     </script>
-    <title>Shield Gateway - Network Map</title>
+    <title>FLOD System - Network Map</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
         #graphCanvas {
@@ -60,8 +60,8 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">S</div>
-            <div class="logo-text">Shield Gateway</div>
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
             <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
@@ -77,7 +77,7 @@
             <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
         </ul>
         <div class="sidebar-footer">
-            Gateway Console v1.0.0
+            FLOD System Console
         </div>
     </div>
 
@@ -146,11 +146,11 @@
 
         function roleColor(role) {
             switch (role) {
-                case 'victim': return ShieldTheme.cssVar('--status-victim');
-                case 'blocked': return ShieldTheme.cssVar('--status-danger');
-                case 'ratelimited': return ShieldTheme.cssVar('--status-warning');
-                case 'whitelisted': return ShieldTheme.cssVar('--status-success');
-                default: return ShieldTheme.cssVar('--accent');
+                case 'victim': return FlodTheme.cssVar('--status-victim');
+                case 'blocked': return FlodTheme.cssVar('--status-danger');
+                case 'ratelimited': return FlodTheme.cssVar('--status-warning');
+                case 'whitelisted': return FlodTheme.cssVar('--status-success');
+                default: return FlodTheme.cssVar('--accent');
             }
         }
 
@@ -306,7 +306,7 @@
             const W = canvas.width, H = canvas.height;
             ctx.clearRect(0, 0, W, H);
 
-            const edgeColor = ShieldTheme.cssVar('--border-strong');
+            const edgeColor = FlodTheme.cssVar('--border-strong');
             edges.forEach(e => {
                 const a = nodes.get(e.src), b = nodes.get(e.dst);
                 if (!a || !b) return;
@@ -321,7 +321,7 @@
             });
             ctx.globalAlpha = 1;
 
-            const textColor = ShieldTheme.cssVar('--text-secondary');
+            const textColor = FlodTheme.cssVar('--text-secondary');
             nodes.forEach((n, ip) => {
                 const r = n.role === 'victim' ? 10 : 5 + Math.min(6, n.degree);
                 ctx.fillStyle = roleColor(n.role);

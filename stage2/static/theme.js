@@ -1,6 +1,6 @@
-/* Shared light/dark theme toggle for the Shield Gateway console. */
+/* Shared light/dark theme toggle for the FLOD System console. */
 (function () {
-    var STORAGE_KEY = 'shield-theme';
+    var STORAGE_KEY = 'flod-theme';
 
     function currentTheme() {
         return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -28,7 +28,7 @@
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     }
 
-    window.ShieldTheme = {
+    window.FlodTheme = {
         toggle: toggleTheme,
         current: currentTheme,
         cssVar: cssVar
@@ -66,7 +66,7 @@
             .replace(/"/g, '&quot;');
     }
 
-    window.ShieldSafe = {
+    window.FlodSafe = {
         escapeHtml: escapeHtml,
         jsAttr: jsAttr
     };
