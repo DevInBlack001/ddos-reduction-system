@@ -902,7 +902,9 @@
                 await reloadTargetHistory();
             }
 
-            setInterval(fetchState, 10000);
+            // Matched to the sensor's heartbeat so a quiet target's panels
+            // are never more than a couple of seconds behind.
+            setInterval(fetchState, 2000);
         }
 
         document.getElementById('logoutBtn').addEventListener('click', async () => {

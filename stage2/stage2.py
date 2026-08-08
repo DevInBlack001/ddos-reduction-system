@@ -59,8 +59,26 @@ from storage import load_json_file
 
 app = FastAPI(title="FLOD System Management Console", docs_url=None, redoc_url=None)
 
-# Mount static files folder
-app.mount("/static", StaticFiles(directory=os.path.join(config.SCRIPT_DIR, "static")), name="static")
+class RevalidatingStaticFiles(StaticFiles):
+    """Static files the browser must revalidate before reusing.
+
+    An update replaces the dashboard's scripts and pages together. A browser
+    holding a cached theme.js while loading a new page renders nothing, and a
+    hard reload is the only way out. ETags still make an unchanged file a 304,
+    so this costs a request, not a download.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount(
+    "/static",
+    RevalidatingStaticFiles(directory=os.path.join(config.SCRIPT_DIR, "static")),
+    name="static",
+)
 
 # Session-gating + request-size middleware (must attach to `app` directly --
 # middleware can't be registered on an APIRouter).

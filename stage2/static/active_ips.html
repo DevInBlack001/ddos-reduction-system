@@ -165,7 +165,13 @@
                 latestData = await res.json();
                 renderFlows();
             } catch (err) {
+                // Without this the table keeps showing "Loading" forever and
+                // a failure is indistinguishable from a slow response.
                 console.error("Failed to load active flows:", err);
+                document.getElementById('flowTableBody').innerHTML =
+                    `<tr><td colspan="8" style="text-align: center; color: var(--text-tertiary);">
+                        Could not reach the gateway. Retrying.
+                     </td></tr>`;
             }
         }
 

@@ -82,6 +82,14 @@ const WINDOW_TICK: Duration = Duration::from_millis(250);
 /// whole map is still reported, so the dashboard shows every tracked flow.
 const MAX_TRACKED_FLOWS: usize = 8192;
 
+/// How often a target reports even when nothing is wrong.
+///
+/// The dashboard's per target panels read whatever this last delivered, so
+/// this is how stale a quiet target's figures can get. It used to be 10
+/// seconds, which combined with the dashboard's own polling to leave a quiet
+/// target looking frozen for up to twenty.
+const HEARTBEAT_SECS: f64 = 2.0;
+
 /// Whether a window's entropy counts as an anomaly.
 ///
 /// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
@@ -605,8 +613,9 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 target_state.cooldown_counter
             );
 
-            // Signal Stage 2 if an anomaly was detected OR if 10 seconds elapsed (heartbeat telemetry)
-            let is_heartbeat = (timestamp - target_state.last_sent_time) >= 10.0;
+            // Signal Stage 2 on an anomaly, or on the heartbeat so a quiet
+            // target keeps reporting.
+            let is_heartbeat = (timestamp - target_state.last_sent_time) >= HEARTBEAT_SECS;
             if anomaly_flags != 0 || is_heartbeat {
                 if anomaly_flags != 0 {
                     warn!(
