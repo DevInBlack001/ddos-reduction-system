@@ -1,7 +1,7 @@
 """
-users.py — Admin account management: list, create, delete, change password.
+users.py: Admin account management: list, create, delete, change password.
 
-Single-tier system (no roles) -- any authenticated session can manage any
+Single-tier system (no roles), any authenticated session can manage any
 account. Sensitive actions require the caller's own current password, the
 delete/create guards are atomic SQL statements (no separate check-then-act
 race), and changing or deleting an account revokes its live sessions (see
@@ -59,7 +59,7 @@ def create_user(payload: CreateUserPayload, request: Request):
     conn = sqlite3.connect(config.DB_PATH)
     cursor = conn.cursor()
     try:
-        # username is the PRIMARY KEY -- the IntegrityError on a duplicate
+        # username is the PRIMARY KEY, the IntegrityError on a duplicate
         # is the atomic guard, not a separate SELECT-then-INSERT.
         cursor.execute(
             "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
@@ -76,7 +76,7 @@ def create_user(payload: CreateUserPayload, request: Request):
 
 @router.delete("/api/users")
 def delete_user(payload: DeleteUserPayload, request: Request):
-    # Body, not query params -- a password shouldn't end up in access logs.
+    # Body, not query params, a password shouldn't end up in access logs.
     caller = get_session_username(request)
     _verify_admin_password(caller, payload.admin_password)
     username = payload.username
@@ -88,7 +88,7 @@ def delete_user(payload: DeleteUserPayload, request: Request):
         conn.close()
         raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
 
-    # Guard and delete are the same statement -- SQLite serializes writes,
+    # Guard and delete are the same statement, SQLite serializes writes,
     # so a concurrent delete can't race the "> 1" count check.
     cursor.execute(
         "DELETE FROM users WHERE username = ? AND (SELECT COUNT(*) FROM users) > 1",

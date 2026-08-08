@@ -1,67 +1,15 @@
- // =============================================================================
-// ipc.rs — Inter-Process Communication: Rust → Python Feature Vector
-// =============================================================================
-//
-// PURPOSE
-// -------
-// When Layer 3 flags an anomaly, Stage 1 must hand a feature vector to Stage 2
-// (Python Random Forest) over a Unix Domain Socket.  This module defines:
-//
-//   • The `FeatureVector` struct — the exact binary layout sent on the wire.
-//   • Serialisation / deserialisation via explicit `byteorder` writes.
-//   • The `IpcSocket` abstraction that manages the domain socket lifecycle.
-//
-// BYTE ALIGNMENT (the #1 source of silent IPC bugs)
-// ---------------------------------------------------
-// Rust structs can insert invisible padding bytes to satisfy alignment
-// requirements. If Python's `struct.unpack()` format string does not account
-// for the *same* padding, the fields unpack into garbage silently — no error,
-// just wrong numbers.
-//
-// To eliminate this risk we serialise every field manually using `byteorder`
-// into an explicitly sized byte buffer rather than transmuting the Rust struct
-// directly. The Python-side format string is therefore:
-//
-//   struct.unpack('<19d16s16s', data)   →   19 × 8 + 16 + 16 = 184 bytes
-//
-//   Field order on the wire (all little-endian f64 unless noted):
-//     [0..8]     entropy           — Shannon entropy h (bits, 0.0..5.64)
-//     [8..16]    ewma_rate         — EWMA rate snapshot r (packets/sec)
-//     [16..24]   mean_h            — Welford entropy baseline
-//     [24..32]   mean_r            — Welford rate baseline
-//     [32..40]   sigma_h           — entropy standard deviation
-//     [40..48]   sigma_r           — rate standard deviation
-//     [48..56]   proto_ratio       — TCP fraction of window (0.0..1.0)
-//     [56..64]   dominant_ip_ratio — fraction of packets from busiest IP
-//     [64..72]   timestamp         — window close time (UNIX seconds, f64)
-//     [72..80]   proto_tcp         — TCP fraction of window
-//     [80..88]   proto_udp         — UDP fraction of window
-//     [88..96]   proto_icmp        — ICMP fraction of window
-//     [96..104]  proto_sctp        — SCTP fraction of window
-//     [104..112] proto_gre         — GRE fraction of window
-//     [112..120] proto_esp         — ESP fraction of window
-//     [120..128] k_multiplier      — operative anomaly-boundary multiplier
-//     [128..136] cooldown_counter  — windows remaining in cooldown (0..10)
-//     [136..144] egress_rate       — V5: pps that reached the victim (-1.0 = no egress sensor)
-//     [144..152] drop_ratio        — V5: share dropped, 0.0..1.0 (-1.0 = no egress sensor)
-//     [152..168] dominant_ip       — 16-byte IPv6/IPv6-mapped-IPv4 address
-//     [168..184] victim_ip         — 16-byte IPv6/IPv6-mapped-IPv4 address
-//
-// ANOMALY FLAGS BITMASK (retained as constants for logging; not sent on wire)
-// ---------------------------------------------------------------------------
-//   bit 0 (0x01) — EWMA rate breached upper boundary   (μ_rate + k·σ_rate)
-//   bit 1 (0x02) — Entropy dropped below lower boundary (μ_ent  − k·σ_ent)
-//
-// SOCKET PATH
-// ------------
-// Stage 2 (Python) must listen on the *same* path before Stage 1 connects.
-// The startup sequence is:
-//   1. Python Stage 2 creates the socket file and calls accept().
-//   2. Rust Stage 1 connects to it after its warm-up phase ends.
-//
-// The socket lives in /run/ddos_stage1/, a root-owned directory shared with
-// Stage 2 through the ddos-ipc group. See SOCKET_PATH below.
-// =============================================================================
+//! The feature vector sent to Stage 2 over a Unix domain socket.
+//!
+//! 184 bytes, little endian, unpacked in Python with `<19d16s16s`. The full
+//! field table is in docs/ipc.md, and any change to it is a change to both
+//! stages in the same commit.
+//!
+//! Fields are written one at a time rather than by transmuting the struct.
+//! Rust may insert alignment padding that the Python side cannot know about,
+//! and the result would be wrong numbers rather than an error.
+//!
+//! Stage 2 must be listening before Stage 1 connects, which it does after
+//! warm-up.
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use log::{debug, warn};
@@ -72,19 +20,13 @@ use std::{
     time::Duration,
 };
 
-// -----------------------------------------------------------------------------
 // Constants
-// -----------------------------------------------------------------------------
 
 /// Default socket path. Stage 2 (Python) must listen on this path.
 ///
-/// Deliberately NOT /tmp -- that directory is world-writable, so any local
-/// account could otherwise race to bind this path before Stage 2 does
-/// (e.g. during a Stage 2 restart window) and receive live FeatureVector
-/// telemetry meant for Stage 2 only. /run/ddos_stage1 is created
-/// root-owned (see install.sh / stage2.py's socket bind path), so only
-/// root -- or the dedicated stage1 service account, once it's a group
-/// member -- can ever create a file at this path.
+/// The directory is root owned and shared through a group, so a local
+/// account cannot race to bind this path ahead of Stage 2 and receive live
+/// telemetry or inject fabricated windows.
 pub const SOCKET_PATH: &str = "/run/ddos_stage1/stage1.sock";
 
 /// Wire size of one serialised `FeatureVector` in bytes.
@@ -93,32 +35,30 @@ pub const SOCKET_PATH: &str = "/run/ddos_stage1/stage1.sock";
 pub const FEATURE_VECTOR_BYTES: usize = 184;
 
 /// Anomaly flag: EWMA rate exceeded upper boundary (volume flood).
-/// Retained as a logging constant — no longer sent in the wire payload.
+/// Kept for logging. Not sent on the wire.
 pub const FLAG_RATE_ANOMALY: u8 = 0x01;
 
 /// Anomaly flag: Shannon entropy dropped below lower boundary (concentrated source).
-/// Retained as a logging constant — no longer sent in the wire payload.
+/// Kept for logging. Not sent on the wire.
 pub const FLAG_ENTROPY_ANOMALY: u8 = 0x02;
 
-// -----------------------------------------------------------------------------
 // FeatureVector
-// -----------------------------------------------------------------------------
 
 /// The data payload handed to Stage 2 after every anomalous window.
 ///
 /// Wire format: 19 × f64 (little-endian) + 16 bytes dominant IP + 16 bytes victim IP = 184 bytes total.
 /// Python unpacks with: `struct.unpack('<19d16s16s', data)`
 ///
-/// Field order matches the Python unpack string exactly — **do not reorder**.
+/// Field order matches the Python unpack string. Do not reorder.
 #[derive(Debug, Clone)]
 pub struct FeatureVector {
     /// Shannon entropy of source IPs in the closed window (bits, 0.0–5.64).
     pub entropy: f64,
     /// Current EWMA rate snapshot (packets per second).
     pub ewma_rate: f64,
-    /// Welford entropy baseline — mean of entropy over all past windows.
+    /// Running mean of entropy.
     pub mean_h: f64,
-    /// Welford rate baseline — mean of EWMA rate over all past windows.
+    /// Running mean of the rate.
     pub mean_r: f64,
     /// Entropy standard deviation (Welford).
     pub sigma_h: f64,
@@ -143,7 +83,7 @@ pub struct FeatureVector {
     /// Ratio of ESP packets in window.
     pub proto_esp: f64,
     /// Operative anomaly-boundary multiplier for this window (`cfg.k`,
-    /// halved during cooldown recovery — see `analysis.rs`'s `base_k`).
+    /// halved during cooldown recovery).
     pub k_multiplier: f64,
     /// Windows remaining in the cooldown recovery period (0..10).
     pub cooldown_counter: f64,
@@ -153,7 +93,7 @@ pub struct FeatureVector {
     pub egress_rate: f64,
     /// V5: share of arriving traffic that did not reach the victim,
     /// `1 - (egress_rate / ewma_rate)`, clamped to 0.0..1.0. `-1.0` when no
-    /// egress sensor is configured -- distinguishing "unknown" from a
+    /// egress sensor is configured, so unknown stays distinguishable from a
     /// genuine 0% drop rate.
     pub drop_ratio: f64,
     /// The dominant IP address in this window (used for mitigation blocks).
@@ -169,7 +109,7 @@ impl FeatureVector {
     /// Python's `struct.unpack('<19d16s16s', data)` format string exactly.
     ///
     /// # Returns
-    /// `[u8; FEATURE_VECTOR_BYTES]` — exactly 184 bytes, no padding, no surprises.
+    /// Exactly 184 bytes, no padding.
     pub fn to_bytes(&self) -> [u8; FEATURE_VECTOR_BYTES] {
         let mut buf = Vec::with_capacity(FEATURE_VECTOR_BYTES);
 
@@ -234,9 +174,7 @@ impl FeatureVector {
     }
 }
 
-// -----------------------------------------------------------------------------
 // IpcSocket
-// -----------------------------------------------------------------------------
 
 /// Manages the outbound Unix Domain Socket connection to Stage 2 (Python).
 ///
@@ -271,9 +209,8 @@ impl IpcSocket {
     /// Attempt to connect to the socket if not already connected.
     ///
     /// Returns `true` if the socket is ready to use (already connected, or
-    /// just connected now).  Returns `false` if connection failed — Stage 1
-    /// will retry on the next anomaly event rather than blocking the capture
-    /// loop waiting for Stage 2 to come online.
+    /// just connected now), `false` if it failed. A failure is retried on the
+    /// next event rather than blocking.
     pub fn ensure_connected(&mut self) -> bool {
         if self.stream.is_some() {
             return true;
@@ -289,7 +226,7 @@ impl IpcSocket {
                 true
             }
             Err(e) => {
-                warn!("IPC: cannot connect to Stage 2 at {} — {e}", self.path);
+                warn!("IPC: cannot connect to Stage 2 at {}: {e}", self.path);
                 false
             }
         }
@@ -310,7 +247,7 @@ impl IpcSocket {
 
         if let Some(ref mut stream) = self.stream {
             if let Err(e) = stream.write_all(&bytes) {
-                warn!("IPC: write failed — {e}; dropping connection for reconnect");
+                warn!("IPC: write failed: {e}. Dropping connection to reconnect");
                 self.stream = None;
                 return false;
             }
@@ -331,9 +268,7 @@ impl Default for IpcSocket {
     }
 }
 
-// =============================================================================
 // Unit Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -374,7 +309,7 @@ mod tests {
     }
 
     /// Round-trip: serialise then re-parse with byteorder.
-    /// This is the byte-alignment sanity check — same logic Python uses.
+    /// The alignment check, matching what Python does.
     #[test]
     fn round_trip_byte_layout() {
         use byteorder::{LittleEndian, ReadBytesExt};

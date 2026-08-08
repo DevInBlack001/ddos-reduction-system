@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# =============================================================================
-# setup_admin.py — Setup script for admin account creation in SQLite
-# =============================================================================
+"""Create the first administrator account."""
 
 import os
 import sys
@@ -9,9 +7,6 @@ import sqlite3
 import secrets
 import bcrypt
 
-import schema
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import schema
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "stage2.db"))

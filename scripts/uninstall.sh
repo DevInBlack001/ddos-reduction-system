@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# uninstall.sh — Stage 1 & 2 Uninstall Script
+# uninstall.sh: Stage 1 & 2 Uninstall Script
 # =============================================================================
 #
 # Completely removes Stage 1 & 2 from the system:
@@ -66,7 +66,7 @@ fi
 
 echo ""
 info "═══════════════════════════════════════════════════════"
-info "  Adaptive DDoS Mitigation — Stage 1 & 2 Uninstaller   "
+info "  FLOD System | Stage 1 and 2 Uninstaller   "
 info "═══════════════════════════════════════════════════════"
 echo ""
 
@@ -87,7 +87,7 @@ if $CONFIRM; then
 fi
 
 # =============================================================================
-# STEP 1 — Stop and disable systemd services
+# Stop and disable systemd services
 # =============================================================================
 if command -v systemctl &>/dev/null; then
     for svc in "$SERVICE_NAME" "$SERVICE2_NAME"; do
@@ -130,7 +130,7 @@ rm -rf "/run/ddos_stage1"
 success "Database and configurations removed."
 
 # =============================================================================
-# STEP 2 — Remove systemd unit files
+# Remove systemd unit files
 # =============================================================================
 RELOAD_NEEDED=false
 for svc_file in "$SERVICE_FILE" "$SERVICE2_FILE"; do
@@ -147,7 +147,7 @@ if $RELOAD_NEEDED && command -v systemctl &>/dev/null; then
 fi
 
 # =============================================================================
-# STEP 3 — Remove the binary
+# Remove the binary
 # =============================================================================
 if [[ -f "$INSTALL_DIR/$BINARY_NAME" ]]; then
     info "Removing binary: $INSTALL_DIR/$BINARY_NAME"
@@ -160,7 +160,7 @@ else
 fi
 
 # =============================================================================
-# STEP 4 — Remove the IPC socket file (if a previous run left it behind)
+# Remove the IPC socket file (if a previous run left it behind)
 # =============================================================================
 if [[ -S "$SOCKET_FILE" ]] || [[ -f "$SOCKET_FILE" ]]; then
     info "Removing IPC socket: $SOCKET_FILE"
@@ -169,7 +169,7 @@ if [[ -S "$SOCKET_FILE" ]] || [[ -f "$SOCKET_FILE" ]]; then
 fi
 
 # =============================================================================
-# STEP 4.1 — Remove runtime/state directories and the Stage 1 service account
+# Remove runtime/state directories and the Stage 1 service account
 # =============================================================================
 info "Removing runtime and persisted-state directories..."
 rm -rf "/run/ddos_stage1"
@@ -185,7 +185,7 @@ if getent group ddos-ipc &>/dev/null; then
 fi
 
 # =============================================================================
-# STEP 4.5 — Remove Stage 2 Python Virtual Environment
+# Remove Stage 2 Python Virtual Environment
 # =============================================================================
 if [[ -d "$STAGE2_DIR/venv" ]]; then
     info "Removing Stage 2 Python virtual environment..."
@@ -194,7 +194,7 @@ if [[ -d "$STAGE2_DIR/venv" ]]; then
 fi
 
 # =============================================================================
-# STEP 5 — Remove build artefacts (optional)
+# Remove build artefacts (optional)
 # =============================================================================
 if $REMOVE_BUILD; then
     if [[ -d "$BUILD_DIR" ]]; then
@@ -209,7 +209,7 @@ else
 fi
 
 # =============================================================================
-# STEP 6 — Remove Rust toolchain (optional, DESTRUCTIVE)
+# Remove Rust toolchain (optional, DESTRUCTIVE)
 # =============================================================================
 if $REMOVE_RUST; then
     warn "Removing Rust toolchain (rustup self uninstall)..."

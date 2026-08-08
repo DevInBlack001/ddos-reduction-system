@@ -1,5 +1,5 @@
 """
-enforcement.py — ipset/iptables control, block/ratelimit/unblock actions,
+enforcement.py: ipset/iptables control, block/ratelimit/unblock actions,
 and victim-IP resolution.
 """
 
@@ -37,13 +37,11 @@ def resolve_victim_ip(victim_ip=None):
     return "10.0.0.3"
 
 
-# -----------------------------------------------------------------------------
 # Kernel netfilter blocklist control (ipset / iptables)
-# -----------------------------------------------------------------------------
 
 def _ensure_hashlimit_rule(pps):
     """Insert the ddos_ratelimit hashlimit rule (INPUT + FORWARD) at the
-    given pps cap, if not already present. Idempotent -- iptables -C checks
+    given pps cap, if not already present. Idempotent, iptables -C checks
     before inserting, matching the pattern used for ddos_blocklist."""
     for chain in ("INPUT", "FORWARD"):
         check = subprocess.run(
@@ -65,7 +63,7 @@ def update_ratelimit_hashlimit(old_pps, new_pps):
     """Called when the operator changes ratelimit_hashlimit_pps via the
     dashboard. iptables rules are matched exactly on insert, including the
     hashlimit value, so changing the cap means removing the rule that
-    matches the OLD value and inserting one with the new value -- there's
+    matches the OLD value and inserting one with the new value, there's
     no in-place edit. Safe to call even if old==new (no-op) or if the old
     rule is somehow already gone (delete just fails silently, matched by
     returncode, not raised)."""
@@ -129,7 +127,7 @@ def setup_ipset():
         logging.info("[+] Kernel ipset 'ddos_ratelimit' verified/created.")
 
         # Hashlimit cap is operator-configurable (see enforcement_config.json,
-        # ratelimit_hashlimit_pps) -- ensure the rule reflects whatever is
+        # ratelimit_hashlimit_pps), ensure the rule reflects whatever is
         # currently configured, not a hardcoded value, so a value saved
         # before a restart takes effect immediately on startup too.
         _ensure_hashlimit_rule(config.get_enforcement_config()["ratelimit_hashlimit_pps"])
@@ -155,12 +153,12 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
 
         # NAT-safe enforcement: a shared egress IP fronts many hosts, so the
         # unconditional DROP in ddos_blocklist would cut off every legitimate
-        # user behind it. Throttle instead -- the attacker's share of the
+        # user behind it. Throttle instead, the attacker's share of the
         # traffic is capped while everyone else keeps working.
         shared_ips = load_json_file(config.SHARED_IPS_PATH, [])
         if ip in shared_ips:
             logging.warning(
-                f"[NAT-Safe] {ip} is marked as a shared/NAT egress point -- "
+                f"[NAT-Safe] {ip} is marked as a shared/NAT egress point, "
                 f"rate-limiting instead of hard-blocking."
             )
             ratelimit_ip(ip, duration=duration, victim_ip=victim_ip, src_rate=src_rate)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# update.sh — Stage 1 & 2 Update Script
+# update.sh: Stage 1 & 2 Update Script
 # =============================================================================
 #
 # Updates an existing Stage 1 & 2 installation to the latest code in the project
@@ -62,12 +62,12 @@ fi
 
 echo ""
 info "═══════════════════════════════════════════════════════"
-info "  Adaptive DDoS Mitigation — Stage 1 & 2 Updater       "
+info "  FLOD System | Stage 1 and 2 Updater       "
 info "═══════════════════════════════════════════════════════"
 echo ""
 
 # =============================================================================
-# STEP 1 — Stop the running services (if systemd is available and services exist)
+# Stop the running services (if systemd is available and services exist)
 # =============================================================================
 SERVICE1_WAS_ACTIVE=false
 SERVICE2_WAS_ACTIVE=false
@@ -90,7 +90,7 @@ else
 fi
 
 # =============================================================================
-# STEP 2 — Update the Rust toolchain (optional)
+# Update the Rust toolchain (optional)
 # =============================================================================
 if $UPDATE_TOOLCHAIN; then
     info "Updating Rust toolchain..."
@@ -109,7 +109,7 @@ else
 fi
 
 # =============================================================================
-# STEP 3 — Rebuild Stage 1
+# Rebuild Stage 1
 # =============================================================================
 info "Rebuilding Stage 1 in release mode..."
 
@@ -125,7 +125,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
 success "Build complete."
 
 # =============================================================================
-# STEP 3.5 — Update Stage 2 Python dependencies
+# Update Stage 2 Python dependencies
 # =============================================================================
 if [[ -d "$STAGE2_DIR" ]]; then
     info "Updating Stage 2 Python dependencies..."
@@ -149,7 +149,7 @@ if [[ -d "$STAGE2_DIR" ]]; then
 fi
 
 # =============================================================================
-# STEP 4 — Atomic binary replacement
+# Atomic binary replacement
 # =============================================================================
 info "Replacing binary at $INSTALL_DIR/$BINARY_NAME..."
 
@@ -161,11 +161,11 @@ mv -f "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary updated: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
-# STEP 5 — Reapply CAP_NET_RAW capability
+# Reapply CAP_NET_RAW capability
 # =============================================================================
 if command -v setcap &>/dev/null; then
     # The setcap capability is stored in the inode extended attributes.
-    # Replacing the binary clears them — we must reapply after every update.
+    # Replacing the binary clears them, we must reapply after every update.
     setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
     success "CAP_NET_RAW reapplied."
 else
@@ -173,7 +173,7 @@ else
 fi
 
 # =============================================================================
-# STEP 6 — Restart the services (optional)
+# Restart the services (optional)
 # =============================================================================
 if $RESTART_SERVICE; then
     if $SERVICE2_WAS_ACTIVE; then

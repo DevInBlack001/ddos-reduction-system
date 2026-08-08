@@ -291,7 +291,7 @@
                 return { src, dst, rate };
             });
 
-            // Settle the layout synchronously -- no need to animate a
+            // Settle the layout synchronously, no need to animate a
             // one-shot image, just run enough iterations to converge.
             const nodeList = Array.from(nodes.values());
             for (let iter = 0; iter < 250; iter++) {

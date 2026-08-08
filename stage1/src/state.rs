@@ -1,14 +1,8 @@
-// =============================================================================
-// state.rs — Analysis-thread configuration and per-victim running state
-// =============================================================================
-//
-// Split out of analysis.rs so the data structures (what's tracked per
-// victim, and what the thread is configured with) live separately from the
-// three-layer pipeline logic that operates on them (run_analysis_thread,
-// still in analysis.rs). Fields are `pub(crate)` rather than fully `pub`:
-// this is internal wiring between analysis.rs and this module, not a
-// public API of the crate.
-// =============================================================================
+//! Analysis configuration and the per target running state.
+//!
+//! Separate from analysis.rs so the data lives apart from the pipeline that
+//! operates on it. Fields are crate visible: this is internal wiring, not a
+//! public API.
 
 use crate::{
     entropy::EntropyAccumulator,
@@ -20,9 +14,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
-// -----------------------------------------------------------------------------
 // AnalysisConfig
-// -----------------------------------------------------------------------------
 
 /// Runtime parameters for the analysis thread.
 #[derive(Debug, Clone)]
@@ -44,7 +36,7 @@ pub struct AnalysisConfig {
     pub train_label: u8,
     /// V4: where to persist/reload per-victim Welford/EWMA baselines across
     /// restarts. Default: `persistence::DEFAULT_BASELINE_PATH`
-    /// (`/var/lib/ddos_stage1/baselines.json` -- deliberately not /tmp).
+    /// (`/var/lib/ddos_stage1/baselines.json`, chosen to survive a reboot).
     pub baseline_path: String,
     /// V4: reject a persisted baseline older than this many seconds rather
     /// than trusting it. Default: `persistence::DEFAULT_TTL_SECS` (1 hour).
@@ -70,9 +62,6 @@ impl Default for AnalysisConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// TargetState — per-victim running state
-// -----------------------------------------------------------------------------
 
 /// Per-victim accumulated state: EWMA rate, entropy accumulator, protocol
 /// counters, and the Welford baselines both metrics feed into.
@@ -95,7 +84,7 @@ pub struct TargetState {
     pub(crate) window_packet_count: usize,
     /// V5: packets seen on the egress side for this victim in the current
     /// window, i.e. what survived filtering. Reset at every window close.
-    /// Deliberately absent from `to_persisted()` -- this is a measurement,
+    /// Absent from `to_persisted()` because this is a measurement,
     /// not a statistical baseline, so it must not survive a restart.
     pub(crate) egress_packet_count: u64,
     pub(crate) last_window_close: Instant,
@@ -105,10 +94,9 @@ pub struct TargetState {
 }
 
 impl TargetState {
-    /// Create a fresh target state, or -- if `persisted` is `Some` (a
-    /// baseline was found for this victim's IP in the loaded persistence
-    /// file, still within its TTL) -- restore the Welford/EWMA/cooldown/
-    /// peacetime-reference state from it instead of starting at zero.
+    /// Create a fresh target state, or restore the accumulators, rate,
+    /// cooldown, and peacetime references from `persisted` when a baseline
+    /// for this address was loaded and is still within its TTL.
     ///
     /// Everything NOT restored here (window_id, ip_counts, timing fields)
     /// is intentionally transient and correctly starts fresh regardless --

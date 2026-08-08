@@ -227,7 +227,7 @@
 
         fetchLogs();
         // Only re-fetches the CURRENT bounded page every 10s, not the whole
-        // table -- see the comment on GET /api/logs for why that matters.
+        // table, see the comment on GET /api/logs for why that matters.
         setInterval(fetchLogs, 10000);
     </script>
 </body>

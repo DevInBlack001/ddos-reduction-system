@@ -1,5 +1,5 @@
 """
-config.py — Path constants, wire-format constants, and the operator-tunable
+config.py: Path constants, wire-format constants, and the operator-tunable
 enforcement threshold config (enforcement_config.json).
 
 Sets up root logging as a side effect of being imported (every other module
@@ -13,11 +13,9 @@ import logging
 
 from storage import load_json_file
 
-# -----------------------------------------------------------------------------
 # Configuration Paths
-# -----------------------------------------------------------------------------
 
-# /run/ddos_stage1 (not /tmp) for the IPC socket and the active-flows file --
+# /run/ddos_stage1 (not /tmp) for the IPC socket and the active-flows file,
 # /tmp is world-writable, which would let any local account race to bind the
 # socket path before this process does, or plant a fake active-flows file.
 RUNTIME_DIR = "/run/ddos_stage1"
@@ -30,7 +28,7 @@ PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
 WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
 # V5: IPs known to front many hosts (carrier NAT, corporate egress, proxies).
-# Never hard-blocked -- see enforcement.block_ip().
+# Never hard-blocked, see enforcement.block_ip().
 SHARED_IPS_PATH = os.path.join(SCRIPT_DIR, "shared_ips.json")
 VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
 FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
@@ -43,7 +41,7 @@ STAGE1_UNIT_PATH = "/etc/systemd/system/ddos-stage1.service"
 def get_sniffer_interfaces():
     """(ingress, egress) interface names read from the Stage 1 unit file.
 
-    Either may be None -- the unit isn't installed (running from source),
+    Either may be None, the unit isn't installed (running from source),
     or --egress-interface simply wasn't passed. Callers report what is
     actually configured rather than substituting a guess.
     """
@@ -75,10 +73,8 @@ def tls_enabled():
 TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
 TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
 
-# -----------------------------------------------------------------------------
-# Enforcement thresholds -- a deterministic, operator-tunable rule set
+# Enforcement thresholds, a deterministic, operator-tunable rule set
 # (not statistically self-adjusted), editable live from the dashboard.
-# -----------------------------------------------------------------------------
 
 DEFAULT_ENFORCEMENT_CONFIG = {
     # Tier 1 fast-path gate: how concentrated traffic must be on one source
@@ -93,7 +89,7 @@ DEFAULT_ENFORCEMENT_CONFIG = {
     # Floor under flow_threshold (the softer rate-limit tier).
     "ratelimit_rate_floor_pps": 50.0,
     # Sigma multiplier shared by Tier 2's per-source block_threshold and the
-    # classification override's extreme_dominant_rate_boundary -- kept as
+    # classification override's extreme_dominant_rate_boundary, kept as
     # ONE value so the two stay consistent with each other by construction.
     "block_sigma_multiplier": 10.0,
     # Consecutive class-2 windows required before a block action (not
@@ -117,10 +113,8 @@ def get_enforcement_config():
     return {**DEFAULT_ENFORCEMENT_CONFIG, **saved}
 
 
-# -----------------------------------------------------------------------------
-# Alerting (Discord webhook + SMTP email) -- disabled by default.
+# Alerting (Discord webhook + SMTP email), disabled by default.
 # alerts_config.json is chmod 0600, same as stage2.db/enforcement_config.json.
-# -----------------------------------------------------------------------------
 
 DEFAULT_ALERTS_CONFIG = {
     "discord_enabled": False,
@@ -139,9 +133,7 @@ def get_alerts_config():
     return {**DEFAULT_ALERTS_CONFIG, **saved}
 
 
-# -----------------------------------------------------------------------------
 # Logging
-# -----------------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,

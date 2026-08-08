@@ -10,7 +10,7 @@ Only the most recent tagged release is supported with fixes. Older tags exist
 for historical reference only.
 
 | Version | Supported          |
-| ------- | ------------------ |
+|-|-|
 | 0.5.x   | :white_check_mark: |
 | < 0.5   | :x:                |
 
@@ -67,8 +67,8 @@ things to keep in mind if you deploy it:
   not intended to be exposed directly to the public internet. Put it behind
   a VPN, reverse proxy with additional access controls, or restrict it to a
   management network.
-- The enforcement process needs the capability to modify firewall rules —
-  treat its credentials and the host it runs on with the same care as any
+- The enforcement process needs the capability to modify firewall rules.
+  Treat its credentials and the host it runs on with the same care as any
   other privileged network infrastructure.
 - The IPC socket between Stage 1 and Stage 2 is local-only by design; don't
   expose it over the network without adding authentication.

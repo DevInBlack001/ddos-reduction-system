@@ -1,74 +1,20 @@
-// =============================================================================
-// ewma.rs — Exponentially Weighted Moving Average (EWMA) Rate Estimator
-// =============================================================================
-//
-// PURPOSE
-// -------
-// Tracks the current packet arrival *rate* (packets per second) as a smoothed
-// scalar that weights recent observations more heavily than old ones.
-//
-// WHY EWMA, NOT A SIMPLE MOVING AVERAGE?
-// ----------------------------------------
-// A Simple Moving Average (SMA) weights every sample equally.  During a DDoS
-// ramp-up, the SMA lags badly — it averages the flood's spike against dozens of
-// calm prior windows, masking the surge. EWMA instead applies a decay factor α
-// so the *most recent* inter-packet gaps dominate the estimate. The result is a
-// speedometer that reacts within seconds of a flood onset.
-//
-// MEMORY FOOTPRINT
-// ----------------
-// The EWMA state is exactly one `f64` — the current smoothed estimate.  No
-// ring buffer, no heap allocation, no growing history. Constant O(1) space
-// regardless of how long the gateway has been running.
-//
-// THE FORMULA
-// -----------
-//   ewma_new = α · window_rate + (1 − α) · ewma_old
-//
-//   where  window_rate = packets_in_window / measured_elapsed_seconds
-//          α (alpha)   = smoothing factor ∈ (0, 1)
-//
-//   High α → fast reaction, noisier estimate.
-//   Low  α → slow reaction, smoother estimate.
-//
-// RECOMMENDED ALPHA VALUES
-// -------------------------
-//   α = 0.125  (1/8)  — same constant used in TCP RTT estimators (RFC 6298)
-//   α = 0.25          — more responsive; good for short-burst detection
-//   α = 0.05          — very smooth; suitable for long-trend monitoring
-//
-// This implementation defaults to α = 0.125.
-//
-// RATE UPDATE MODEL
-// ------------------
-// The EWMA is updated once per window close with the measured window rate:
-//   window_rate = accumulated_packets / wall_clock_elapsed_seconds
-// This is fed through `update_rate_with_alpha()`.  There is no per-packet
-// update — the window-level rate is the single authoritative input, avoiding
-// burst pathology from sub-microsecond inter-arrival gaps.
-//
-// IMPORTANT — EWMA NEVER RESETS
-// --------------------------------
-// Unlike Shannon Entropy (which is computed fresh each window from a cleared
-// HashMap), the EWMA carries memory *across* windows by design.  Resetting it
-// would discard the very smoothing that makes it useful for detecting flood
-// ramp-ups that build across multiple windows.
-//
-// The analysis thread reads the current EWMA snapshot once per window close
-// (Layer 2) and passes that scalar to the Welford accumulator (Layer 3).
-// =============================================================================
+//! Smoothed packet rate.
+//!
+//! `ewma_new = alpha * window_rate + (1 - alpha) * ewma_old`, where the window
+//! rate is the packet count over the window's measured elapsed time. Higher
+//! alpha reacts faster and is noisier.
+//!
+//! Updated once per window close, never per packet: sub microsecond gaps
+//! between packets are dominated by scheduling jitter.
+//!
+//! It never resets. Carrying memory across windows is what catches a flood
+//! that ramps up gradually.
+//!
+//! State is a single f64, so cost does not grow with uptime.
 
-// -----------------------------------------------------------------------------
-// Constants
-// -----------------------------------------------------------------------------
-
-/// Default smoothing factor.  Matches the TCP RTT estimator (RFC 6298, §2).
-/// Tunable via `EwmaState::with_alpha()`.
 pub const DEFAULT_ALPHA: f64 = 0.125;
 
-// -----------------------------------------------------------------------------
 // EwmaState
-// -----------------------------------------------------------------------------
 
 /// Maintains the running EWMA packet-rate estimate.
 ///
@@ -112,7 +58,7 @@ impl EwmaState {
     /// Called once per window close by the analysis thread to produce the
     /// scalar `x_rate` that feeds `WelfordAccumulator::update()`.
     ///
-    /// The EWMA itself is NOT reset after this read — it retains its memory
+    /// Reading does not reset it. It keeps its memory
     /// across windows so that flood ramp-ups spanning multiple windows are
     /// still detected.
     pub fn snapshot(&self) -> f64 {
@@ -130,7 +76,7 @@ impl EwmaState {
         self.value = alpha * rate + (1.0 - alpha) * self.value;
     }
 
-    /// Directly set the smoothed value -- used only to restore a persisted
+    /// Set the smoothed value directly, used only to restore a persisted
     /// baseline (V4) on startup. Not part of the normal per-window update
     /// path, which always goes through `update_rate_with_alpha()`.
     pub fn set_value(&mut self, value: f64) {
@@ -150,9 +96,7 @@ impl Default for EwmaState {
     }
 }
 
-// =============================================================================
 // Unit Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {

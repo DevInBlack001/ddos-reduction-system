@@ -150,7 +150,7 @@
                 document.getElementById('discordEnabled').checked = !!cfg.discord_enabled;
                 document.getElementById('discordWebhookUrl').value = '';
                 document.getElementById('discordWebhookUrlHint').innerText = cfg.discord_webhook_url_set
-                    ? 'A webhook URL is already saved -- leave blank to keep it.'
+                    ? 'A webhook URL is already saved, leave blank to keep it.'
                     : 'No webhook URL saved yet.';
                 document.getElementById('emailEnabled').checked = !!cfg.email_enabled;
                 document.getElementById('smtpHost').value = cfg.smtp_host || '';
@@ -158,7 +158,7 @@
                 document.getElementById('smtpUsername').value = cfg.smtp_username || '';
                 document.getElementById('emailRecipients').value = (cfg.email_recipients || []).join(', ');
                 document.getElementById('smtpAppPasswordHint').innerText = cfg.smtp_app_password_set
-                    ? 'A password is already saved -- leave blank to keep it.'
+                    ? 'A password is already saved, leave blank to keep it.'
                     : 'No password saved yet.';
             } catch (err) {
                 console.error("Failed to load alerts config:", err);

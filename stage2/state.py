@@ -1,5 +1,5 @@
 """
-state.py — Shared, in-memory, mutable state for the running Stage 2 process.
+state.py: Shared, in-memory, mutable state for the running Stage 2 process.
 
 Always reached via `import state; state.xxx`, never `from state import xxx`
 -- `last_metrics` gets rebound to a new dict every window, and a `from`
@@ -37,7 +37,7 @@ last_metrics_by_target = {}
 
 # victim_ip -> count of consecutive class-2 (DDoS) windows, gating hard
 # blocks (config.DEFAULT_ENFORCEMENT_CONFIG["block_hysteresis_windows"]).
-# Rate-limiting isn't gated by this -- it's the immediate, reversible tier.
+# Rate-limiting isn't gated by this, it's the immediate, reversible tier.
 consecutive_ddos_windows = {}
 
 # ip -> last-acted-on timestamp, used by enforcement.block_ip/ratelimit_ip
@@ -49,7 +49,7 @@ recently_blocked = {}
 # account's sessions after a password change or deletion.
 active_sessions = {}
 
-# Login brute-force throttling -- keyed by client IP, not username, so an
+# Login brute-force throttling, keyed by client IP, not username, so an
 # attacker can't dodge the lockout by cycling usernames.
 failed_login_attempts = {}  # client_ip -> list of failure timestamps
 LOGIN_MAX_ATTEMPTS = 5

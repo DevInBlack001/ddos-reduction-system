@@ -40,7 +40,7 @@
     // interpolated in raw is a stored-XSS vector. Use escapeHtml() for
     // plain HTML text/attribute content, and jsAttr() specifically for
     // values embedded inside inline event-handler attributes like
-    // onclick="fn('${value}')" -- those need JS-string escaping *and*
+    // onclick="fn('${value}')", those need JS-string escaping *and*
     // HTML-attribute escaping, because the browser decodes HTML entities
     // in the attribute before compiling it as the handler's script body,
     // so HTML-escaping alone does not stop a quote breakout there.

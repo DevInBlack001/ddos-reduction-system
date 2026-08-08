@@ -1,5 +1,5 @@
 """
-api.py — Dashboard state/history endpoints, whitelist/victim/firewall
+api.py: Dashboard state/history endpoints, whitelist/victim/firewall
 management, and the enforcement-config editor.
 """
 
@@ -71,7 +71,7 @@ def get_state(target: Optional[str] = None):
     blocked_detail = enforcement.get_blocked_ips()
     blocked_ips_only = [b["ip"] for b in blocked_detail]
 
-    # Load Rate-Limited (previously invisible to the dashboard -- only
+    # Load Rate-Limited (previously invisible to the dashboard, only
     # ddos_blocklist was ever queried, so throttled IPs never showed up
     # anywhere in the UI even though the enforcement was actually active)
     ratelimited_detail = enforcement.get_ratelimited_ips()
@@ -139,7 +139,7 @@ def get_state(target: Optional[str] = None):
             "proto_gre": 0.0,
             "proto_esp": 0.0
         })
-    # else: no target requested -- state.last_metrics is already the most
+    # else: no target requested, state.last_metrics is already the most
     # recent window across all targets, correct for the overview view.
 
     return {
@@ -220,7 +220,7 @@ def delete_whitelist(ip: str):
     return {"status": "success"}
 
 
-# V5: shared/NAT egress points -- rate-limited but never hard-blocked, so a
+# V5: shared/NAT egress points, rate-limited but never hard-blocked, so a
 # single ipset entry can't take out every legitimate user behind them.
 @router.post("/api/shared-ips")
 def add_shared_ip(payload: IpPayload):
@@ -285,9 +285,7 @@ def manual_unblock(payload: IpPayload):
     raise HTTPException(status_code=500, detail="Failed to release firewall block.")
 
 
-# -----------------------------------------------------------------------------
 # Enforcement threshold configuration (dashboard-editable)
-# -----------------------------------------------------------------------------
 
 @router.get("/api/config/enforcement")
 def get_enforcement_config_api():
@@ -298,7 +296,7 @@ def update_enforcement_config(payload: EnforcementConfigPayload):
     current = config.get_enforcement_config()
     updates = {k: v for k, v in payload.dict().items() if v is not None}
 
-    # Sanity bounds -- reject nonsensical values rather than silently
+    # Sanity bounds, reject nonsensical values rather than silently
     # accepting something that would lock the system into always/never
     # blocking. Keeps this a "tune within reason" control, not a way to
     # accidentally disable enforcement from a typo.
@@ -324,7 +322,7 @@ def update_enforcement_config(payload: EnforcementConfigPayload):
     save_json_file(config.ENFORCEMENT_CONFIG_PATH, new_config)
     logging.warning(f"[+] Enforcement config updated: {updates}")
 
-    # Hashlimit pps requires live iptables rule surgery -- every other key
+    # Hashlimit pps requires live iptables rule surgery, every other key
     # is just a Python value read fresh on the next packet, no extra work.
     if "ratelimit_hashlimit_pps" in updates and updates["ratelimit_hashlimit_pps"] != current["ratelimit_hashlimit_pps"]:
         try:
@@ -341,7 +339,7 @@ def update_enforcement_config(payload: EnforcementConfigPayload):
 def get_logs(classification: str = "ALL", limit: int = 50, offset: int = 0):
     # The `logs` table has no size cap and can grow into the hundreds of
     # thousands of rows, so this endpoint is paginated (the CSV export
-    # stays unbounded -- that's a deliberate one-time download).
+    # stays unbounded, that's a deliberate one-time download).
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     try:

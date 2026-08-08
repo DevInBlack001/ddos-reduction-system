@@ -40,7 +40,7 @@
                 min-height: 300px;
             }
         }
-        /* Normal-flow bar above the canvas, not an overlay -- see
+        /* Normal-flow bar above the canvas, not an overlay, see
            traffic.html for why an absolutely-positioned legend on top of
            the drawing surface is a bad idea (it will eventually sit on
            top of a node). */
@@ -116,7 +116,7 @@
         const ctx = canvas.getContext('2d');
 
         // ip -> {x, y, vx, vy, role, degree, fixed}. Persisted across data
-        // refreshes so the graph animates rather than resetting -- this is
+        // refreshes so the graph animates rather than resetting, this is
         // the "not static" part: only the underlying edges/roles change on
         // each poll, the simulation just keeps running on top of them.
         const nodes = new Map();
@@ -133,7 +133,7 @@
         function updateCanvasHeight() {
             // Baseline: whatever height the wrapper already fills on
             // screen (reliable now that .graph-wrap has a fixed CSS
-            // `height`, not one derived from canvas content) -- this is
+            // `height`, not one derived from canvas content), this is
             // what was missing before: with few nodes, height defaulted to
             // a flat 480px floor regardless of how much taller the actual
             // viewport was. Grows past that (triggering the scrollbar)
@@ -157,7 +157,7 @@
         function ensureNode(ip, role) {
             if (!nodes.has(ip)) {
                 // Spread new arrivals across the whole canvas rather than
-                // clustering them near center -- several sources often show
+                // clustering them near center, several sources often show
                 // up in the same refresh (that's the normal shape of an
                 // attack starting), and spawning them within a few px of
                 // each other triggers a near-singular repulsion force
@@ -244,7 +244,7 @@
 
             // Pairwise repulsion. Distance is floored at 20px (not just
             // clamped to avoid /0) so two nodes that land on top of each
-            // other -- newly spawned, or dragged together -- produce a
+            // other, newly spawned, or dragged together, produce a
             // bounded force instead of the 1/distSq singularity blowing up
             // as distance approaches 0. That singularity was the main
             // source of visible instability: a burst of new sources
@@ -263,7 +263,7 @@
                 }
             }
 
-            // Spring attraction along edges -- rest length loosened (140 ->
+            // Spring attraction along edges, rest length loosened (140 ->
             // 220) so connected nodes settle further apart instead of
             // clustering tightly.
             const targetLen = 220;

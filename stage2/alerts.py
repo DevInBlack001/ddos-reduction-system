@@ -1,9 +1,9 @@
 """
-alerts.py — Discord webhook + SMTP email alerting.
+alerts.py: Discord webhook + SMTP email alerting.
 
 Real-time alerts (from ipc_receiver.py) are dispatched through a bounded
 background queue/worker thread so a slow or hanging SMTP connection can
-never stall the IPC receive hot path -- ipc_receiver.py only ever enqueues,
+never stall the IPC receive hot path, ipc_receiver.py only ever enqueues,
 never sends synchronously. The one exception is /api/alerts/test, which
 sends synchronously and reports per-channel success/failure, since the
 entire point of a "test" button is immediate feedback on misconfiguration.
@@ -66,7 +66,7 @@ def send_email_alert(subject: str, body: str):
 
 def dispatch_alert(subject: str, message: str):
     """Non-blocking: enqueue for the background worker. Drops the alert
-    (logged) rather than blocking the caller if the queue is full -- a
+    (logged) rather than blocking the caller if the queue is full, a
     slow-draining queue during a severe incident shouldn't back-pressure
     the IPC receive loop."""
     try:
@@ -85,9 +85,7 @@ def run_alert_worker():
         send_email_alert(subject, message)
 
 
-# -----------------------------------------------------------------------------
 # Config + test routes
-# -----------------------------------------------------------------------------
 
 def _redact(cfg: dict) -> dict:
     safe = dict(cfg)
@@ -114,7 +112,7 @@ def update_alerts_config(payload: AlertsConfigPayload):
 
 @router.post("/api/alerts/test")
 def send_test_alert(channel: str = "all"):
-    """`channel` is "discord", "email", or "all" (default -- tests every
+    """`channel` is "discord", "email", or "all" (default, tests every
     enabled channel). Scoped per-channel so each panel's own "Send Test
     Alert" button doesn't also fire the other configured channel."""
     if channel not in ("discord", "email", "all"):
@@ -129,7 +127,7 @@ def send_test_alert(channel: str = "all"):
     results = {}
     if test_discord:
         ok, err = send_discord_alert(
-            "**FLOD System Test Alert**\nThis is a test message -- if you're reading this, Discord alerting is working."
+            "**FLOD System Test Alert**\nThis is a test message, if you're reading this, Discord alerting is working."
         )
         results["discord"] = "ok" if ok else f"failed: {err}"
     if test_email:

@@ -22,7 +22,7 @@
             width: 100%;
             /* height (not max-height): always fills the available space,
                even with few nodes, instead of shrinking down to whatever
-               the content needs -- the canvas inside grows past this and
+               the content needs, the canvas inside grows past this and
                triggers the scrollbar only once there's actually enough
                content to need more room. */
             height: calc(100vh - 220px);
@@ -36,7 +36,7 @@
                 min-height: 300px;
             }
         }
-        /* A normal-flow bar above the canvas, not an overlay -- an
+        /* A normal-flow bar above the canvas, not an overlay, an
            absolutely-positioned legend sitting on top of the drawing
            surface will inevitably collide with a node sooner or later as
            the host count/layout changes. */
@@ -96,7 +96,7 @@
                     <div class="legend-row"><span class="legend-dot" style="background: var(--accent);"></span> Source / normal flow</div>
                     <div class="legend-row"><span class="legend-dot" style="background: var(--status-warning);"></span> Rate-limited flow</div>
                     <div class="legend-row"><span class="legend-dot" style="background: var(--status-danger);"></span> Blocked flow / victim target</div>
-                    <div class="legend-row" style="color: var(--text-tertiary);">Line width/pulse speed scales with rate. Blocked flows stop short -- dropped at the gateway.</div>
+                    <div class="legend-row" style="color: var(--text-tertiary);">Line width/pulse speed scales with rate. Blocked flows stop short, dropped at the gateway.</div>
                 </div>
                 <div class="graph-wrap">
                     <canvas id="trafficCanvas"></canvas>
@@ -111,7 +111,7 @@
         const ctx = canvas.getContext('2d');
 
         // Stable row assignment per IP so the columns don't reshuffle every
-        // poll -- new IPs append at the bottom of their column, existing
+        // poll, new IPs append at the bottom of their column, existing
         // ones keep their row. Cleared out only once an IP has been absent
         // for a few refreshes.
         const sourceRow = new Map(); // ip -> row index
@@ -122,7 +122,7 @@
         let edges = []; // {src, dst, rate, proto}
         let pulses = []; // {src, dst, t (0..1), speed}
 
-        // Generous, fixed per-row spacing -- the canvas grows to fit the
+        // Generous, fixed per-row spacing, the canvas grows to fit the
         // content (and the panel scrolls once it's taller than the
         // viewport allows) instead of squeezing every row's spacing down
         // to fit a fixed viewport-sized canvas.
@@ -180,9 +180,9 @@
                 const flows = data.active_flows || [];
                 const victims = new Set((data.victim_targets || []).map(v => v.ip));
                 // ddos_blocklist is an unconditional DROP on both INPUT and
-                // FORWARD (see enforcement.py:setup_ipset) -- a blocked
+                // FORWARD (see enforcement.py:setup_ipset), a blocked
                 // source's packets genuinely never reach the victim, unlike
-                // ddos_ratelimit (a pps cap -- traffic under the cap still
+                // ddos_ratelimit (a pps cap, traffic under the cap still
                 // gets through), so only blocked sources get the "stops
                 // short" treatment below. Rate-limited sources still get a
                 // distinct color, just not the truncated/dashed treatment,
@@ -255,7 +255,7 @@
         }
 
         // A blocked source's packets are dropped at the gateway (unconditional
-        // iptables DROP, see enforcement.py) -- their pulses stop at this
+        // iptables DROP, see enforcement.py), their pulses stop at this
         // fraction of the curve instead of reaching the victim.
         const BLOCKED_DROP_T = 0.65;
 
@@ -389,7 +389,7 @@
             spawnPulses();
             // Clamp to maxT (1 for normal flows, BLOCKED_DROP_T for blocked
             // ones) so every pulse actually renders at its endpoint for one
-            // frame before removal -- filtering with a strict "< 1" BEFORE
+            // frame before removal, filtering with a strict "< 1" BEFORE
             // draw() used to discard that frame, so pulses looked like they
             // vanished just short of arriving.
             pulses.forEach(p => { p.t = Math.min(p.maxT, p.t + p.speed); });

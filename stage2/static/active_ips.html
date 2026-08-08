@@ -139,7 +139,7 @@
         let currentFilter = 'ALL';
 
         // A flow's classification is its DESTINATION's current
-        // classification -- the classifier scores traffic per victim, not
+        // classification, the classifier scores traffic per victim, not
         // per individual flow. Flows toward a host with no metrics yet
         // (e.g. a destination that isn't a configured target) stay
         // unclassified and only appear under "All".
@@ -228,7 +228,7 @@
 
                 html += `<tr>
                     <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.ip)}</td>
-                    <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.dst || '—')}</td>
+                    <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.dst || 'n/a')}</td>
                     <td style="font-family: var(--font-mono);">${FlodSafe.escapeHtml(f.port)}</td>
                     <td>${FlodSafe.escapeHtml(f.proto)}</td>
                     <td style="color: var(--accent); font-weight: 600; font-family: var(--font-mono);">${f.rate.toFixed(1)}</td>

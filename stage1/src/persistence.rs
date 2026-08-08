@@ -1,44 +1,20 @@
-// =============================================================================
-// persistence.rs — V4: Baseline Persistence Across Restarts
-// =============================================================================
-//
-// PURPOSE
-// -------
-// Save and reload each victim's Welford/EWMA baseline so a Stage 1 restart
-// (crash, redeploy, reboot) doesn't force a fresh ~200-window warm-up, and —
-// the actual point of this — doesn't risk building that fresh warm-up out of
-// attack traffic if the restart happens mid-flood.
-//
-// WHY ONLY CLEAN WINDOWS GET PERSISTED
-// ---------------------------------------
-// The save call in analysis.rs is only ever made from the SAME gate that
-// already decides whether to feed a sample into Welford live
-// (`anomaly_flags == 0 && cooldown_counter == 0`, see analysis.rs). That
-// guarantees the file on disk can never be a mid-attack snapshot: worst case,
-// a crash during an active flood just reloads whatever the last known-good
-// baseline was before the flood started, never the poisoned one.
-//
-// WHY A TTL ON LOAD
-// -------------------
-// The live recency cap (`welford::MAX_N` = 500 windows, roughly 4-8 minutes
-// of continuous traffic) already treats anything older than that as not
-// worth full trust. Reloading a persisted baseline that's hours old would
-// both contradict that recency philosophy AND risk resurrecting a baseline
-// from a different point in the daily traffic cycle (e.g. an overnight-quiet
-// baseline reloaded into a busy afternoon) -- a distinct failure mode from
-// the one V4 is meant to fix. The default TTL (1 hour, see DEFAULT_TTL_SECS)
-// is sized for "the process just restarted", not "resume from last week".
-//
-// WHY ATOMIC WRITES
-// -------------------
-// Every save writes to a `.tmp` file and renames it over the real path
-// (same pattern already used for /run/ddos_stage1/active_flows.json below in
-// analysis.rs). A power loss mid-write can only ever leave the OLD complete
-// file in place -- never a half-written, corrupt one. If the file somehow
-// still fails to parse on load (disk corruption, manual edit, etc.), that's
-// treated as "no baseline available" and Stage 1 falls back to a fresh
-// warm-up rather than erroring out.
-// =============================================================================
+//! Saving and restoring each protected host's baseline across restarts.
+//!
+//! The point is not avoiding a fresh warm-up. It is that a restart during an
+//! attack would otherwise build "normal" out of attack traffic, with no
+//! peacetime reference to anchor it.
+//!
+//! Only clean windows are saved. The call site is the same gate that decides
+//! whether to feed a sample into the accumulator live, so the file on disk can
+//! never be a mid attack snapshot.
+//!
+//! Loading enforces a TTL. The live recency cap already treats anything older
+//! than a few minutes of traffic as not fully trustworthy, and a baseline
+//! hours old risks belonging to a different part of the daily cycle.
+//!
+//! Writes are atomic, a temporary file then a rename, so an interrupted write
+//! leaves the previous complete file. A missing, corrupt, or expired file is
+//! treated as no prior baseline.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,12 +22,12 @@ use std::io::Write;
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Default on-disk location. Deliberately NOT /tmp -- this file exists
+/// Default location. Under /var/lib because this file exists
 /// specifically to survive a reboot, and /tmp is not guaranteed to.
 pub const DEFAULT_BASELINE_PATH: &str = "/var/lib/ddos_stage1/baselines.json";
 
 /// Default staleness cutoff: 1 hour. See module docs for why this is much
-/// shorter than "keep forever" -- covers realistic restart scenarios
+/// shorter than keeping it forever, sized for realistic restarts
 /// (crash loops, redeploys, brief reboots) without risking a stale or
 /// diurnally-mismatched baseline being trusted as current.
 pub const DEFAULT_TTL_SECS: f64 = 3600.0;
@@ -80,7 +56,7 @@ pub struct PersistedBaseline {
 }
 
 /// The full on-disk file: one timestamp for the whole snapshot (simpler and
-/// sufficient -- all victims are saved together on the same periodic tick)
+/// sufficient, since every target is saved on the same tick)
 /// plus a map of victim IP (as a string; IpAddr isn't a valid JSON object
 /// key without a custom serializer) to that victim's baseline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +82,7 @@ fn now_unix() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Atomically write `state` to `path` (temp file + rename -- see module docs
+/// Atomically write `state` to `path`, a temporary file then a rename (see
 /// for why). Best-effort: logs and returns on any I/O error rather than
 /// panicking, since a failed save should never take down the analysis
 /// thread.
@@ -134,7 +110,7 @@ pub fn save(path: &str, state: &PersistedState) {
         }
         Err(e) => {
             log::warn!(
-                "Persistence: failed to open '{tmp_path}' for writing: {e} -- does the parent \
+                "Persistence: failed to open '{tmp_path}' for writing: {e}. Does the parent \
                  directory exist and is it writable? (default: /var/lib/ddos_stage1/)"
             );
         }
@@ -143,13 +119,13 @@ pub fn save(path: &str, state: &PersistedState) {
 
 /// Load a persisted baseline file, applying the TTL cutoff. Returns `None`
 /// (with an explanatory log line) if the file doesn't exist, fails to parse,
-/// or is older than `ttl_secs` -- all three are treated identically: fall
+/// or is older than `ttl_secs`. All three are treated identically: fall
 /// back to a fresh warm-up, never error out.
 pub fn load(path: &str, ttl_secs: f64) -> Option<PersistedState> {
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            log::info!("Persistence: no baseline file at '{path}' ({e}) -- starting fresh.");
+            log::info!("Persistence: no baseline file at '{path}' ({e}). Starting fresh.");
             return None;
         }
     };
@@ -157,7 +133,7 @@ pub fn load(path: &str, ttl_secs: f64) -> Option<PersistedState> {
     let state: PersistedState = match serde_json::from_str(&contents) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("Persistence: '{path}' exists but failed to parse ({e}) -- starting fresh.");
+            log::warn!("Persistence: '{path}' exists but failed to parse ({e}). Starting fresh.");
             return None;
         }
     };
@@ -166,7 +142,7 @@ pub fn load(path: &str, ttl_secs: f64) -> Option<PersistedState> {
     if age > ttl_secs {
         log::info!(
             "Persistence: baseline in '{path}' is {age:.0}s old, older than the {ttl_secs:.0}s TTL \
-             -- starting fresh rather than trusting a stale baseline."
+             Starting fresh rather than trusting a stale baseline."
         );
         return None;
     }
@@ -184,9 +160,7 @@ pub fn lookup(state: &Option<PersistedState>, ip: &IpAddr) -> Option<PersistedBa
     state.as_ref()?.victims.get(&ip.to_string()).cloned()
 }
 
-// =============================================================================
 // Unit Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {

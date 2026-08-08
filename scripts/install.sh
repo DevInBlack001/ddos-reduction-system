@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# install.sh — Stage 1 & 2 Installation Script (Linux/macOS)
+# install.sh: Stage 1 & 2 Installation Script (Linux/macOS)
 # =============================================================================
 #
 # Supports:
@@ -75,7 +75,7 @@ fi
 
 echo ""
 info "═══════════════════════════════════════════════════════"
-info "  Adaptive DDoS Mitigation — Stage 1 & 2 Installer     "
+info "  FLOD System | Stage 1 and 2 Installer     "
 info "═══════════════════════════════════════════════════════"
 echo ""
 
@@ -113,7 +113,7 @@ if [[ -t 0 ]]; then
 fi
 
 # =============================================================================
-# STEP 1 — Detect OS and package manager
+# Detect OS and package manager
 # =============================================================================
 info "Detecting operating system..."
 
@@ -139,7 +139,7 @@ fi
 success "Detected OS: $OS_NAME (package manager: $PKG_MANAGER)"
 
 # =============================================================================
-# STEP 2 — Install system dependencies
+# Install system dependencies
 # =============================================================================
 info "Installing system dependencies..."
 
@@ -211,7 +211,7 @@ esac
 success "System dependencies installed."
 
 # =============================================================================
-# STEP 3 — Install Rust toolchain via rustup
+# Install Rust toolchain via rustup
 # =============================================================================
 info "Checking for Rust toolchain..."
 
@@ -235,9 +235,9 @@ fi
 rustup default stable &>/dev/null || true
 
 # =============================================================================
-# STEP 4 — Compile Stage 1 in release mode
+# Compile Stage 1 in release mode
 # =============================================================================
-info "Building Stage 1 (release mode — this may take a few minutes on first build)..."
+info "Building Stage 1 (release mode, this may take a few minutes on first build)..."
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
     error "Stage 1 source directory not found at: $PROJECT_DIR"
@@ -253,7 +253,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
 success "Build complete: target/release/$BINARY_NAME"
 
 # =============================================================================
-# STEP 5 — Install the binary
+# Install the binary
 # =============================================================================
 info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
 install -m 755 "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
@@ -262,14 +262,14 @@ success "Binary installed: $INSTALL_DIR/$BINARY_NAME"
 # Grant CAP_NET_RAW so the binary can capture packets without running as root.
 if command -v setcap &>/dev/null; then
     setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
-    success "CAP_NET_RAW capability granted — binary can run without sudo."
+    success "CAP_NET_RAW capability granted, binary can run without sudo."
 else
     warn "setcap not found. You will need to run $BINARY_NAME as root."
 fi
 
 # Dedicated, unprivileged service account for Stage 1. It only needs
 # CAP_NET_RAW (granted above via setcap, and again below via the systemd
-# unit's AmbientCapabilities), not full root -- running the packet-capture
+# unit's AmbientCapabilities), not full root, running the packet-capture
 # daemon as root means any bug in it has root's blast radius for no reason.
 # ddos-ipc is a shared group so this account can reach the Stage 1 <-> Stage
 # 2 IPC socket that Stage 2 (still root, for ipset/iptables) creates.
@@ -283,16 +283,16 @@ if ! id -u ddos-stage1 &>/dev/null; then
     success "Created service account: ddos-stage1"
 fi
 
-# V4: create the baseline-persistence directory. Deliberately NOT /tmp -- the
+# V4: create the baseline-persistence directory. Deliberately NOT /tmp, the
 # entire point of this file is surviving a reboot. Stage 1 degrades
 # gracefully (logs a warning, skips persistence) if this is missing, but the
 # feature does nothing useful without it existing up front. Owned by the
-# Stage 1 service account alone -- Stage 2 never reads or writes baselines.
+# Stage 1 service account alone, Stage 2 never reads or writes baselines.
 install -d -m 700 -o ddos-stage1 -g ddos-stage1 /var/lib/ddos_stage1
 success "Baseline persistence directory ready: /var/lib/ddos_stage1"
 
 # =============================================================================
-# STEP 5.5 — Setup Stage 2 Python Virtual Environment
+# Setup Stage 2 Python Virtual Environment
 # =============================================================================
 info "Setting up Stage 2 Python virtual environment..."
 STAGE2_DIR="$(dirname "$PROJECT_DIR")/stage2"
@@ -320,18 +320,18 @@ else
 fi
 
 # =============================================================================
-# STEP 5.6 — Generate a self-signed TLS certificate for the management console
+# Generate a self-signed TLS certificate for the management console
 # =============================================================================
 # Without this, the admin login form, session cookie, and every block/unblock
 # API call travel in plaintext over whatever network the box is on. A
 # self-signed cert at least gets the channel encrypted; browsers will warn on
-# first connect (expected -- click through, or replace these files with a
+# first connect (expected, click through, or replace these files with a
 # CA-signed cert/key pair for that host/IP).
 TLS_DIR="/etc/ddos_stage2/tls"
 if command -v openssl &>/dev/null; then
     install -d -m 750 "$TLS_DIR"
     if [[ -f "$TLS_DIR/cert.pem" && -f "$TLS_DIR/key.pem" ]]; then
-        info "TLS certificate already present at $TLS_DIR -- leaving it in place."
+        info "TLS certificate already present at $TLS_DIR, leaving it in place."
     else
         info "Generating self-signed TLS certificate for the management console..."
         openssl req -x509 -nodes -newkey rsa:2048 \
@@ -343,13 +343,13 @@ if command -v openssl &>/dev/null; then
         success "Self-signed TLS certificate generated at $TLS_DIR."
     fi
 else
-    warn "openssl not found -- skipping TLS certificate generation. The" \
+    warn "openssl not found, skipping TLS certificate generation. The" \
          "management console will fall back to plain HTTP until" \
          "$TLS_DIR/cert.pem and $TLS_DIR/key.pem exist."
 fi
 
 # =============================================================================
-# STEP 6 — Install systemd service units (optional, Linux only)
+# Install systemd service units (optional, Linux only)
 # =============================================================================
 if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
     info "Installing systemd service units..."
@@ -367,7 +367,7 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
 
     cat > "$SERVICE_DIR/ddos-stage1.service" << EOF
 # =============================================================================
-# ddos-stage1.service — systemd unit for the DDoS mitigation Stage 1 daemon
+# ddos-stage1.service, systemd unit for the DDoS mitigation Stage 1 daemon
 # Generated by install.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # =============================================================================
 
@@ -404,7 +404,7 @@ EOF
     if [[ -d "$STAGE2_DIR" ]]; then
         cat > "$SERVICE_DIR/ddos-stage2.service" << EOF
 # =============================================================================
-# ddos-stage2.service — systemd unit for the DDoS mitigation Stage 2 daemon
+# ddos-stage2.service, systemd unit for the DDoS mitigation Stage 2 daemon
 # Generated by install.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # =============================================================================
 

@@ -1,5 +1,5 @@
 """
-db.py — SQLite audit-log writers (the `logs` and `metrics_history` tables).
+db.py: SQLite audit-log writers (the `logs` and `metrics_history` tables).
 
 Deliberately does NOT depend on enforcement.py: log_incident() used to
 resolve an unset victim_ip itself (via enforcement.resolve_victim_ip),

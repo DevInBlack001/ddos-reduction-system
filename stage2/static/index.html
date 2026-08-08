@@ -645,7 +645,7 @@
         }
 
         // The toggle controls whether the panel is shown, not whether the
-        // sensor runs -- egress capture is a Stage 1 launch flag
+        // sensor runs, egress capture is a Stage 1 launch flag
         // (--egress-interface) and there is no control channel from the
         // dashboard back to Stage 1.
         function initEgressToggle() {
@@ -664,7 +664,7 @@
             const unavailable = document.getElementById('egressUnavailable');
             const content = document.getElementById('egressContent');
 
-            // null (not 0) means no egress sensor reported -- a real 0.0 drop
+            // null (not 0) means no egress sensor reported, a real 0.0 drop
             // ratio is a valid measurement and must still render.
             if (data.drop_ratio === null || data.drop_ratio === undefined) {
                 unavailable.style.display = '';
@@ -849,7 +849,7 @@
                     logs.forEach(l => {
                         // classification here is the LOGGED ACTION (from
                         // block_ip()/ratelimit_ip()'s log_incident calls), not
-                        // just the RF's verdict -- "Blocked" and "Rate Limited"
+                        // just the RF's verdict, "Blocked" and "Rate Limited"
                         // are genuinely different outcomes and were previously
                         // both rendered as "-> blocked", which misreported
                         // every rate-limit action as a hard block.

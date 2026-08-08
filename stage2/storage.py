@@ -1,5 +1,5 @@
 """
-storage.py — Generic JSON file persistence helpers.
+storage.py: Generic JSON file persistence helpers.
 
 Deliberately dependency-free (no imports from other stage2 modules) so
 every other module can use it without risking an import cycle: it just

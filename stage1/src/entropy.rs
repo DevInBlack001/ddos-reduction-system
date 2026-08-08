@@ -1,67 +1,23 @@
-// =============================================================================
-// entropy.rs — Normalized Shannon Source-IP Entropy Calculator
-// =============================================================================
-//
-// PURPOSE
-// -------
-// Computes the Normalized Shannon Entropy of the source IP distribution inside
-// one analysis window.  The resulting scalar `h` is the "diversity score" that
-// flows into the Welford accumulator (Layer 2 → Layer 3) after every window.
-//
-// WHY NORMALIZED ENTROPY?
-// -------------------------
-// With hybrid time-gated windowing, window sizes vary with traffic rate:
-// a peacetime window might contain 50 packets, a flood window 15,000.
-// Raw Shannon entropy's ceiling is log₂(N) where N = unique sources, but
-// the *number of unique sources observable* depends on window size, creating
-// a confound between diversity and volume.
-//
-// Normalized entropy H_norm = H(X) / log₂(|unique IPs|) produces a [0, 1]
-// scalar that measures concentration independently of window size:
-//   0.0 = total concentration (all packets from one IP)
-//   1.0 = perfectly even distribution across all observed IPs
-//
-// Guard: if unique_sources ≤ 1, return 0.0 without dividing (avoids
-// log₂(1) = 0 → NaN).
-//
-// WHY ENTROPY, NOT UNIQUE IP COUNT?
-// ------------------------------------
-// Two windows can have identical unique IP counts yet completely different
-// threat profiles:
-//
-//   Window A: 10 unique IPs, one appears 41 times → concentration → DDoS
-//   Window B: 10 unique IPs, each appears 5 times  → even spread → normal
-//
-// Shannon Entropy H(X) = −Σ p(x)·log₂p(x) captures the full *shape* of the
-// probability distribution, not just its cardinality.  Normalizing by the
-// maximum achievable entropy (log₂ of unique count) gives a single scalar
-// between 0.0 and 1.0.
-//
-// RESET BEHAVIOUR
-// ----------------
-// Unlike EWMA (which carries memory across windows), entropy is computed fresh
-// from a HashMap that is **cleared after every window close**.  This is correct:
-// entropy measures the diversity of the *current* window, not a long-run trend.
-// The long-run trend is tracked by the Welford accumulator upstream.
-//
-// IMPLEMENTATION NOTES
-// ----------------------
-// • Uses `std::collections::HashMap<IpAddr, u32>` for frequency counting.
-// • Recomputes from scratch each window — this is O(n) in window size,
-//   which is negligible. No incremental update needed.
-// • Uses only standard library: `HashMap`, `f64::log2()`.  No external crates.
-// • BPF filter (`dst host <victim_ip>`) is applied at the `pcap` level before
-//   this module ever sees a packet, so all IPs counted here are *source* IPs
-//   of inbound traffic only.
-// • Window size is no longer fixed — the accumulator accepts an unlimited
-//   number of packets per window.  The close decision lives in analysis.rs.
-//
-// RANGE REFERENCE
-// ----------------
-//   Normalized entropy range: [0.0, 1.0]
-//     0.0 = all packets from one IP (or ≤1 unique source)
-//     1.0 = perfectly even distribution across all unique IPs
-// =============================================================================
+//! Normalized Shannon entropy of the source address distribution in one
+//! window.
+//!
+//!     H      = -sum( p(x) * log2(p(x)) )
+//!     H_norm = H / log2(unique_sources)
+//!
+//! Normalizing matters because window size varies with traffic rate, and the
+//! number of sources observable depends on it. The normalized value measures
+//! concentration on a [0, 1] scale regardless: 0.0 is all packets from one
+//! address, 1.0 is a perfectly even spread.
+//!
+//! Counting unique addresses would not do. Ten addresses where one appears 41
+//! times and ten where each appears five times have the same cardinality and
+//! completely different shapes.
+//!
+//! Recomputed from scratch each window, then cleared. Entropy describes this
+//! window, not a trend; the trend lives in the accumulator upstream.
+//!
+//! Returns 0.0 when there is at most one source, which avoids dividing by
+//! log2(1).
 
 use std::{collections::HashMap, net::IpAddr};
 
@@ -70,9 +26,7 @@ use std::{collections::HashMap, net::IpAddr};
 /// the 1.0s hard-cap in very low traffic) should be treated with caution.
 pub const MIN_PACKETS_FOR_ENTROPY: usize = 20;
 
-// -----------------------------------------------------------------------------
 // EntropyAccumulator
-// -----------------------------------------------------------------------------
 
 /// Accumulates source IPs over one window and computes Normalized Shannon
 /// Entropy on close.
@@ -101,7 +55,7 @@ impl EntropyAccumulator {
     /// Record one packet's source IP in the current window.
     ///
     /// Must be called per-packet from the analysis thread's main loop.
-    /// There is no cap — the accumulator grows dynamically.  The close
+    /// The accumulator grows as needed. The close
     /// decision is made by the analysis loop based on elapsed time and
     /// minimum packet count, not by this accumulator.
     pub fn add_packet(&mut self, src_ip: IpAddr) {
@@ -122,7 +76,7 @@ impl EntropyAccumulator {
     /// accumulator is ready for the next window immediately.
     pub fn compute_and_reset(&mut self) -> f64 {
         let h = compute_normalized_entropy(&self.counts, self.packet_count);
-        // Reset for next window — O(capacity) clear keeps the HashMap allocation
+        // Clearing rather than reallocating keeps the allocation
         // alive to avoid repeated heap allocations across windows.
         self.counts.clear();
         self.packet_count = 0;
@@ -136,9 +90,6 @@ impl EntropyAccumulator {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Core entropy computation (pure function — testable without network traffic)
-// -----------------------------------------------------------------------------
 
 /// Compute Normalized Shannon Entropy from a frequency map and total packet
 /// count.
@@ -152,8 +103,7 @@ impl EntropyAccumulator {
 /// with crafted frequency maps without needing an `EntropyAccumulator`.
 ///
 /// # Arguments
-/// * `counts`       — HashMap mapping each unique IP to its frequency.
-/// * `total_packets`— Total number of packets in the window (= Σ counts).
+/// `counts` maps each address to its frequency, `total_packets` is their sum.
 ///
 /// # Returns
 /// Normalized entropy in [0.0, 1.0].
@@ -191,9 +141,7 @@ pub fn compute_normalized_entropy(counts: &HashMap<IpAddr, u32>, total_packets: 
     raw_entropy / max_entropy
 }
 
-// =============================================================================
 // Unit Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -205,9 +153,7 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
 
-    // -------------------------------------------------------------------------
     // compute_normalized_entropy pure function tests
-    // -------------------------------------------------------------------------
 
     /// All packets from a single IP → entropy must be exactly 0.0.
     #[test]
@@ -285,7 +231,7 @@ mod tests {
     }
 
     /// Same 50 sources in small (50-pkt) and large (15,000-pkt) windows
-    /// must produce the same normalized entropy — proving rate independence.
+    /// must produce the same normalized entropy, which is rate independence.
     #[test]
     fn entropy_is_rate_independent() {
         let mut counts_small = HashMap::new();
@@ -302,9 +248,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
     // EntropyAccumulator integration tests
-    // -------------------------------------------------------------------------
 
     /// Window fills and compute_and_reset returns expected scalar.
     #[test]

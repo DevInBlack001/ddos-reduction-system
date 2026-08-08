@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run.sh — Adaptive DDoS Mitigation Gateway Manual Runner
+# run.sh: Adaptive DDoS Mitigation Gateway Manual Runner
 # =============================================================================
 #
 # PURPOSE:

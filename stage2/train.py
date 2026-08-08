@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-train.py — Stage 2: Machine Learning Model Trainer
--------------------------------------------------
+train.py: Stage 2: Machine Learning Model Trainer
 This script loads the raw CSV data collected from Stage 1, applies strict
 preprocessing/cleaning rules to remove timing-jitter baseline contamination,
 trains a Random Forest classifier, and saves the trained model.
@@ -37,7 +36,7 @@ LABEL_COL = "label"
 
 def balance_classes(X, y):
     """Upsample every class to the size of the largest class. Training-split
-    only -- never call this on evaluation data."""
+    only, never call this on evaluation data."""
     train_df = X.copy()
     train_df[LABEL_COL] = y.values
     per_class = [train_df[train_df[LABEL_COL] == lbl] for lbl in (0, 1, 2)]
@@ -91,7 +90,7 @@ def main():
     # RF sees it too, not just the post-classification block/ratelimit rule.
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
 
-    print("\n--- Raw Class Distribution ---")
+    print("\n== Raw Class Distribution ==")
     print(df[LABEL_COL].value_counts().to_string())
 
     # 2. Session Detection and Validation Snippet
@@ -125,11 +124,11 @@ def main():
             "Rate Range": f"{min_rate:.1f} - {max_rate:.1f}",
             "Entropy Range": f"{min_entropy:.2f} - {max_entropy:.2f}"
         })
-    print("\n--- Detected Capture Sessions ---")
+    print("\n== Detected Capture Sessions ==")
     print(pd.DataFrame(sessions_info).to_string(index=False))
 
     # Print overall feature ranges per class to evaluate overlap
-    print("\n--- Feature Ranges Per Class (Overlap Check) ---")
+    print("\n== Feature Ranges Per Class (Overlap Check) ==")
     overlap_info = []
     for label in [0, 1, 2]:
         lbl_df = df[df[LABEL_COL] == label]
@@ -154,7 +153,7 @@ def main():
     # 3. Leave-One-Session-Out (LOSO) evaluation, sweeping tree depth.
     # For each session, hold it out entirely, train on every OTHER session
     # (all labels), and test on the held-out one. A session is only a fair
-    # fold if its label has >=2 sessions total -- otherwise holding it out
+    # fold if its label has >=2 sessions total, otherwise holding it out
     # leaves zero training examples of that class, which is a dataset-
     # coverage gap, not a real generalization test, and would just report a
     # meaningless 0.00. Random splitting / percentage-of-session splitting
@@ -162,7 +161,7 @@ def main():
     # memorize a session's fingerprint instead of learning to generalize.
     #
     # max_depth is swept rather than fixed because the right value depends
-    # entirely on how many independent sessions THIS dataset has per class --
+    # entirely on how many independent sessions THIS dataset has per class,
     # with only two sessions of a class, a deep tree can memorize one
     # session's specific fingerprint and completely fail on the other (one
     # capture set here saw a held-out session collapse from ~1.00 to ~0.02
@@ -178,7 +177,7 @@ def main():
     for sess_id in all_sessions:
         label = df[df["session_id"] == sess_id][LABEL_COL].iloc[0]
         if sessions_per_label.get(label, 0) < 2:
-            print(f"[!] Session {sess_id} (label {label}): SKIPPED -- only session for this "
+            print(f"[!] Session {sess_id} (label {label}): SKIPPED, only session for this "
                   f"label, holding it out would leave zero training examples of it. "
                   f"Capture >=1 more independent session of label {label} to make this a fair fold.")
         else:
@@ -190,7 +189,7 @@ def main():
     best_fold_true, best_fold_pred, best_per_session = [], [], []
 
     if not eligible_sessions:
-        print("[-] No label currently has >=2 sessions -- LOSO cannot run yet. "
+        print("[-] No label currently has >=2 sessions, LOSO cannot run yet. "
               "Every label needs at least one more independent session before tree depth "
               f"can be validated. Falling back to an UNVALIDATED default max_depth={best_depth}.")
     else:
@@ -221,25 +220,25 @@ def main():
 
         print(f"\n[+] Selected max_depth={best_depth} (LOSO accuracy={best_acc:.3f}) for the "
               "production model below. This was chosen fresh from the sessions currently in "
-              "the CSV -- a different or expanded capture set may select a different depth, "
+              "the CSV, a different or expanded capture set may select a different depth, "
               "so re-run this script (not just reuse this number) whenever sessions change.")
-        print("\n--- Per-Session Results at Selected Depth ---")
+        print("\n== Per-Session Results at Selected Depth ==")
         for sess_id, label, n, acc in best_per_session:
             print(f"    Session {sess_id} (label {label}, {n} rows): accuracy={acc:.3f}")
-        print("\n--- LOSO Aggregate Classification Report (selected depth, all held-out folds combined) ---")
+        print("\n== LOSO Aggregate Classification Report (selected depth, all held-out folds combined) ==")
         print(classification_report(best_fold_true, best_fold_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
-        print("\n--- LOSO Aggregate Confusion Matrix (selected depth) ---")
+        print("\n== LOSO Aggregate Confusion Matrix (selected depth) ==")
         print(confusion_matrix(best_fold_true, best_fold_pred))
 
     # 4. Final production model: train on ALL available data (every session),
-    # balanced. This is a SEPARATE step from the LOSO evaluation above -- LOSO
+    # balanced. This is a SEPARATE step from the LOSO evaluation above, LOSO
     # exists to tell you whether the approach generalizes, not to produce the
     # model you actually ship. Once LOSO results look acceptable, this is the
     # model that gets saved and deployed.
     print("\n[+] Training final production model on all available data...")
     X_all, y_all = balance_classes(df[FEATURE_COLS], df[LABEL_COL])
     print(f"[+] Balanced production training set size: {len(X_all)} rows.")
-    print("\n--- Balanced Training Class Distribution ---")
+    print("\n== Balanced Training Class Distribution ==")
     print(y_all.value_counts().to_string())
 
     if len(X_all) < 100:
@@ -255,7 +254,7 @@ def main():
     print("[+] Model training complete.")
 
     # Feature Importances
-    print("\n--- Feature Importances (production model) ---")
+    print("\n== Feature Importances (production model) ==")
     importances = clf.feature_importances_
     for col, imp in sorted(zip(FEATURE_COLS, importances), key=lambda x: x[1], reverse=True):
         print(f"  {col:<20} : {imp:.4f}")

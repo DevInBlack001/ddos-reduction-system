@@ -1,62 +1,14 @@
-// =============================================================================
-// main.rs — Stage 1 Entry Point and Thread Orchestrator
-// =============================================================================
-//
-// PURPOSE
-// -------
-// Parses CLI arguments, wires the crossbeam channel between the capture thread
-// and the analysis thread, then spawns both and waits for them to exit.
-//
-// THREAD ARCHITECTURE (recap)
-// ----------------------------
-//
-//   ┌─────────────────────────────────────────────────────────────┐
-//   │  Stage 0 / Stage 1 — Rust Binary (this binary)             │
-//   │                                                             │
-//   │  ┌────────────────┐  PacketMeta  ┌───────────────────────┐ │
-//   │  │ Capture Thread │──────────────► Analysis Thread        │ │
-//   │  │ (pcap + BPF)   │  crossbeam   │ Layer 1: EWMA + Cnt   │ │
-//   │  │                │  bounded     │ Layer 2: entropy + r  │ │
-//   │  └────────────────┘  channel     │ Layer 3: Welford + μ2σ│ │
-//   │                                  │         ↓ anomaly      │ │
-//   │                                  │   FeatureVector IPC    │ │
-//   │                                  └──────────┬────────────┘ │
-//   └─────────────────────────────────────────────┼──────────────┘
-//                                                 │ Unix Domain Socket
-//                                                 ▼
-//   ┌─────────────────────────────────────────────────────────────┐
-//   │  Stage 2 — Python (separate process)                        │
-//   │  Random Forest classifier → ipset block or k-decay widen   │
-//   └─────────────────────────────────────────────────────────────┘
-//
-// CLI USAGE
-// ----------
-//   sudo ./ddos_stage1 --interface br0 --victim-ip 10.0.0.3
-//
-// Full options:
-//   --interface  <IFACE>   Network interface to capture on (required)
-//   --victim-ip  <IP>      BPF filter target IP (required in production)
-//   --k          <FLOAT>   Anomaly multiplier μ ± k·σ (default: 2.0)
-//   --alpha      <FLOAT>   EWMA smoothing α (default: 0.125)
-//   --socket     <PATH>    Unix socket path for Stage 2 IPC (default: /run/ddos_stage1/stage1.sock)
-//   --no-filter            Disable BPF filter (dev/test mode only)
-//
-// LOG LEVEL
-// ----------
-// Controlled via the RUST_LOG environment variable (uses env_logger):
-//   RUST_LOG=info   — operational, startup messages and anomaly alerts (default)
-//   RUST_LOG=debug  — per-window statistics
-//   RUST_LOG=warn   — anomalies and errors only
-//
-// PRIVILEGES
-// -----------
-// Raw pcap capture requires either:
-//   • Running as root (sudo), OR
-//   • The binary having the CAP_NET_RAW Linux capability set:
-//       sudo setcap cap_net_raw+ep ./ddos_stage1
-// =============================================================================
+//! Entry point.
+//!
+//! Parses arguments, connects the capture and analysis threads with a bounded
+//! channel, spawns both, and waits.
+//!
+//! Run `--help` for the full option list. `RUST_LOG` sets verbosity.
+//!
+//! Raw capture needs either root or the CAP_NET_RAW capability:
+//!
+//!     sudo setcap cap_net_raw+ep ./ddos_stage1
 
-// Declare submodules — Rust loads them from their respective files.
 mod analysis;
 mod capture;
 mod entropy;
@@ -368,13 +320,11 @@ fn precheck_interface(iface: &str) {
         }
         process::exit(1);
     }
-    // The test handle drops here — the real capture thread opens a fresh
+    // The test handle drops here. The real capture thread opens a fresh
     // one. Opening twice is fine; pcap handles are independent.
 }
 
-// =============================================================================
 // main()
-// =============================================================================
 fn main() {
     // Parse CLI arguments first so we know if a log file is requested.
     let args = CliArgs::parse();
@@ -446,7 +396,7 @@ fn main() {
         }
     }
 
-    // Initialise the env_logger — reads RUST_LOG env var for level.
+    // Level comes from RUST_LOG.
     // Defaults to INFO if RUST_LOG is not set.
     let mut builder = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")
@@ -468,18 +418,16 @@ fn main() {
     builder.init();
 
     info!("╔══════════════════════════════════════════════════════════╗");
-    info!("║  Adaptive DDoS Pre-Filter — Stage 1 (Rust)              ║");
+    info!("║  FLOD System | Stage 1 (Rust)                            ║");
     info!("║  Abdullah Armiyao | Cyber Security Lab Work             ║");
     info!("╚══════════════════════════════════════════════════════════╝");
 
-    // -------------------------------------------------------------------------
     // Build the capture and analysis configurations.
-    // -------------------------------------------------------------------------
 
     // Capture config: BPF filter applied only when --no-filter is not set
     // and victim targets were provided.
     let cap_cfg = if args.no_filter || args.victim_targets.is_none() {
-        log::warn!("main: BPF filter DISABLED — all traffic will be processed (dev mode only)");
+        log::warn!("main: BPF filter disabled, all traffic will be processed (dev mode only)");
         CaptureConfig::for_test(&args.interface)
     } else {
         let targets = args.victim_targets.as_ref().unwrap();
@@ -487,8 +435,8 @@ fn main() {
         CaptureConfig::for_targets(&args.interface, targets, capture::Direction::Ingress)
     };
 
-    // V5: the egress side is optional. Same victim filter as ingress —
-    // what matters is traffic headed to the victims on either side.
+    // The egress side is optional, and uses the same filter as ingress:
+    // what matters is traffic headed to a protected host on either side.
     let egress_cap_cfg = args.egress_interface.as_ref().map(|iface| {
         if args.no_filter || args.victim_targets.is_none() {
             let mut c = CaptureConfig::for_test(iface);
@@ -512,7 +460,6 @@ fn main() {
         egress_enabled:     args.egress_interface.is_some(),
     };
 
-    // -------------------------------------------------------------------------
     // Privilege pre-check: attempt to open the interface NOW, on the main
     // thread, before spawning anything. If pcap fails here it almost always
     // means missing CAP_NET_RAW (not running as root).
@@ -520,7 +467,6 @@ fn main() {
     // Doing this early gives us a loud, synchronous error message instead of
     // the silent exit that happens when the capture thread dies and drops the
     // crossbeam channel before the analysis thread ever processes a packet.
-    // -------------------------------------------------------------------------
     precheck_interface(&cap_cfg.interface);
     if let Some(cfg) = egress_cap_cfg.as_ref() {
         precheck_interface(&cfg.interface);
@@ -531,9 +477,7 @@ fn main() {
         cap_cfg.interface, analysis_cfg.k, analysis_cfg.ewma_alpha, analysis_cfg.socket_path
     );
 
-    // -------------------------------------------------------------------------
     // Create the bounded crossbeam channel connecting capture → analysis.
-    // -------------------------------------------------------------------------
     let (tx, rx) = bounded(capture::CHANNEL_CAPACITY);
 
     info!(
@@ -541,10 +485,8 @@ fn main() {
         capture::CHANNEL_CAPACITY
     );
 
-    // -------------------------------------------------------------------------
     // Spawn the analysis thread first so it is ready to consume from the
     // channel before the capture thread starts flooding it.
-    // -------------------------------------------------------------------------
     let analysis_handle = std::thread::Builder::new()
         .name("analysis".to_string())
         .spawn(move || {
@@ -552,15 +494,13 @@ fn main() {
         })
         .expect("failed to spawn analysis thread");
 
-    // -------------------------------------------------------------------------
     // Run the capture thread on the *current* thread (main thread).
     // This blocks indefinitely.  The analysis thread runs in the background.
     //
     // Rationale: running capture on main keeps it easy to handle SIGINT/SIGTERM
-    // from the OS — when the process is killed, main unblocks and the `tx`
+    // from the OS. When the process is killed, main unblocks and the `tx`
     // Sender is dropped, which closes the channel and causes the analysis
     // thread to exit cleanly.
-    // -------------------------------------------------------------------------
     // V5: the egress sensor runs on its own thread with a cloned sender,
     // feeding the same analysis loop so both sides share one window
     // boundary and one clock. Spawned before ingress takes over main.
@@ -579,10 +519,8 @@ fn main() {
 
     capture::run_capture_thread(cap_cfg, tx);
 
-    // -------------------------------------------------------------------------
     // Capture thread exited (channel closed or pcap error).
     // Wait for the analysis thread to drain and exit cleanly.
-    // -------------------------------------------------------------------------
     info!("main: capture thread exited; waiting for analysis thread to finish...");
 
     // With an egress thread alive the channel still has a live sender, so

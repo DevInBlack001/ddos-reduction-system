@@ -1,54 +1,14 @@
-// =============================================================================
-// capture.rs — Stage 0: Raw Packet Capture from the Network Bridge
-// =============================================================================
-//
-// PURPOSE
-// -------
-// This module owns the *capture thread* — the ingress edge of the pipeline.
-// It opens a pcap handle on the specified network interface (typically `br0`),
-// applies a BPF filter to restrict capture to **inbound traffic to the victim**
-// only, then forwards raw parsed packet metadata into a bounded crossbeam
-// channel consumed by the analysis thread.
-//
-// ARCHITECTURE — WHY A SEPARATE THREAD AND A CHANNEL?
-// -----------------------------------------------------
-// A single-threaded design where capture and analysis share the same loop
-// would stall packet capture every time a 50-packet window triggers entropy
-// computation + Welford update. Under a flood (100k+ pps) even microseconds
-// of stall cause the kernel ring buffer to overflow and packets to be silently
-// dropped — defeating the very thing we are measuring.
-//
-// Using crossbeam's bounded channel decouples the two concerns:
-//   • Capture thread: calls pcap::next_packet() in a tight loop, parses headers,
-//     sends `PacketMeta` into the channel. Never blocks on analysis.
-//   • Analysis thread: receives `PacketMeta` from the channel, runs Layers 1–3.
-//
-// The channel is bounded (see `CHANNEL_CAPACITY`) to apply *backpressure*: if
-// the analysis thread falls badly behind (e.g., system overloaded), the bounded
-// channel will fill. Capture then *blocks* rather than allocating unbounded
-// memory. This is intentional — a stalled capture is detectable and safe;
-// unbounded memory growth is not.
-//
-// BPF FILTER
-// -----------
-// `dst host <victim_ip>` is applied at the pcap level — in the kernel — before
-// any Rust code processes a byte. This means:
-//   • Outbound replies from the victim are excluded (their source IPs would
-//     pollute the entropy metric with legitimate server addresses).
-//   • ARP/ICMP/broadcast not addressed to the victim is excluded.
-//   • The analysis thread sees *only* inbound unicast frames targeting the
-//     victim's IP.
-//
-// WHAT `PacketMeta` CONTAINS
-// ---------------------------
-// The analysis thread only needs metadata — the full payload is never copied
-// into user space beyond what etherparse parses from the header bytes.
-//   • `src_ip`    — source IP address (IPv4 or IPv6), used for entropy.
-//   • `arrived_at`— high-resolution monotonic timestamp, used for EWMA rate.
-//
-// All other header fields (dst_ip, TCP flags, port, payload length, etc.) are
-// discarded at this stage. Stage 2 feature vectors add more fields offline.
-// =============================================================================
+//! Packet capture.
+//!
+//! Opens a pcap handle on an interface, applies a BPF filter so the kernel
+//! discards anything not addressed to a protected host, parses the headers,
+//! and sends the result to the analysis thread over a bounded channel.
+//!
+//! Capture runs in its own thread so a window close never stalls it. The
+//! channel is bounded, so a slow analysis thread blocks capture rather than
+//! growing memory without limit.
+//!
+//! Only header fields are read. The payload is never copied into user space.
 
 use crossbeam_channel::Sender;
 use etherparse::{LaxNetSlice, LaxSlicedPacket, TransportSlice};
@@ -56,26 +16,12 @@ use log::{debug, error, info, warn};
 use pcap::{Capture, Device};
 use std::{net::IpAddr, time::Instant};
 
-// -----------------------------------------------------------------------------
-// Channel capacity
-// -----------------------------------------------------------------------------
-
-/// Depth of the bounded channel between the capture and analysis threads.
-///
-/// At WINDOW_SIZE=50 packets per window, a capacity of 1024 means the analysis
-/// thread can fall up to ~20 windows behind before backpressure kicks in.
-/// Tune this value based on observed queue depth at your gateway's peak pps.
+/// Depth of the channel between capture and analysis. Once full, capture
+/// blocks instead of queueing without limit.
 pub const CHANNEL_CAPACITY: usize = 1024;
 
-// -----------------------------------------------------------------------------
-// PacketMeta — the minimal per-packet record passed across the channel
-// -----------------------------------------------------------------------------
-
-/// Layer 4 protocol discriminant extracted from the IP header.
-///
-/// Only the three protocol types relevant to volumetric DDoS floods are
-/// tracked explicitly. Everything else is folded into `Other` so the
-/// capture loop stays branchless on normal traffic.
+/// Layer 4 protocol from the IP header. Anything not tracked separately
+/// folds into `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     Tcp,
@@ -87,47 +33,34 @@ pub enum Protocol {
     Other,
 }
 
-/// Which side of the gateway a packet was captured on.
-///
-/// Ingress is what arrived and is the only side that feeds detection.
-/// Egress is what was actually forwarded on toward the victim after
-/// filtering, used solely to measure how much traffic the enforcement
-/// dropped.
+/// Which side of the gateway a packet was seen on. Only ingress feeds
+/// detection; egress exists to measure how much traffic was dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Ingress,
     Egress,
 }
 
-/// Lightweight per-packet metadata record sent from the capture thread to
-/// the analysis thread via the crossbeam channel.
-///
-/// Only fields actually consumed by Layers 1–3 are included.
-/// Keeping this struct small reduces copy overhead across the channel.
+/// What the capture thread sends to the analysis thread. Kept small: it
+/// crosses the channel once per packet.
 #[derive(Debug, Clone)]
 pub struct PacketMeta {
     /// Which capture thread produced this record.
     pub direction: Direction,
-    /// Source IP address extracted from the IP header.
-    /// IPv4 addresses are stored as `IpAddr::V4`; IPv6 as `IpAddr::V6`.
+    /// Source address from the IP header.
     pub src_ip: IpAddr,
-    /// Destination IP address extracted from the IP header.
+    /// Destination address from the IP header.
     pub dst_ip: IpAddr,
-    /// High-resolution monotonic timestamp recorded *immediately* after pcap
-    /// delivers the frame to user space. Used by EWMA for inter-arrival timing.
+    /// Monotonic timestamp taken as soon as pcap hands the frame over.
     #[allow(dead_code)]
     pub arrived_at: Instant,
-    /// Layer 4 protocol — used by the analysis thread to build proto_ratio.
+    /// Layer 4 protocol, used to build the protocol ratios.
     pub protocol: Protocol,
-    /// Destination port number extracted from L4 transport header (0 if not applicable).
+    /// Destination port, 0 when the protocol has none.
     pub dst_port: u16,
 }
 
-// -----------------------------------------------------------------------------
-// CaptureConfig — runtime parameters for the capture thread
-// -----------------------------------------------------------------------------
-
-/// Configuration passed into `run_capture_thread()`.
+/// Runtime parameters for one capture thread.
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     /// Network interface to capture on (e.g., `"br0"`, `"eth0"`, `"ens3"`).
@@ -138,10 +71,9 @@ pub struct CaptureConfig {
     /// ARP, IPv6, and other non-IPv4 frames from reaching etherparse.
     /// Set to `""` (empty string) to disable filtering (dev/test only).
     pub bpf_filter: String,
-    /// pcap snapshot length in bytes — only this many bytes of each frame are
-    /// copied to user space. 256 covers Ethernet, VLAN tags, IPv6 with extension
-    /// headers, and a full TCP header. Payload beyond it is cut off, which is
-    /// why parsing is lax.
+    /// How many bytes of each frame are copied to user space. 256 covers
+    /// Ethernet, VLAN tags, IPv6 with extension headers, and a TCP header.
+    /// The payload is cut off, which is why parsing is lax.
     pub snaplen: i32,
     /// pcap buffer flush timeout in milliseconds.
     /// Lower values reduce latency between packet arrival and delivery to Rust.
@@ -159,9 +91,7 @@ pub struct CaptureConfig {
 impl CaptureConfig {
     /// Production-ready defaults for a bridge interface.
     ///
-    /// # Arguments
-    /// * `interface`  — the name of the network bridge (e.g., `"br0"`).
-    /// * `victim_ip`  — victim's IP address as a string (e.g., `"10.0.0.3"`).
+    /// `interface` is the bridge name, `victim_ip` the protected host.
     #[allow(dead_code)]
     pub fn for_bridge(interface: &str, victim_ip: &str) -> Self {
         Self {
@@ -217,10 +147,6 @@ impl CaptureConfig {
     }
 }
 
-// -----------------------------------------------------------------------------
-// run_capture_thread — the capture thread entry point
-// -----------------------------------------------------------------------------
-
 /// Open a pcap capture on `cfg.interface`, apply the BPF filter, and forward
 /// parsed `PacketMeta` records into `tx` indefinitely.
 ///
@@ -229,17 +155,10 @@ impl CaptureConfig {
 ///   • A fatal pcap error occurs (logged at ERROR level).
 ///   • The `tx` sender is dropped (analysis thread exited).
 ///
-/// # Arguments
-/// * `cfg` — capture configuration (interface, BPF filter, pcap parameters).
-/// * `tx`  — the sending end of the crossbeam channel to the analysis thread.
-///
-/// # Errors
-/// Logs via the `log` crate and returns early on pcap open/filter failure.
-/// Individual malformed packets are logged at WARN and skipped.
+/// Returns early on a pcap open or filter failure. Malformed packets are
+/// counted and skipped.
 pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
-    // -------------------------------------------------------------------------
-    // Step 1: Open the pcap capture handle on the specified interface.
-    // -------------------------------------------------------------------------
+    // Open the pcap capture handle on the specified interface.
     info!("Capture: opening interface '{}' (promiscuous={})", cfg.interface, cfg.promiscuous);
 
     let mut cap = match Capture::from_device(cfg.interface.as_str()) {
@@ -271,9 +190,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         }
     };
 
-    // -------------------------------------------------------------------------
-    // Step 2: Apply the BPF filter (kernel-level, before Rust sees anything).
-    // -------------------------------------------------------------------------
+    // Apply the BPF filter (kernel-level, before Rust sees anything).
     if !cfg.bpf_filter.is_empty() {
         info!("Capture: applying BPF filter: '{}'", cfg.bpf_filter);
         if let Err(e) = cap.filter(&cfg.bpf_filter, true) {
@@ -281,7 +198,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             return;
         }
     } else {
-        warn!("Capture: no BPF filter applied — all traffic will be processed (dev mode)");
+        warn!("Capture: no BPF filter applied, all traffic will be processed (dev mode)");
     }
 
     // Log the datalink type (e.g. ETHERNET, LINUX_SLL) to detect parsing issues
@@ -293,9 +210,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
 
     info!("Capture: capture loop started on '{}'", cfg.interface);
 
-    // -------------------------------------------------------------------------
-    // Step 3: Main capture loop — runs until the channel closes or pcap errors.
-    // -------------------------------------------------------------------------
+    // Runs until the channel closes or pcap errors.
     let mut packet_count: u64 = 0;
     let mut total_raw_packets: u64 = 0;
     let mut total_timeouts: u64 = 0;
@@ -326,8 +241,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             }
             Err(pcap::Error::TimeoutExpired) => {
                 total_timeouts += 1;
-                // No packets arrived within the flush window — normal during
-                // quiet periods. Loop immediately to poll again.
+                // Nothing arrived within the flush window. Normal when quiet.
                 continue;
             }
             Err(e) => {
@@ -337,12 +251,10 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         };
 
         // Record arrival time as early as possible after the kernel hands us
-        // the frame — before etherparse parsing adds any latency.
+        // the frame, before parsing adds any latency.
         let arrived_at = Instant::now();
 
-        // -------------------------------------------------------------------------
-        // Step 4: Parse Ethernet frame headers with etherparse (zero-copy).
-        // -------------------------------------------------------------------------
+        // Parse Ethernet frame headers with etherparse (zero-copy).
         // Lax parsing: snaplen cuts the payload off, so the length recorded in
         // the IP header is larger than the bytes we hold. A strict parse rejects
         // the whole frame for that; a lax one keeps the headers and reports the
@@ -364,9 +276,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             truncated += 1;
         }
 
-        // -------------------------------------------------------------------------
-        // Step 5: Extract source and destination IPs from the IP header.
-        // -------------------------------------------------------------------------
+        // Extract source and destination IPs from the IP header.
         let (src_ip, dst_ip, ip_num) = match sliced.net {
             Some(LaxNetSlice::Ipv4(ref ipv4)) => {
                 (IpAddr::from(ipv4.header().source_addr()), IpAddr::from(ipv4.header().destination_addr()), ipv4.header().protocol())
@@ -374,7 +284,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             Some(LaxNetSlice::Ipv6(ref ipv6)) => {
                 (IpAddr::from(ipv6.header().source_addr()), IpAddr::from(ipv6.header().destination_addr()), ipv6.header().next_header())
             }
-            // Non-IP frame (ARP, etc.) — ignore.
+            // Not an IP frame.
             _ => {
                 non_ip += 1;
                 continue;
@@ -399,22 +309,18 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
 
         packet_count += 1;
 
-        // -------------------------------------------------------------------------
-        // Step 6: Forward metadata to the analysis thread via the bounded channel.
-        // -------------------------------------------------------------------------
+        // Forward metadata to the analysis thread via the bounded channel.
         let meta = PacketMeta { direction: cfg.direction, src_ip, dst_ip, arrived_at, protocol, dst_port };
 
-        // `send()` blocks if the channel is full (backpressure).  This is the
-        // correct behaviour — it prevents unbounded memory growth under flood.
-        // `send_timeout` with a short deadline prevents a deadlock if the
-        // analysis thread has crashed; we log and break instead.
+        // Blocks when the channel is full, which is what keeps memory bounded
+        // under a flood.
         if tx.send(meta).is_err() {
-            // The receiver (analysis thread) has been dropped — time to exit.
+            // The analysis thread is gone.
             info!("Capture: analysis channel closed; capture thread exiting after {packet_count} packets");
             break;
         }
 
-        // Periodic progress log (every 10,000 packets) — visible in dev mode.
+        // Progress at debug level.
         if packet_count % 10_000 == 0 {
             debug!("Capture: {} packets forwarded to analysis thread", packet_count);
         }

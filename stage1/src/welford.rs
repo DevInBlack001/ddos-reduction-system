@@ -1,47 +1,23 @@
-// =============================================================================
-// welford.rs — Welford Online Variance Accumulator
-// =============================================================================
-//
-// PURPOSE
-// -------
-// Tracks a running mean (μ) and variance (σ²) for a stream of scalar samples
-// using Welford's numerically stable one-pass algorithm.
-//
-// WHY WELFORD, NOT NAIVE VARIANCE?
-// ---------------------------------
-// Naïve running variance accumulates `sum` and `sum_of_squares`, then computes
-// `variance = (sum_sq - sum²/n) / n`. On large streams this causes catastrophic
-// cancellation — two huge numbers almost cancelling, leaving a near-zero
-// (or even negative) result. Welford avoids this by working only with small
-// deltas relative to the running mean.
-//
-// THE TWO-DELTA TRICK (why delta and delta2 both exist)
-// -------------------------------------------------------
-//   delta  = x - mean_OLD   ← surprise relative to where we *were*
-//   mean  += delta / n       ← centre shifts toward x
-//   delta2 = x - mean_NEW   ← surprise relative to where we *are now*
-//   M2    += delta * delta2  ← geometric cross-product keeps M2 exact
-//
-// Multiplying delta×delta2 algebraically transitions the sum-of-squares from
-// the old mean to the new mean in a single step with no stored history.
-//
-// RECENCY (CAPPED n)
-// -------------------
-// A gateway running for days would accumulate n → ∞. When n is huge the nudge
-// factor (delta/n) approaches zero and the mean becomes frozen — the algorithm
-// can't react to a new DDoS pattern quickly enough. To preserve recency memory
-// the accumulator caps `n` at `max_n`. Once capped every new sample still runs
-// the full Welford update but the denominator stays ≤ max_n so the mean keeps
-// tracking recent drift.
-//
-// GOLDEN TEST VECTOR (must reproduce exactly)
-// --------------------------------------------
-//   Input: [4.0, 7.0, 13.0, 16.0] → mean = 10.0, variance ≈ 30.0
-// =============================================================================
+//! Running mean and variance over a stream of samples.
+//!
+//! Accumulating a sum and a sum of squares and subtracting them loses all
+//! precision on a long stream: the two terms nearly cancel. This works with
+//! small deltas against the running mean instead.
+//!
+//!     delta  = x - old_mean
+//!     mean  += delta / n
+//!     delta2 = x - new_mean
+//!     M2    += delta * delta2
+//!
+//! Multiplying the two deltas carries the sum of squares from the old mean to
+//! the new one in one step, with no stored history.
+//!
+//! `n` is capped so the mean stays responsive. Without a cap `delta / n`
+//! approaches zero and the baseline freezes. Once capped, M2 decays too, which
+//! makes this a bounded memory approximation rather than exact variance.
+//!
+//! Golden vector: `[4, 7, 13, 16]` gives mean 10.0 and variance 30.0.
 
-/// How many Welford windows to accumulate before the running stats are
-/// considered "warm" enough to trust for anomaly decisions.
-/// During warm-up Layer 3 will not fire even if thresholds are breached.
 pub const WARMUP_WINDOWS: u64 = 200;
 
 /// Maximum `n` the accumulator will count to before capping.  
@@ -49,9 +25,7 @@ pub const WARMUP_WINDOWS: u64 = 200;
 /// (the "recency memory" cap described in the architecture notes).
 pub const MAX_N: u64 = 500;
 
-// -----------------------------------------------------------------------------
 // WelfordAccumulator
-// -----------------------------------------------------------------------------
 
 /// Incrementally tracks mean and variance for a stream of `f64` samples.
 ///
@@ -88,23 +62,23 @@ impl WelfordAccumulator {
     /// Everything else (variance, std_dev, threshold) is a derived read.
     pub fn update(&mut self, x: f64) {
         // Increment sample counter, but never exceed the recency cap.
-        // When we hit the cap we still run the full Welford update — the only
+        // At the cap the full update still runs. The only
         // difference is the nudge factor (delta/n) stays at 1/max_n, which
         // keeps the mean responsive to recent traffic rather than frozen at a
         // historical average built up over millions of windows.
         let at_cap = self.n >= self.max_n;
         self.n = (self.n + 1).min(self.max_n);
 
-        // Step 1 — First deviation: how surprised are we *before* the mean moves?
+        // Deviation before the mean moves.
         let delta = x - self.mean;
 
-        // Step 2 — Shift the centre toward x.
+        // Shift the centre toward x.
         self.mean += delta / self.n as f64;
 
-        // Step 3 — Second deviation: how far is x from the *new* centre?
+        // Deviation from the new centre.
         let delta2 = x - self.mean;
 
-        // Step 4 — Accumulate the cross-product into M2.
+        // Accumulate the cross product.
         // The product delta×delta2 is the exact correction needed to transition
         // the sum of squares from the old mean to the new mean without storing
         // any past data. A perfectly average sample contributes 0×0 = 0.
@@ -139,7 +113,7 @@ impl WelfordAccumulator {
 
     /// Upper anomaly boundary: μ + k·σ
     ///
-    /// Used by the EWMA rate accumulator — a spike *above* this boundary
+    /// Used for the rate. A value above this boundary
     /// means the packet rate has surged beyond normal levels.
     #[allow(dead_code)]
     pub fn upper_boundary(&self, k: f64) -> f64 {
@@ -148,7 +122,7 @@ impl WelfordAccumulator {
 
     /// Lower anomaly boundary: μ − k·σ
     ///
-    /// Used by the entropy accumulator — a drop *below* this boundary
+    /// Used for entropy. A value below this boundary
     /// means traffic sources have become abnormally concentrated (DDoS pattern).
     #[allow(dead_code)]
     pub fn lower_boundary(&self, k: f64) -> f64 {
@@ -176,9 +150,7 @@ impl Default for WelfordAccumulator {
     }
 }
 
-// =============================================================================
 // Unit Tests
-// =============================================================================
 
 #[cfg(test)]
 mod tests {

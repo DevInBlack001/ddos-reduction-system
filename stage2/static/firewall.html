@@ -165,7 +165,7 @@
                 </div>
                 <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
                     These are the deterministic thresholds that decide block vs. rate-limit vs. no
-                    action. Changes apply to the next window immediately -- no restart needed,
+                    action. Changes apply to the next window immediately, no restart needed,
                     except the rate-limit pps cap, which rewrites the live iptables hashlimit rule.
                 </div>
                 <form id="thresholdForm">
@@ -213,7 +213,7 @@
                         <div class="threshold-field">
                             <label for="th_hashlimit">Rate-limit cap (pps)</label>
                             <input type="number" id="th_hashlimit" class="form-input" step="1" min="1" required>
-                            <span class="threshold-hint">Kernel hashlimit cap -- changing this rewrites the live iptables rule.</span>
+                            <span class="threshold-hint">Kernel hashlimit cap, changing this rewrites the live iptables rule.</span>
                         </div>
                     </div>
                     <button type="submit" class="btn">Save Thresholds</button>
@@ -283,7 +283,7 @@
                     blBody.innerHTML = blHtml;
                 }
 
-                // Render rate limits -- distinct state from a hard block: same
+                // Render rate limits, distinct state from a hard block: same
                 // ipset-backed mechanism, accent color instead of danger so it's
                 // visually clear these IPs are throttled (50pps cap), not dropped.
                 const rlBody = document.getElementById('ratelimitedTableBody');
@@ -365,7 +365,7 @@
             }
         }
 
-        // ---- Enforcement thresholds ----
+        // Enforcement thresholds
         const thresholdFieldMap = {
             th_dom_block: 'dominant_ip_ratio_block_threshold',
             th_dom_extreme: 'dominant_ip_ratio_extreme_threshold',

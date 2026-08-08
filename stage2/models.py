@@ -1,5 +1,5 @@
 """
-models.py — Pydantic request payloads and the shared IP-address validator.
+models.py: Pydantic request payloads and the shared IP-address validator.
 
 Deliberately leaf-level: only needs the stdlib and fastapi/pydantic, so
 every route module can import from here without risking a cycle.
@@ -13,7 +13,7 @@ from pydantic import BaseModel, field_validator
 
 
 def _validate_host_ip(ip: str) -> str:
-    """Reject anything that isn't a single valid IPv4/IPv6 host address --
+    """Reject anything that isn't a single valid IPv4/IPv6 host address,
     no CIDR ranges, no garbage strings. Without this, an unvalidated value
     reaches ipset (a hash:ip set, which accepts CIDR shorthand and expands
     it to every host in the range) or gets rendered back into the
@@ -108,7 +108,7 @@ class CreateUserPayload(BaseModel):
     username: str
     password: str
     # The caller's own current password, re-checked server-side. No length
-    # validator here -- it's checked against an existing bcrypt hash, not a
+    # validator here, it's checked against an existing bcrypt hash, not a
     # new password, so it must accept whatever that account's password
     # already is.
     admin_password: str

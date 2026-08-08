@@ -1,37 +1,13 @@
 #!/usr/bin/env python3
 """
-stage2.py — Stage 2: Real-time IPC Classifier & Mitigation Engine + Web API Console
----------------------------------------------------------------------------------
-Listens on the Unix Domain Socket at /run/ddos_stage1/stage1.sock for 184-byte
-feature vectors containing window statistics and the dominant IP address.
-Predicts traffic class (0: Normal, 1: Flash Crowd, 2: DDoS) in real-time
-and triggers kernel-level mitigation via ipset for DDoS.
+Stage 2: classifier, enforcement, and the web console.
 
-This file is just the application entrypoint: it builds the FastAPI app,
-mounts static files, registers the auth middleware, wires in each feature
-area's router, starts the background threads, and initializes SQLite. The
-actual logic lives in:
+Listens on a Unix domain socket for feature vectors from Stage 1, predicts a
+traffic class, and triggers kernel level mitigation.
 
-  storage.py        generic JSON-file read/write helpers (no other deps)
-  state.py          shared in-memory state (sessions, metrics, blocklists)
-  config.py         path constants + enforcement_config.json load/save
-  models.py         Pydantic request payloads + shared IP validator
-  db.py             SQLite audit-log writers (logs, metrics_history)
-  enforcement.py    ipset/iptables control, block/ratelimit/unblock
-  auth.py           login/logout routes, session middleware, rate-limit
-  users.py          admin account management (add/delete/change password)
-  alerts.py         Discord webhook + SMTP email alerting
-  ipc_receiver.py   Unix socket listener thread + classification/tiers
-  reports.py        CSV/PDF incident report export routes
-  api.py            dashboard state/history/whitelist/victim/config routes
-
-Features integrated:
-- FastAPI backend serving multi-page HTML console under /static/
-- User Authentication (bcrypt) with 10-minute session limits and login throttling
-- Persistence of incident logs and Welford histories in SQLite
-- Active connection flow visualizer pulling from Stage 1 active flow logs
-- Dynamic kernel blocklist viewer and administrative whitelist manager
-- CSV/PDF Incident Report Exporter embedding base64-decoded Chart.js graphs
+This file is the entrypoint only. It builds the app, mounts static files,
+registers middleware, wires in each router, starts the background threads, and
+initialises the database. The logic lives in the modules it imports.
 """
 
 import os
@@ -54,9 +30,7 @@ from ipc_receiver import run_ipc_receiver
 from enforcement import run_ipset_monitor
 from storage import load_json_file
 
-# -----------------------------------------------------------------------------
 # FastAPI Core Web App
-# -----------------------------------------------------------------------------
 
 app = FastAPI(title="FLOD System Management Console", docs_url=None, redoc_url=None)
 
@@ -81,7 +55,7 @@ app.mount(
     name="static",
 )
 
-# Session-gating + request-size middleware (must attach to `app` directly --
+# Session-gating + request-size middleware (must attach to `app` directly,
 # middleware can't be registered on an APIRouter).
 app.middleware("http")(auth.auth_middleware)
 
@@ -91,9 +65,7 @@ app.include_router(reports.router)
 app.include_router(users.router)
 app.include_router(alerts.router)
 
-# -----------------------------------------------------------------------------
 # Main Application Launch Hook
-# -----------------------------------------------------------------------------
 
 def start_api_server():
     import uvicorn
@@ -103,7 +75,7 @@ def start_api_server():
         logging.info(f"[+] Starting Uvicorn API Server on port 8000 (HTTPS, cert: {config.TLS_CERT_PATH})...")
     else:
         logging.warning(
-            f"[!] No TLS certificate found at {config.TLS_CERT_PATH}/{config.TLS_KEY_PATH} -- "
+            f"[!] No TLS certificate found at {config.TLS_CERT_PATH}/{config.TLS_KEY_PATH}, "
             "falling back to plain HTTP. Login credentials and session cookies "
             "will travel unencrypted. Re-run install.sh or provide a cert/key pair."
         )
@@ -131,7 +103,7 @@ def main():
     if cursor.fetchone()[0] == 0:
         logging.warning(
             "[!] No administrator account exists. Run setup_admin.py before "
-            "starting the API server -- there is no default credential."
+            "starting the API server, there is no default credential."
         )
     conn.commit()
     conn.close()

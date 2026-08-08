@@ -412,7 +412,7 @@ body {
     margin-bottom: 16px;
 }
 
-/* Relies on Grid auto-placement (no explicit grid-row) -- an explicit
+/* Relies on Grid auto-placement (no explicit grid-row), an explicit
    row-span on the label sizes unpredictably. */
 .threshold-field {
     display: grid;
@@ -559,9 +559,9 @@ tr:hover td {
     to { transform: translateY(0); opacity: 1; }
 }
 
-/* ---------------------------------------------------------------------------
+/*
    Responsive layout
-   --------------------------------------------------------------------------- */
+*/
 
 /* Hamburger button. Injected into .top-bar-title by theme.js on every page
    that has a sidebar, so it doesn't have to be repeated in each page's
@@ -599,7 +599,7 @@ tr:hover td {
 
 @media (max-width: 900px) {
     /* Sidebar becomes an off-canvas drawer. It stays in the DOM (and keeps
-       its role as the nav) -- only its positioning changes, so no page
+       its role as the nav), only its positioning changes, so no page
        needs a second mobile-specific nav block. */
     .sidebar {
         position: fixed;

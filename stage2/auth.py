@@ -1,9 +1,9 @@
 """
-auth.py — Session auth: login/logout routes, the request-gating middleware,
+auth.py: Session auth: login/logout routes, the request-gating middleware,
 and login brute-force throttling.
 
 `auth_middleware` is a plain async function, not registered via a decorator
-here -- middleware can only be attached to the FastAPI `app` object itself,
+here, middleware can only be attached to the FastAPI `app` object itself,
 not to an APIRouter, so stage2.py imports this function and registers it
 with `app.middleware("http")(auth.auth_middleware)`.
 """
@@ -22,7 +22,7 @@ import state
 
 router = APIRouter()
 
-MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB -- comfortably above the largest legitimate body (a PDF export's two base64 chart images)
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB, comfortably above the largest legitimate body (a PDF export's two base64 chart images)
 
 
 def _login_locked_out(client_ip: str) -> bool:
@@ -125,7 +125,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         try:
             password_ok = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
         except ValueError:
-            # Hash isn't in bcrypt format -- almost always a pre-migration
+            # Hash isn't in bcrypt format, almost always a pre-migration
             # SHA-256 row. Re-run setup_admin.py to reset the account.
             logging.error(f"[-] Stored hash for user '{username}' isn't bcrypt-formatted; rerun setup_admin.py.")
             password_ok = False

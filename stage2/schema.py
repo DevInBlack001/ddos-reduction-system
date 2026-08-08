@@ -1,5 +1,5 @@
 """
-schema.py — the database layout, defined once.
+schema.py: the database layout, defined once.
 
 stage2.py and setup_admin.py both used to create these tables with their own
 CREATE TABLE statements, and the two disagreed: setup_admin.py declared

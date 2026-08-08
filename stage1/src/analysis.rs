@@ -1,57 +1,20 @@
-// =============================================================================
-// analysis.rs — Stage 1: Three-Layer Analysis Thread
-// =============================================================================
-//
-// PURPOSE
-// -------
-// This module owns the *analysis thread* — the brain of Stage 1. It receives
-// `PacketMeta` records from the capture thread via a crossbeam channel and
-// runs the complete three-layer pipeline:
-//
-//   Layer 1 (per packet)
-//   ---------------------
-//   • EWMA rate: update exponential smoothing with the new inter-arrival gap.
-//   • Entropy accumulator: record the source IP in the current window's HashMap.
-//
-//   Layer 2 (per 50th packet — window close)
-//   -----------------------------------------
-//   • Shannon entropy: compute the diversity scalar `h` from the IP HashMap,
-//     then clear the HashMap and reset the packet counter.
-//   • EWMA snapshot: read the current EWMA value as the rate scalar `r`.
-//     (The EWMA is NOT reset — it carries memory across windows by design.)
-//
-//   Layer 3 (per window, immediately after Layer 2)
-//   -------------------------------------------------
-//   • Feed `r` into the EWMA Welford accumulator (Welford_rate).
-//   • Feed `h` into the Entropy Welford accumulator (Welford_entropy).
-//   • Evaluate thresholds:
-//       rate anomaly    → `r > Welford_rate.mean + k·σ_rate`
-//       entropy anomaly → `h < Welford_entropy.mean − k·σ_entropy`
-//   • If either fires AND the accumulators are past warm-up:
-//       build a `FeatureVector` and send it to Stage 2 via `IpcSocket`.
-//
-// ANOMALY THRESHOLD MULTIPLIER (k)
-// ----------------------------------
-// The specification uses k = 2.0 (two standard deviations) as the default.
-// This constant is exposed so you can tune it without recompiling — pass it
-// through `AnalysisConfig`. A higher k reduces false positives at the cost
-// of slower detection; a lower k is more sensitive but may fire on flash crowds
-// before Stage 2 can distinguish them.
-//
-// WARM-UP PERIOD
-// ---------------
-// Welford's mean and variance are meaningless until enough windows have been
-// seen to build a real baseline (see `welford::WARMUP_WINDOWS`). During warm-up
-// Layer 3 will *not* fire even if a threshold is technically breached. The
-// gateway logs a "warm-up" message to console so you know when it goes live.
-//
-// DOMINANT IP RATIO
-// ------------------
-// On every window close the analysis thread also computes the fraction of
-// packets belonging to the single most-frequent source IP. This is included
-// in the `FeatureVector` sent to Stage 2 as an additional feature — useful for
-// the Random Forest classifier and for operator-level logging.
-// =============================================================================
+//! The analysis thread.
+//!
+//! Receives packet metadata from capture and runs three layers per protected
+//! host:
+//!
+//!   1. Per packet: record the source address in this window's histogram.
+//!   2. Per window: compute normalized entropy `h`, and the smoothed rate `r`
+//!      from the window's own elapsed time. Entropy resets each window, the
+//!      rate does not.
+//!   3. Per window: feed both into their accumulators and flag the window if
+//!      `r` is above its boundary or `h` below its.
+//!
+//! A flagged window, or the heartbeat, sends a feature vector to Stage 2.
+//!
+//! Nothing fires during warm-up, since mean and variance are meaningless on a
+//! handful of samples. `k` sets how far from the mean a boundary sits and is
+//! configurable: higher is less sensitive, lower fires on flash crowds.
 
 use crate::{
     capture::{Direction, PacketMeta, Protocol},
@@ -99,31 +62,21 @@ fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize) -> bool {
     packet_count >= MIN_PACKETS_FOR_ENTROPY && h < boundary
 }
 
-// -----------------------------------------------------------------------------
-// run_analysis_thread — the analysis thread entry point
-// -----------------------------------------------------------------------------
-
 /// Receive `PacketMeta` records from the capture thread and run the three-layer
 /// pipeline indefinitely.
 ///
 /// Intended to be called from within `std::thread::spawn()`. Returns when the
 /// `rx` channel closes (capture thread exited or an unrecoverable error occurred).
 ///
-/// # Arguments
-/// * `cfg` — analysis configuration (k, alpha, socket path).
-/// * `rx`  — the receiving end of the crossbeam channel from the capture thread.
+/// Returns when the channel closes.
 pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     info!(
         "Analysis: thread started | targets={:?} | k={} | α={}",
         cfg.victim_targets, cfg.k, cfg.ewma_alpha
     );
 
-    // Defensively ensure /run/ddos_stage1 exists -- this thread writes
-    // active_flows.json/.tmp and reads train_label from it, and /run is
-    // tmpfs (cleared every boot), so we can't assume install.sh or Stage
-    // 2 has already created it this session. Idempotent: if it already
-    // exists (usually created root-owned by Stage 2's socket bind path),
-    // this only touches the mode bits, not ownership.
+    // The runtime directory lives on tmpfs and is cleared every boot, so it
+    // cannot be assumed to exist. Only the mode is set, never ownership.
     {
         use std::os::unix::fs::PermissionsExt;
         if std::fs::create_dir_all("/run/ddos_stage1").is_ok() {
@@ -131,9 +84,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         }
     }
 
-    // -------------------------------------------------------------------------
     // Open the CSV training file if --train-csv was passed.
-    // -------------------------------------------------------------------------
     let mut csv_writer: Option<std::fs::File> = if let Some(ref path) = cfg.train_csv {
         let file_exists = std::path::Path::new(path).exists();
         match std::fs::OpenOptions::new().create(true).append(true).open(path) {
@@ -146,11 +97,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                          proto_ratio,dominant_ip_ratio,timestamp,label"
                     );
                 }
-                info!("Analysis: training mode ON — writing CSV to '{}' with label={}", path, cfg.train_label);
+                info!("Analysis: training mode on, writing CSV to '{}' with label={}", path, cfg.train_label);
                 Some(f)
             }
             Err(e) => {
-                warn!("Analysis: failed to open train-csv '{}': {e} — training disabled", path);
+                warn!("Analysis: failed to open train-csv '{}': {e}. Training disabled", path);
                 None
             }
         }
@@ -161,22 +112,16 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     // Keep track of target states per destination IP
     let mut targets_map: HashMap<IpAddr, TargetState> = HashMap::new();
 
-    // -------------------------------------------------------------------------
-    // V4: load any persisted baseline once at thread start. `None` (missing,
-    // corrupt, or past its TTL -- see persistence.rs) is treated identically
-    // to "no prior state": every target simply gets a fresh warm-up, same as
-    // before V4 existed.
-    // -------------------------------------------------------------------------
+    // A missing, corrupt, or expired baseline is treated as no prior state:
+    // the target gets a fresh warm-up.
     let persisted_state = persistence::load(&cfg.baseline_path, cfg.baseline_ttl_secs);
     let mut last_baseline_save = Instant::now();
 
     // IPC socket to Stage 2 (Python). Connected lazily on first anomaly.
     let mut ipc = IpcSocket::with_path(&cfg.socket_path);
 
-    // Active IP and port flow counters for Web UI telemetry. Keyed by
-    // (src_ip, dst_ip, dst_port, proto) -- dst_ip is what lets the dashboard's
-    // network map / traffic tab show device-to-device communication instead
-    // of just "this source is talking to someone."
+    // Flow counters for the dashboard. The destination is part of the key so
+    // the network map can show which host is talking to which.
     let mut flow_counts: HashMap<(IpAddr, IpAddr, u16, u8), u32> = HashMap::new();
     let mut last_flow_write = Instant::now();
 
@@ -184,10 +129,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
     let mut current_train_label = cfg.train_label;
     let mut last_label_check = Instant::now();
 
-    // -------------------------------------------------------------------------
     // Main loop. Driven by arriving packets, but also ticks on a timeout so
     // window closes keep happening when no traffic is arriving.
-    // -------------------------------------------------------------------------
     loop {
         // Which victims to evaluate for a window close this iteration. A
         // packet implicates only its own destination; a timeout tick has to
@@ -251,19 +194,15 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 
                 let target_state = targets_map.get_mut(&meta.dst_ip).unwrap();
 
-                // V5: egress packets only answer "how much got through". They never
-                // feed entropy, the IP histogram, the Welford baselines or the
-                // window-close decision -- detection stays driven purely by what
-                // arrived at the gateway, so mitigation can never influence the
-                // statistics used to decide on mitigation.
+                // Egress packets only answer how much got through. Keeping
+                // them out of the statistics stops past mitigation from
+                // shaping future decisions.
                 if meta.direction == Direction::Egress {
                     target_state.egress_packet_count += 1;
                     continue;
                 }
 
-                // =====================================================================
-                // LAYER 1 — Per-Packet Updates
-                // =====================================================================
+                // Layer 1: per packet.
                 target_state.entropy.add_packet(meta.src_ip);
                 *target_state.ip_counts.entry(meta.src_ip).or_insert(0) += 1;
                 target_state.window_packet_count += 1;
@@ -289,15 +228,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 None => continue,
             };
 
-            // =====================================================================
-            // LAYER 2 — Hybrid Window Close
-            // =====================================================================
-            // Close condition (OR-boundary):
-            //   Condition A: ≥0.5s elapsed AND ≥20 packets accumulated
-            //   Condition B: OR ≥1.0s elapsed (hard cap — ensures telemetry even in lulls)
-            //
-            // This prevents the Session-3 artifact (700 windows/sec under floods)
-            // while guaranteeing ≥1 row/sec during low-traffic transitions.
+            // Layer 2: close the window.
+            // Closes on 0.5s and 20 packets, or on 1.0s regardless. The
+            // packet condition stops a flood producing hundreds of windows a
+            // second; the time cap keeps telemetry flowing when traffic is
+            // light.
             let now_instant = Instant::now();
             let window_elapsed = now_instant.duration_since(target_state.last_window_close).as_secs_f64();
             let packet_count = target_state.entropy.packet_count();
@@ -313,7 +248,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             target_state.last_window_close = now_instant;
 
             // Rate = actual accumulated packets / measured wall-clock elapsed time.
-            // NOT a hardcoded WINDOW_SIZE — uses the real packet count and real duration.
+            // Uses the real packet count and duration, not a fixed window size.
             let window_rate = if window_elapsed > 0.0 {
                 packet_count as f64 / window_elapsed
             } else {
@@ -324,7 +259,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             // arriving traffic that never made it. Both are -1.0 when no egress
             // sensor is configured, so Stage 2 can tell "unknown" apart from a
             // real 0% drop rate. The ratio is clamped because the two sides are
-            // measured independently -- a packet can cross the egress boundary
+            // measured independently: a packet can cross the egress boundary
             // just after the ingress window closed, which would otherwise
             // produce a small negative drop.
             let (egress_rate, drop_ratio) = if cfg.egress_enabled {
@@ -362,12 +297,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             target_state.ewma.update_rate_with_alpha(window_rate, active_alpha);
 
             // Compute Normalized Shannon Entropy scalar h from the current window's
-            // IP distribution.  Returns [0.0, 1.0] — decoupled from window size.
+            // address distribution, normalized to [0.0, 1.0].
             // This call clears the internal HashMap and resets the packet counter.
             let h = target_state.entropy.compute_and_reset();
 
             // Read the current EWMA rate as a snapshot scalar r.
-            // The EWMA itself is NOT reset — it retains cross-window memory.
+            // The rate is not reset: it carries memory across windows.
             let r = target_state.ewma.snapshot();
 
             // Compute the dominant-IP ratio: fraction of packets from the busiest IP.
@@ -382,7 +317,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             };
 
             // Compute proto_ratio: fraction of window packets that were TCP.
-            // Range [0.0, 1.0] — a UDP/ICMP flood will push this toward 0.0.
+            // A UDP or ICMP flood pushes this toward 0.0.
             let total_tracked = (target_state.tcp_count + target_state.udp_count + target_state.icmp_count) as f64;
             let proto_ratio = if total_tracked > 0.0 {
                 target_state.tcp_count as f64 / total_tracked
@@ -412,10 +347,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 last_flow_write = now_instant;
             }
 
-            // Live label check (every 1s). Reads from /run/ddos_stage1, not
-            // /tmp -- /tmp is world-writable, which would let any local
-            // account silently flip the label written into the training CSV
-            // mid-capture and poison the dataset.
+            // The label file sits in a root owned directory so a local
+            // account cannot flip it mid capture and poison the dataset.
             if now_instant.duration_since(last_label_check).as_secs_f64() >= 1.0 {
                 if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label") {
                     if let Ok(parsed) = content.trim().parse::<u8>() {
@@ -438,11 +371,9 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             target_state.gre_count  = 0;
             target_state.esp_count  = 0;
 
-            // =====================================================================
-            // LAYER 3 — Anomaly Evaluation and Welford Update
-            // =====================================================================
+            // Layer 3: evaluate and update the baseline.
 
-            // Do not evaluate thresholds during the warm-up period — the Welford
+            // Nothing is evaluated during warm-up, because the
             // mean and variance are too noisy on a small sample to be trustworthy.
             if !target_state.welford_rate.is_warm() || !target_state.welford_entropy.is_warm() {
                 // During warm-up, always update the Welford trackers.
@@ -488,7 +419,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             if !target_state.warmup_completed_logged {
                 info!("Analysis [victim={}]: warm-up complete! Active monitoring started.", victim_ip);
                 if cfg.train_csv.is_some() {
-                    info!("Analysis [victim={}]: training mode active — now appending rows to CSV file.", victim_ip);
+                    info!("Analysis [victim={}]: training mode active, appending rows to the CSV.", victim_ip);
                 }
                 target_state.warmup_completed_logged = true;
             }
@@ -559,10 +490,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 
             // 3. Conditional Updates: Feed scalars into Welford accumulators ONLY if the window is clean
             // and we are not in cooldown. This keeps the baseline stable and prevents statistical explosion.
-            // Captured as a named flag (not just inlined) because V4's baseline
-            // persistence reuses this EXACT condition below to decide whether
-            // this window is eligible to be snapshotted to disk -- a save must
-            // never capture mid-attack state, see persistence.rs's module docs.
+            // Named because the baseline snapshot below reuses the same
+            // condition. A save must never capture mid attack state.
             let is_clean_window = anomaly_flags == 0 && target_state.cooldown_counter == 0;
             if is_clean_window {
                 // Outlier Rejection: Reject updates if the sample is > 5 standard deviations away.
@@ -658,13 +587,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                     warn!("Analysis: IPC send failed for window #{}[victim={}]; Stage 2 may be offline", target_state.window_id, victim_ip);
                 }
             } else {
-                // Normal window — no anomaly, no heartbeat. Log at debug level only.
+                // Nothing to report.
                 log::debug!("Window #{}[victim={}]: NORMAL | r={r:.1} | h={h:.4}", target_state.window_id, victim_ip);
             }
 
-            // =====================================================================
             // Training mode: append this window to the CSV regardless of anomaly.
-            // =====================================================================
             if let Some(ref mut f) = csv_writer {
                 let _ = writeln!(
                     f,
@@ -678,7 +605,6 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 );
             }
 
-            // -------------------------------------------------------------------
             // V4: periodically persist ALL targets' baselines, but only when
             // triggered from a clean window (is_clean_window, captured above --
             // the same gate that decides whether to feed Welford live). That
@@ -687,13 +613,9 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             // windows close in between, to bound both disk I/O and how much
             // state an unannounced power loss could ever cost (worst case: the
             // last SAVE_INTERVAL_SECS of drift, never the baseline itself).
-            // Placed at the very end of the loop body (not next to the
-            // cooldown-counter update above, where it conceptually belongs)
-            // because `target_state` -- a mutable borrow into `targets_map` --
-            // is still in use up through the CSV write just above; borrowing
-            // `targets_map` immutably here to snapshot every victim has to wait
-            // until after target_state's last use in this iteration.
-            // -------------------------------------------------------------------
+            // At the end of the loop body because snapshotting every target
+            // needs to borrow the map, which cannot happen while the mutable
+            // borrow above is still live.
             if is_clean_window && last_baseline_save.elapsed().as_secs_f64() >= persistence::SAVE_INTERVAL_SECS {
                 let mut snapshot = PersistedState::new();
                 for (ip, state) in targets_map.iter() {
@@ -705,15 +627,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             }
         }
 
-        // -------------------------------------------------------------------------
-    // The rx channel has closed — the capture thread has exited.
-    // -------------------------------------------------------------------------
+    // The channel closed, so capture has exited.
     info!("Analysis: channel closed. processed windows total. Exiting.");
 }
 
-/// Write the active network flows atomically to
-/// /run/ddos_stage1/active_flows.json (not /tmp -- same reasoning as
-/// ipc::SOCKET_PATH: /tmp is world-writable and this directory isn't).
+/// Write the active flows atomically. The directory is root owned, so a
+/// local account cannot feed the dashboard fabricated flows.
 fn write_active_flows(flow_counts: &HashMap<(IpAddr, IpAddr, u16, u8), u32>, timestamp: f64) {
     // Sort flows by packet count descending
     let mut flows: Vec<_> = flow_counts.iter().collect();
