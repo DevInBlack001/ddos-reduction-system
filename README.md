@@ -582,8 +582,23 @@ rustc --edition 2021 --test src/ewma.rs    -o /tmp/t && /tmp/t
 rustc --edition 2021 --test src/entropy.rs -o /tmp/t && /tmp/t
 ```
 
-**Test coverage:** 18 tests across Welford (6), EWMA (5), Entropy (7).  
+**Stage 1 coverage:** 31 tests across Welford, EWMA, entropy, IPC serialisation,
+baseline persistence, and the analysis loop.
 The golden vector `[4, 7, 13, 16]` → `mean=10.0, variance=30.0` is verified on every run.
+
+```bash
+cd stage2
+python3 -m unittest discover -s tests -t tests -q
+```
+
+**Stage 2 coverage:** 159 tests across storage, config, request models, the
+audit-log writers, enforcement, and authentication. Written against the
+standard library's `unittest`, so no extra dependency is needed.
+
+Enforcement tests replace `subprocess.run` with a recorder and assert on the
+`ipset`/`iptables` arguments that would have been executed, so running the
+suite never touches the host firewall. Every test redirects the paths and
+database it uses to temporary files.
 
 ---
 

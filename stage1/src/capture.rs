@@ -51,7 +51,7 @@
 // =============================================================================
 
 use crossbeam_channel::Sender;
-use etherparse::{SlicedPacket, InternetSlice, TransportSlice};
+use etherparse::{LaxNetSlice, LaxSlicedPacket, TransportSlice};
 use log::{debug, error, info, warn};
 use pcap::{Capture, Device};
 use std::{net::IpAddr, time::Instant};
@@ -139,7 +139,9 @@ pub struct CaptureConfig {
     /// Set to `""` (empty string) to disable filtering (dev/test only).
     pub bpf_filter: String,
     /// pcap snapshot length in bytes — only this many bytes of each frame are
-    /// copied to user space. 96 bytes is enough for Ethernet + IPv6 + TCP headers.
+    /// copied to user space. 256 covers Ethernet, VLAN tags, IPv6 with extension
+    /// headers, and a full TCP header. Payload beyond it is cut off, which is
+    /// why parsing is lax.
     pub snaplen: i32,
     /// pcap buffer flush timeout in milliseconds.
     /// Lower values reduce latency between packet arrival and delivery to Rust.
@@ -169,7 +171,7 @@ impl CaptureConfig {
             // reach etherparse, eliminating the skip storm seen under Locust load.
             // VLAN branch handles environments with 802.1Q-tagged frames.
             bpf_filter:  format!("(dst host {victim_ip} and ip) or (vlan and dst host {victim_ip} and ip)"),
-            snaplen:     256,   // Capture only header bytes (optimizes memory copy speed under flood)
+            snaplen:     256,   // Headers only; payload is not read.
             timeout_ms:  100,   // 100 ms flush window (prevents Linux TPACKET ring buffer packet drops)
             promiscuous: true,  // bridge must see all passing frames
             direction:   Direction::Ingress,
@@ -181,7 +183,7 @@ impl CaptureConfig {
         Self {
             interface:   interface.to_string(),
             bpf_filter:  String::new(),
-            snaplen:     256,   // Capture only header bytes (optimizes memory copy speed under flood)
+            snaplen:     256,   // Headers only; payload is not read.
             timeout_ms:  100,
             promiscuous: true,  // Enable promiscuous mode to capture bridged transit traffic
             direction:   Direction::Ingress,
@@ -301,6 +303,8 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
     // raw_captured and forwarded points at a cause instead of a mystery.
     let mut parse_failed: u64 = 0;
     let mut non_ip: u64 = 0;
+    // Frames whose payload was cut short by snaplen. Counted, not discarded.
+    let mut truncated: u64 = 0;
     let mut last_status_time = Instant::now();
 
     loop {
@@ -308,8 +312,8 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         let now = Instant::now();
         if now.duration_since(last_status_time).as_secs() >= 5 {
             info!(
-                "Capture: status | interface={} | raw_captured={} | timeouts={} | parse_failed={} | non_ip={} | forwarded={}",
-                cfg.interface, total_raw_packets, total_timeouts, parse_failed, non_ip, packet_count
+                "Capture: status | interface={} | raw_captured={} | timeouts={} | parse_failed={} | non_ip={} | truncated={} | forwarded={}",
+                cfg.interface, total_raw_packets, total_timeouts, parse_failed, non_ip, truncated, packet_count
             );
             last_status_time = now;
         }
@@ -339,25 +343,32 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         // -------------------------------------------------------------------------
         // Step 4: Parse Ethernet frame headers with etherparse (zero-copy).
         // -------------------------------------------------------------------------
-        let sliced = match SlicedPacket::from_ethernet(raw.data) {
+        // Lax parsing: snaplen cuts the payload off, so the length recorded in
+        // the IP header is larger than the bytes we hold. A strict parse rejects
+        // the whole frame for that; a lax one keeps the headers and reports the
+        // shortfall in `stop_err`. Headers are all this sensor reads.
+        let sliced = match LaxSlicedPacket::from_ethernet(raw.data) {
             Ok(s)  => s,
             Err(_) => {
-                // Malformed or truncated frame (can happen on noisy links).
-                // Skip silently at debug level to avoid flooding logs under attack.
+                // Too short to hold an Ethernet header at all.
                 parse_failed += 1;
                 debug!("Capture: etherparse failed on packet #{packet_count}; skipping");
                 continue;
             }
         };
 
+        if sliced.stop_err.is_some() {
+            truncated += 1;
+        }
+
         // -------------------------------------------------------------------------
         // Step 5: Extract source and destination IPs from the IP header.
         // -------------------------------------------------------------------------
         let (src_ip, dst_ip, ip_num) = match sliced.net {
-            Some(InternetSlice::Ipv4(ref ipv4)) => {
+            Some(LaxNetSlice::Ipv4(ref ipv4)) => {
                 (IpAddr::from(ipv4.header().source_addr()), IpAddr::from(ipv4.header().destination_addr()), ipv4.header().protocol())
             }
-            Some(InternetSlice::Ipv6(ref ipv6)) => {
+            Some(LaxNetSlice::Ipv6(ref ipv6)) => {
                 (IpAddr::from(ipv6.header().source_addr()), IpAddr::from(ipv6.header().destination_addr()), ipv6.header().next_header())
             }
             // Non-IP frame (ARP, etc.) — ignore.
