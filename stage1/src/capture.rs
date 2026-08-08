@@ -357,7 +357,10 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             }
         };
 
-        if sliced.stop_err.is_some() {
+        // `incomplete` means the IP header declared more bytes than the slice
+        // holds, i.e. snaplen cut the payload. Expected, and counted only to
+        // show the headers still parsed.
+        if sliced.net.as_ref().and_then(|n| n.ip_payload_ref()).is_some_and(|p| p.incomplete) {
             truncated += 1;
         }
 
