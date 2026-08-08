@@ -182,3 +182,11 @@ next_focus_items.txt
 update_log.txt
 way_forward.txt
 check this.txt
+# Stage 2 runtime state and per-deployment config. Generated on first run;
+# alerts_config.json holds the Discord webhook URL and SMTP app password.
+stage2/stage2.db
+stage2/victims.json
+stage2/whitelist.json
+stage2/shared_ips.json
+stage2/enforcement_config.json
+stage2/alerts_config.json

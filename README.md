@@ -22,7 +22,12 @@ Most DDoS mitigation systems use **static thresholds** — hard-coded numbers li
 
 This project solves that by building a gateway that **learns what your normal traffic looks like** and adapts its detection boundaries accordingly. It can tell the difference between a DDoS flood and a flash crowd (a legitimate traffic surge) without a human adjusting thresholds.
 
-**Scope:** this project targets **Layer 4 volumetric floods** — SYN floods, UDP floods, ICMP floods, and similar high-volume attacks that are distinguishable from packet headers alone (rate, source-IP entropy, protocol distribution, dominant-source concentration). It does not parse or inspect application-layer (L7) content, so it is not designed to catch low-and-slow request floods, connection-exhaustion attacks (e.g. Slowloris-style), or any attack that mimics legitimate traffic at the packet-rate level but is malicious at the request level — those require request-level analysis, which is outside what Stage 1's header-only feature set can observe.
+**Scope:** this project targets **Layer 4 volumetric floods** that are distinguishable from packet headers alone, using rate, source-IP entropy, protocol distribution, and dominant-source concentration. In practice that means floods which are both high-volume and **concentrated**: SYN, UDP, or ICMP floods arriving from a bounded set of real source addresses, including reflected and amplified traffic returning from a finite set of reflectors.
+
+Two classes are explicitly **not** covered:
+
+- **Randomized-source spoofing.** Forging a fresh source address per packet inverts the signature the detector looks for, raising entropy instead of lowering it. See "Shannon Source-IP Entropy" below for why, and what it would take to fix. Planned for V7.
+- **Application-layer attacks.** No L7 content is parsed, so low-and-slow request floods, connection-exhaustion attacks such as Slowloris, and anything that looks ordinary at the packet level but is malicious at the request level are outside what a header-only feature set can observe.
 
 The system is split into two stages:
 
@@ -178,7 +183,16 @@ Where `p(xᵢ)` is the fraction of packets in the current window that came from 
 | Packets somewhat mixed | **~0.50** |
 | Packets evenly spread across all IPs | **1.00** (maximum diversity — normal/flash crowd) |
 
-**Why entropy *drops* during DDoS:** A flood from a spoofed or single source concentrates packets toward one IP, collapsing the distribution and dragging entropy toward zero. Layer 3 fires when entropy drops *below* `μ − k·σ` rather than above it.
+**Why entropy *drops* during a concentrated flood:** when a small number of sources produce most of the traffic, the distribution collapses and entropy falls toward zero. Layer 3 fires when entropy drops *below* `μ − k·σ` rather than above it.
+
+**Spoofing moves entropy the other way, and that is a real gap.** A randomized-source flood, which is what most SYN and UDP floods look like in practice, forges a different source address on nearly every packet. That *raises* source-IP entropy toward 1.0 and drives `dominant_ip_ratio` toward 0, so it presents as the opposite of the signature above. Two consequences follow, and neither is hypothetical:
+
+- The entropy alarm cannot fire, because entropy is high rather than low.
+- The rate alarm is actively harder to trip. The entropy-guided scaling in `analysis.rs` widens `k` when entropy is high, so a high-entropy flood raises its own detection threshold. Only the fixed `block_sigma_multiplier` emergency bar (default 10σ) still applies.
+
+A randomized-source flood below that emergency bar will therefore tend to be classified Flash Crowd rather than DDoS. Enforcement would not help much even if it were: blocking or rate-limiting forged addresses punishes whoever really owns them and leaves the attacker untouched, since the attacker is not at those addresses.
+
+**What this means for scope.** Floods that are volumetric *and* concentrated (a bounded set of real sources, a reflected or amplified flood arriving from a finite set of reflectors) are handled. Randomized-source spoofing is **not currently detected**, despite being Layer 4 volumetric. Closing it needs features this pipeline does not extract, since every one of them is invariant under source-IP forgery: source-port entropy, TTL variance, and TCP option fingerprint diversity. That work is V7, not a configuration change.
 
 **Critical behaviour — entropy resets every window.** The HashMap is cleared after each computation. Entropy measures the diversity of *this* specific window, not a historical trend. The long-run trend is tracked by the Welford accumulator.
 
@@ -266,10 +280,10 @@ Our Rust tool applies the filter `"dst host <victim_ip> or (vlan and dst host <v
 *   **The Tech:** The user-space filter compiles to BPF bytecode. The Linux kernel verifies the code for safety and uses a **Just-In-Time (JIT) compiler** to turn it into native x86 machine instructions. Packets matching the filter are cloned to our raw socket; everything else is discarded instantly in the kernel network driver.
 
 #### High-Speed Capture Performance Tuning
-To survive high-rate volumetric floods (1,000,000+ pps) without crashing the virtual machine, the capture module is tuned with three critical parameters:
-1.  **Reduced Snaplen (`snaplen = 256` bytes):** Instead of copying the full 64KB frame buffer to user-space (which saturates the CPU cache and memory bus), we only copy the first 256 bytes. This is more than enough to capture the Ethernet, VLAN, IPv4/IPv6, and TCP/UDP headers, reducing memory transfer costs by **99.6%**.
+To keep up under load without dropping packets, the capture module is tuned with three parameters:
+1.  **Reduced Snaplen (`snaplen = 256` bytes):** Instead of copying the full frame to user-space, only the first 256 bytes are copied. That covers the Ethernet, VLAN, IPv4/IPv6, and TCP/UDP headers, which is all the analysis layer reads.
 2.  **Immediate Mode (`immediate_mode = true`):** Bypasses the kernel's internal buffering window. Packets are flushed to the socket buffer instantly rather than waiting for block retirement.
-3.  **Scaled Socket Buffer (`buffer_size = 128MB`):** Pins a 128MB ring buffer in kernel memory to act as a runway. If the Rust application experiences a brief context switch stall, the kernel can buffer up to ~1.3 million packet headers (at 96 bytes each) without drops.
+3.  **Scaled Socket Buffer (`buffer_size = 128MB`):** Pins a 128MB ring buffer in kernel memory to act as a runway. At a 256-byte snaplen that holds roughly 500,000 captured headers, so a brief scheduling stall in the Rust process does not cost packets.
 
 ---
 
@@ -279,11 +293,13 @@ One might ask: *If the Rust pre-filter is running in user-space anyway, why not 
 
 The answer lies in the **Global Interpreter Lock (GIL)** and **runtime overhead**:
 
-*   **Python's Limitations under Flood:** Python is interpreted, garbage-collected, and bound by the GIL (only one thread can execute bytecode at a time, even on multi-core systems). Creating objects and running Scapy/PyShark parsers on every incoming packet caps Python's throughput at **~20,000 packets/second** before hitting 100% CPU.
-*   **Rust's Efficiency:** Rust compiles to native code, has no garbage collector, and has zero-cost abstractions. Zero-copy parsing allows it to handle **2,000,000+ packets/second** on a single thread.
+*   **Python's Limitations under Flood:** Python is interpreted, garbage-collected, and bound by the GIL (only one thread can execute bytecode at a time, even on multi-core systems). Allocating an object and running a Scapy or PyShark parser for every arriving packet puts a hard ceiling on per-packet throughput, and that ceiling is reached long before a volumetric flood is exhausted.
+*   **Rust's Efficiency:** Rust compiles to native code, has no garbage collector, and parses packet headers without copying them. The per-packet path has no allocation and no interpreter in it.
 *   **The Division of Labor:**
-    *   **Stage 1 (Rust):** Handles the high-speed volumetric shield (1,000,000+ pps). It condenses millions of raw packets into a single summary `FeatureVector` per window.
-    *   **Stage 2 (Python):** Wakes up to process only **1 Feature Vector per window** (a tiny, low-rate stream of ~10–100 data points per second). At this volume, Python's performance overhead is negligible, allowing us to leverage Python's powerful machine learning libraries (`scikit-learn`, `pandas`) safely.
+    *   **Stage 1 (Rust):** Sees every packet. It condenses a window's worth of traffic into a single summary `FeatureVector`.
+    *   **Stage 2 (Python):** Sees **one Feature Vector per window**, roughly one to two per second per victim. At that rate Python's per-object overhead is irrelevant, which is what makes it safe to use `scikit-learn` and `pandas` here.
+
+No throughput figures are quoted because none have been measured on this system. The argument above is architectural: the per-packet path avoids the interpreter and the allocator entirely, and the classifier only ever sees aggregates.
 
 ---
 
@@ -699,7 +715,7 @@ The planned evolutionary milestones for future gateway iterations are structured
 | **V3 (Completed)** | **Multi-Target Scaling** | Subnet-wide protection | Track and defend multiple victim IPs concurrently on a single ingress interface, keeping separate statistical baselines. |
 | **V4 (Implemented)** | **Baseline Persistence** | Persistent safe boundaries | Save and load Welford baselines across reboots to prevent baseline poisoning during active attack restarts. See `stage1/src/persistence.rs`. |
 | **V5 (Implemented)** | **Egress Processing** | Measure what actually gets through | Second capture thread on the egress interface. Comparing per-victim ingress vs. egress rates measures real drop effectiveness empirically, instead of inferring it from enforcement actions alone. Also covers NAT-safe enforcement: sources marked as shared/NAT egress points are rate-limited but never hard-blocked. |
-| **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port packet sniffer and early drop logic to eBPF/XDP driver path using Aya in Rust, scaling handling capacity to 10M+ pps. |
+| **V6** | **XDP/eBPF Acceleration** | Kernel-space filtering | Port the packet sniffer and early-drop logic to the eBPF/XDP driver path using Aya in Rust, so filtering happens before the kernel builds an `skb` for each packet. |
 | **V7** | **Ensemble Intelligence** | Complex classifier models | Deploy a multi-model voting ensemble layer to resolve advanced evasion/stealth attacks while maintaining low false positives. Adds source-port entropy, TTL variance, and TCP fingerprint diversity as features, so large NAT/CGNAT crowds stop reading as single-source floods. |
 | **V8** | **Automated Playbooks** | Detailed Incident Response Plan | Generate dynamic, granular incident reports and execute automated multi-stage incident response playbooks during severe breaches. |
 | **V9** | **Federated Peer Signalling** | Mitigate at the source, not the symptom | Cooperating gateways exchange authenticated, **advisory** reports ("traffic from an address you own is behaving like an attacker") so the peer — the only party that can see individual hosts behind its own NAT — investigates and acts locally, instead of the receiving gateway blackholing a shared egress IP and cutting off every legitimate user behind it. Conceptually aligned with IETF DOTS (RFC 8782/8783). Requires mutual authentication and a static peer/range registry; applies only within a federation of cooperating gateways, not to arbitrary internet sources. |

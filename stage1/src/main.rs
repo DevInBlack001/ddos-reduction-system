@@ -313,7 +313,7 @@ impl CliArgs {
 
 fn print_usage(bin: &str) {
     eprintln!(
-        r"\nUsage: {bin} --interface <IFACE> [--victim-ips <IP1,IP2,...> | --victim-subnet <SUBNET>] [OPTIONS]\n"
+        "\nUsage: {bin} --interface <IFACE> [--victim-ips <IP1,IP2,...> | --victim-subnet <SUBNET>] [OPTIONS]\n"
     );
     eprintln!("Options:");
     eprintln!("  --interface  <IFACE>   Ingress interface to sniff (e.g., br0)");

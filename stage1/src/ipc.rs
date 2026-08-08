@@ -59,9 +59,8 @@
 //   1. Python Stage 2 creates the socket file and calls accept().
 //   2. Rust Stage 1 connects to it after its warm-up phase ends.
 //
-// The socket path is intentionally in /tmp so no special permissions are
-// needed in a dev/lab environment.  A production deployment should use
-// /run/<service>/ with appropriate systemd-tmpfiles permissions.
+// The socket lives in /run/ddos_stage1/, a root-owned directory shared with
+// Stage 2 through the ddos-ipc group. See SOCKET_PATH below.
 // =============================================================================
 
 use byteorder::{LittleEndian, WriteBytesExt};

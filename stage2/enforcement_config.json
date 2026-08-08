@@ -1,1 +1,0 @@
-{"dominant_ip_ratio_block_threshold": 0.4, "dominant_ip_ratio_extreme_threshold": 0.75, "block_rate_floor_pps": 300.0, "ratelimit_rate_floor_pps": 50.0, "block_sigma_multiplier": 10.0, "block_hysteresis_windows": 2, "block_duration_seconds": 3600, "ratelimit_duration_seconds": 3600, "ratelimit_hashlimit_pps": 50}

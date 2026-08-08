@@ -323,5 +323,7 @@ def get_blocked_ips():
     return _get_ipset_members("ddos_blocklist")
 
 def get_ratelimited_ips():
-    """Extract rate-limited (50pps cap) IPs and remaining timeouts directly from kernel."""
+    """Extract throttled IPs and remaining timeouts directly from kernel.
+
+    The cap itself is operator-configurable (ratelimit_hashlimit_pps)."""
     return _get_ipset_members("ddos_ratelimit")

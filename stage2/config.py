@@ -64,6 +64,14 @@ def get_sniffer_interfaces():
     return ingress, egress
 
 
+def tls_enabled():
+    """True when both TLS files are present, so the server will serve HTTPS.
+
+    Checked at request time rather than cached, because install.sh may
+    generate the certificate after the process has already started."""
+    return os.path.exists(TLS_CERT_PATH) and os.path.exists(TLS_KEY_PATH)
+
+
 TLS_CERT_PATH = os.environ.get("TLS_CERT_PATH", "/etc/ddos_stage2/tls/cert.pem")
 TLS_KEY_PATH = os.environ.get("TLS_KEY_PATH", "/etc/ddos_stage2/tls/key.pem")
 

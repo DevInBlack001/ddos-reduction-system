@@ -2,7 +2,7 @@
 """
 stage2.py — Stage 2: Real-time IPC Classifier & Mitigation Engine + Web API Console
 ---------------------------------------------------------------------------------
-Listens on the Unix Domain Socket at /run/ddos_stage1/stage1.sock for 168-byte
+Listens on the Unix Domain Socket at /run/ddos_stage1/stage1.sock for 184-byte
 feature vectors containing window statistics and the dominant IP address.
 Predicts traffic class (0: Normal, 1: Flash Crowd, 2: DDoS) in real-time
 and triggers kernel-level mitigation via ipset for DDoS.
@@ -79,7 +79,7 @@ app.include_router(alerts.router)
 def start_api_server():
     import uvicorn
     ssl_kwargs = {}
-    if os.path.exists(config.TLS_CERT_PATH) and os.path.exists(config.TLS_KEY_PATH):
+    if config.tls_enabled():
         ssl_kwargs = {"ssl_certfile": config.TLS_CERT_PATH, "ssl_keyfile": config.TLS_KEY_PATH}
         logging.info(f"[+] Starting Uvicorn API Server on port 8000 (HTTPS, cert: {config.TLS_CERT_PATH})...")
     else:

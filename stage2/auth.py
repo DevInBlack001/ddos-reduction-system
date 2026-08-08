@@ -135,12 +135,17 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             state.active_sessions[session_token] = {"username": username, "last_active": time.time()}
             state.failed_login_attempts.pop(client_ip, None)
             response = RedirectResponse(url="/static/index.html", status_code=status.HTTP_303_SEE_OTHER)
+            # `secure` only when the server is actually serving HTTPS. A
+            # secure cookie is never sent over plain HTTP, so setting it
+            # unconditionally would lock out any deployment without a
+            # certificate.
             response.set_cookie(
                 key="session_id",
                 value=session_token,
                 max_age=600,
                 httponly=True,
-                samesite="lax"
+                samesite="lax",
+                secure=config.tls_enabled()
             )
             return response
         else:

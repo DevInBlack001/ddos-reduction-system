@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/DevInBlack001/ddos-reduction-system/security/advisories/new
+    about: Please report vulnerabilities privately here, not as a public issue.
+  - name: Security policy
+    url: https://github.com/DevInBlack001/ddos-reduction-system/blob/master/SECURITY.md
+    about: What is in scope, and what to include in a report.
