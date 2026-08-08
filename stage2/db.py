@@ -17,13 +17,28 @@ import config
 import state
 
 
-def log_incident(timestamp, src_ip, classification, victim_ip="Unknown"):
+def log_incident(timestamp, src_ip, classification, victim_ip="Unknown", src_rate=None):
+    """Record one enforcement action.
+
+    `src_rate` is that source's own packet rate. It used to be filled from
+    state.last_metrics["ewma_rate"], which is the victim's aggregate rate
+    for the window, so every source actioned in the same window was logged
+    with the flood's entire volume. A Tier 4 fallback rate-limiting fifty
+    sources produced fifty identical rows, each claiming the full attack
+    rate.
+
+    Entropy stays a window-level value on purpose: it describes the source
+    distribution the decision was made against, not anything per-source.
+
+    None means the rate is genuinely unknown, e.g. an operator blocking an
+    address by hand, and is stored as NULL rather than a misleading number.
+    """
     try:
         conn = sqlite3.connect(config.DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO logs (timestamp, src_ip, dst_ip, proto, rate, entropy, classification) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (timestamp, src_ip, victim_ip, "MIXED", state.last_metrics.get("ewma_rate", 0.0), state.last_metrics.get("entropy", 0.0), classification)
+            (timestamp, src_ip, victim_ip, "MIXED", src_rate, state.last_metrics.get("entropy", 0.0), classification)
         )
         conn.commit()
         conn.close()

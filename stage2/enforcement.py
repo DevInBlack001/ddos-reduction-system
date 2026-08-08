@@ -138,7 +138,7 @@ def setup_ipset():
         logging.warning(f"[-] Could not setup/verify ipset or iptables: {e}")
 
 
-def block_ip(ip, duration=3600, victim_ip="Unknown"):
+def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
     """Add offending IP to ddos_blocklist."""
     now = time.time()
 
@@ -163,7 +163,7 @@ def block_ip(ip, duration=3600, victim_ip="Unknown"):
                 f"[NAT-Safe] {ip} is marked as a shared/NAT egress point -- "
                 f"rate-limiting instead of hard-blocking."
             )
-            ratelimit_ip(ip, duration=duration, victim_ip=victim_ip)
+            ratelimit_ip(ip, duration=duration, victim_ip=victim_ip, src_rate=src_rate)
             return
 
         res = subprocess.run(
@@ -173,7 +173,7 @@ def block_ip(ip, duration=3600, victim_ip="Unknown"):
         )
         if res.returncode == 0:
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Blocked offending IP {ip} (duration: {duration}s)")
-            db.log_incident(now, ip, "Blocked", victim_ip)
+            db.log_incident(now, ip, "Blocked", victim_ip, src_rate)
         else:
             logging.error(f"[-] Failed to block IP {ip}: {res.stderr.strip()}")
     except Exception as e:
@@ -181,7 +181,7 @@ def block_ip(ip, duration=3600, victim_ip="Unknown"):
     finally:
         state.recently_blocked[ip] = now
 
-def ratelimit_ip(ip, duration=3600, victim_ip="Unknown"):
+def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
     """Add offending IP to ddos_ratelimit set (enforces the configured
     ratelimit_hashlimit_pps cap, default 50pps)."""
     now = time.time()
@@ -205,7 +205,7 @@ def ratelimit_ip(ip, duration=3600, victim_ip="Unknown"):
         if res.returncode == 0:
             rl_cap = config.get_enforcement_config()["ratelimit_hashlimit_pps"]
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Rate-limited offending IP {ip} (duration: {duration}s, {rl_cap}pps cap)")
-            db.log_incident(now, ip, "Rate Limited", victim_ip)
+            db.log_incident(now, ip, "Rate Limited", victim_ip, src_rate)
         else:
             logging.error(f"[-] Failed to rate-limit IP {ip}: {res.stderr.strip()}")
     except Exception as e:

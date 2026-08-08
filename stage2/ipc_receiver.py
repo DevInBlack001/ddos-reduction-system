@@ -323,7 +323,7 @@ def run_ipc_receiver():
                         # clearly drives the attack (both concentrated AND
                         # fast). Gated by hysteresis like every block action.
                         if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
-                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate)
                             _maybe_alert_block(ip_str, victim_ip_str, dominant_rate, cfg)
                             acted_on.add(ip_str)
 
@@ -344,7 +344,7 @@ def run_ipc_receiver():
                                         f"[!] Per-source block: {f_ip} sustaining {agg_rate:.2f} pps "
                                         f"(threshold {block_threshold:.2f}) across its active flows."
                                     )
-                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"])
+                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate)
                                     _maybe_alert_block(f_ip, victim_ip_str, agg_rate, cfg)
                                     acted_on.add(f_ip)
 
@@ -363,7 +363,7 @@ def run_ipc_receiver():
                             if f_ip in acted_on:
                                 continue
                             if agg_rate >= flow_threshold:
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate)
                                 acted_on.add(f_ip)
 
                         # Tier 4 -- aggregate cap fallback. Class-2 verdict but
@@ -384,8 +384,8 @@ def run_ipc_receiver():
                                 f"Victim {victim_ip_str}: DDoS verdict with no individually-attributable source -- "
                                 f"rate-limited {len(per_source_rate)} active flows as a fallback."
                             )
-                            for f_ip in per_source_rate:
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                            for f_ip, f_rate in per_source_rate.items():
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate)
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
@@ -399,7 +399,7 @@ def run_ipc_receiver():
                             f"[!] Legitimate flash crowd dominant IP {ip_str} rate highly elevated "
                             f"({dominant_rate:.2f} pps). Applying rate-limit ({cfg['ratelimit_hashlimit_pps']}pps cap) as precaution."
                         )
-                        enforcement.ratelimit_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"])
+                        enforcement.ratelimit_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=dominant_rate)
                 elif pred_class == 0:
                     # Log normal traffic
                     db.log_incident(timestamp, ip_str, "Normal", victim_ip_str)

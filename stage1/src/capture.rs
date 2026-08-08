@@ -297,6 +297,10 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
     let mut packet_count: u64 = 0;
     let mut total_raw_packets: u64 = 0;
     let mut total_timeouts: u64 = 0;
+    // Split out why frames never reach analysis, so a gap between
+    // raw_captured and forwarded points at a cause instead of a mystery.
+    let mut parse_failed: u64 = 0;
+    let mut non_ip: u64 = 0;
     let mut last_status_time = Instant::now();
 
     loop {
@@ -304,8 +308,8 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         let now = Instant::now();
         if now.duration_since(last_status_time).as_secs() >= 5 {
             info!(
-                "Capture: status | interface={} | raw_captured={} | timeouts={} | forwarded={}",
-                cfg.interface, total_raw_packets, total_timeouts, packet_count
+                "Capture: status | interface={} | raw_captured={} | timeouts={} | parse_failed={} | non_ip={} | forwarded={}",
+                cfg.interface, total_raw_packets, total_timeouts, parse_failed, non_ip, packet_count
             );
             last_status_time = now;
         }
@@ -340,6 +344,7 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             Err(_) => {
                 // Malformed or truncated frame (can happen on noisy links).
                 // Skip silently at debug level to avoid flooding logs under attack.
+                parse_failed += 1;
                 debug!("Capture: etherparse failed on packet #{packet_count}; skipping");
                 continue;
             }
@@ -356,7 +361,10 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
                 (IpAddr::from(ipv6.header().source_addr()), IpAddr::from(ipv6.header().destination_addr()), ipv6.header().next_header())
             }
             // Non-IP frame (ARP, etc.) — ignore.
-            _ => continue,
+            _ => {
+                non_ip += 1;
+                continue;
+            }
         };
 
         let dst_port = match sliced.transport {

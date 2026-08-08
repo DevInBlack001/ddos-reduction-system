@@ -191,7 +191,7 @@
                         <td style="font-weight: 600;">${FlodSafe.escapeHtml(l.src_ip)}</td>
                         <td>${FlodSafe.escapeHtml(l.dst_ip || 'Multiple')}</td>
                         <td>${FlodSafe.escapeHtml(l.proto || 'Mixed')}</td>
-                        <td>${l.rate.toFixed(1)} pps</td>
+                        <td>${l.rate === null || l.rate === undefined ? "n/a" : l.rate.toFixed(1) + " pps"}</td>
                         <td>${l.entropy.toFixed(4)} bits</td>
                         <td><span class="${badgeClass}">${FlodSafe.escapeHtml(l.classification)}</span></td>
                     </tr>`;

@@ -78,7 +78,7 @@ def export_csv():
                     _csv_safe(r[1]),
                     _csv_safe(r[2] or ""),
                     _csv_safe(r[3] or ""),
-                    f"{r[4]:.2f}",
+                    f"{r[4]:.2f}" if r[4] is not None else "",
                     f"{r[5]:.4f}",
                     r[6],
                 ])
@@ -505,7 +505,7 @@ def export_pdf(payload: PdfReportPayload, request: Request):
                 date_str,
                 r[1],
                 r[2],
-                f"{r[3]:.1f} pps",
+                f"{r[3]:.1f} pps" if r[3] is not None else "n/a",
                 f"{r[4]:.4f}",
                 r[5].upper()
             ])
