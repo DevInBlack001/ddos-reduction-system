@@ -1,5 +1,13 @@
 # Roadmap
 
+Milestones are numbered V1 upward. Release tags do not match those numbers:
+V1 through V5 shipped as 0.1 through 0.5, with patches up to 0.5.5 closing the
+0.x line. V6 ships as 1.0.0, because it changes the architecture rather than
+adding to it.
+
+Each milestone is developed on its own branch and merged into master once it
+works, and the tag follows the merge.
+
 ## Completed
 
 **V1, initial pipeline.** Feature extraction and the first dashboard.
