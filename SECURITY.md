@@ -10,13 +10,18 @@ Only the most recent tagged release is supported with fixes. Older tags exist
 for historical reference only.
 
 | Version | Supported          |
-| ------- | ------------------- |
-| 0.5.x   | :white_check_mark:  |
-| < 0.5   | :x:                  |
+| ------- | ------------------ |
+| 0.5.x   | :white_check_mark: |
+| < 0.5   | :x:                |
+
+The `v1` through `v5` branches are frozen mirrors of tags `0.1` through `0.5`,
+kept so each version stays browsable. They are **not** maintained lines and
+receive no fixes. Treat the tags as authoritative.
 
 ## Reporting a Vulnerability
 
-**Please do not open a public GitHub issue for security vulnerabilities.**
+**Please do not report security vulnerabilities through any public channel.**
+That includes GitHub Issues, Discussions, and the Wiki.
 
 Use GitHub's private vulnerability reporting instead:
 
@@ -41,8 +46,16 @@ In scope:
 Out of scope:
 - Vulnerabilities in third-party dependencies with no exploitable path through
   this project's usage of them (report those upstream instead).
-- Issues that require root/local access to the host the sensor already runs
-  on with elevated privileges.
+- Issues that require pre-existing **root** on the sensor host. If an attacker
+  already has root there, they control the enforcement layer outright.
+
+Explicitly **in** scope, despite the above: anything reachable by an
+*unprivileged local account* on the sensor host. Privilege boundaries on that
+host are part of the threat model, not outside it. Stage 1 runs as a dedicated
+service account holding only `CAP_NET_RAW`, the IPC socket and runtime files
+live in a root-owned directory rather than a world-writable one, and the
+credential store is mode 0600. Anything that defeats one of those separations
+is a valid report.
 
 ## Security Considerations for Deployment
 
