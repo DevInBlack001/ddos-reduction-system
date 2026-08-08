@@ -192,3 +192,6 @@ stage2/whitelist.json
 stage2/shared_ips.json
 stage2/enforcement_config.json
 stage2/alerts_config.json
+
+
+wiki/

@@ -9,6 +9,11 @@ import sqlite3
 import secrets
 import bcrypt
 
+import schema
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import schema
+
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "stage2.db"))
 
 def generate_random_password(length=16):
@@ -26,42 +31,7 @@ def hash_password(password):
 def init_db(db_path):
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Create tables
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY,
-        password_hash TEXT NOT NULL,
-        salt TEXT NOT NULL
-    )""")
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp REAL NOT NULL,
-        src_ip TEXT NOT NULL,
-        dst_ip TEXT,
-        proto TEXT,
-        rate REAL NOT NULL,
-        entropy REAL NOT NULL,
-        classification TEXT NOT NULL
-    )""")
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS metrics_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp REAL NOT NULL,
-        ewma_rate REAL NOT NULL,
-        entropy REAL NOT NULL,
-        mean_h REAL NOT NULL,
-        mean_r REAL NOT NULL,
-        sigma_h REAL NOT NULL,
-        sigma_r REAL NOT NULL,
-        k_multiplier REAL NOT NULL
-    )""")
-
-    conn.commit()
+    schema.apply(conn)
     conn.close()
     # Both stage1/stage2 systemd units run as root; without this the DB
     # inherits the process umask (often world-readable) and any local

@@ -44,6 +44,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
+import schema
 import auth
 import api
 import reports
@@ -124,19 +125,7 @@ def main():
     # module that opens its own connection. Without it a dashboard read and
     # a window write block each other.
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT, salt TEXT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, src_ip TEXT, dst_ip TEXT, proto TEXT, rate REAL, entropy REAL, classification TEXT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS metrics_history (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, ewma_rate REAL, entropy REAL, mean_h REAL, mean_r REAL, sigma_h REAL, sigma_r REAL, k_multiplier REAL, victim_ip TEXT)")
-
-    # Migration check: check if victim_ip column exists in metrics_history
-    cursor.execute("PRAGMA table_info(metrics_history)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "victim_ip" not in columns:
-        logging.info("[*] Migrating database: adding victim_ip column to metrics_history")
-        try:
-            cursor.execute("ALTER TABLE metrics_history ADD COLUMN victim_ip TEXT DEFAULT ''")
-        except Exception as me:
-            logging.error(f"[-] Migration failed: {me}")
+    schema.apply(conn)
 
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:

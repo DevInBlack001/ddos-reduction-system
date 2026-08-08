@@ -35,23 +35,18 @@ def temp_path(suffix=".json"):
 
 
 def make_logs_db():
-    """A throwaway SQLite file with the schema Stage 2 expects."""
+    """A throwaway SQLite file built from the real schema.
+
+    This used to carry its own copy of the CREATE TABLE statements, which is
+    how a constraint mismatch between setup_admin.py and stage2.py reached
+    production without a test failing. Tests now get whatever the running
+    system would get.
+    """
+    import schema
+
     path = temp_path(".db")
     conn = sqlite3.connect(path)
-    conn.execute(
-        """CREATE TABLE logs (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               timestamp REAL, src_ip TEXT, dst_ip TEXT,
-               proto TEXT, rate REAL, entropy REAL, classification TEXT)"""
-    )
-    conn.execute(
-        """CREATE TABLE metrics_history (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               timestamp REAL, ewma_rate REAL, entropy REAL,
-               mean_h REAL, mean_r REAL, sigma_h REAL, sigma_r REAL,
-               k_multiplier REAL, victim_ip TEXT)"""
-    )
-    conn.commit()
+    schema.apply(conn)
     conn.close()
     return path
 
