@@ -58,11 +58,26 @@ def make_logs_db():
 
 def unlink(*paths):
     for p in paths:
-        try:
-            if p and os.path.exists(p):
-                os.unlink(p)
-        except OSError:
-            pass
+        # WAL leaves a -wal and a -shm file beside the database.
+        for target in (p, f"{p}-wal", f"{p}-shm") if p else ():
+            try:
+                if os.path.exists(target):
+                    os.unlink(target)
+            except OSError:
+                pass
+
+
+def reset_db_module():
+    """Drop db.py's cached connection and purge timer.
+
+    db.py holds one connection and remembers when it last trimmed
+    metrics_history. Both outlive a single test, so every test that
+    redirects config.DB_PATH has to clear them.
+    """
+    import db
+
+    db.close()
+    db._last_purge = None
 
 
 class FakeUrl:

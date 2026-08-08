@@ -591,7 +591,7 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-**Stage 2 coverage:** 159 tests across storage, config, request models, the
+**Stage 2 coverage:** 174 tests across storage, config, request models, the
 audit-log writers, enforcement, and authentication. Written against the
 standard library's `unittest`, so no extra dependency is needed.
 

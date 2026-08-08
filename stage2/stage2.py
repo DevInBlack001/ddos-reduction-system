@@ -96,11 +96,17 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(config.DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT, salt TEXT)")
-    # stage2.db holds password hashes/salts -- both services run as root, so
-    # without this it inherits the process umask (often world-readable),
+    # stage2.db holds password hashes and salts. Both services run as root,
+    # so without this it inherits the process umask (often world readable),
     # letting any local account read the admin credentials off disk.
+    # Done before the WAL pragma: SQLite gives the sidecar files the mode the
+    # database has when it creates them, and they hold recently written pages.
     os.chmod(config.DB_PATH, 0o600)
+    # WAL is a property of the file, so setting it once here covers every
+    # module that opens its own connection. Without it a dashboard read and
+    # a window write block each other.
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT, salt TEXT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, src_ip TEXT, dst_ip TEXT, proto TEXT, rate REAL, entropy REAL, classification TEXT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS metrics_history (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, ewma_rate REAL, entropy REAL, mean_h REAL, mean_r REAL, sigma_h REAL, sigma_r REAL, k_multiplier REAL, victim_ip TEXT)")
 

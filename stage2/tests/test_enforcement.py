@@ -10,7 +10,7 @@ import subprocess
 import unittest
 
 import _support
-from _support import FakeCompleted, RecordingRun, make_logs_db, temp_path, unlink
+from _support import FakeCompleted, RecordingRun, make_logs_db, reset_db_module, temp_path, unlink
 
 import config
 import enforcement
@@ -44,11 +44,13 @@ class EnforcementTestCase(unittest.TestCase):
         self._real_run = subprocess.run
         enforcement.subprocess.run = self.run
 
+        reset_db_module()
         state.recently_blocked.clear()
         self._targets = dict(state.last_metrics_by_target)
         state.last_metrics_by_target.clear()
 
     def tearDown(self):
+        reset_db_module()
         enforcement.subprocess.run = self._real_run
         for name, value in self._saved.items():
             setattr(config, name, value)
