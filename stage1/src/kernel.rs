@@ -10,7 +10,7 @@
 //! scripts/build-ebpf.sh.
 
 use aya::{
-    maps::{HashMap as BpfHashMap, LpmTrie, MapData},
+    maps::{LpmTrie, MapData, PerCpuHashMap},
     programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpMode},
     Ebpf,
 };
@@ -167,6 +167,10 @@ impl KernelCapture {
     /// Read and clear every map, returning one sample per host that saw
     /// traffic.
     ///
+    /// The maps are per CPU, so every read sums across CPUs. Without that a
+    /// multi queue interface would report only whichever CPU happened to be
+    /// read.
+    ///
     /// Draining is read then delete rather than an atomic swap, so a packet
     /// arriving mid drain lands in the next window instead of this one. At
     /// window scale that is a rounding difference, and it is the same
@@ -182,7 +186,7 @@ impl KernelCapture {
     }
 
     fn drain_counters(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
-        let mut map: BpfHashMap<&mut MapData, Addr, Counters> = self
+        let mut map: PerCpuHashMap<&mut MapData, Addr, Counters> = self
             .ebpf
             .map_mut("COUNTERS")
             .ok_or("object has no 'COUNTERS' map")?
@@ -191,17 +195,19 @@ impl KernelCapture {
 
         let keys: Vec<Addr> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {
-            if let Ok(c) = map.get(&key, 0) {
+            if let Ok(per_cpu) = map.get(&key, 0) {
                 let entry = out.entry(from_addr(&key)).or_default();
-                entry.ingress_packets = c.ingress_packets;
-                entry.egress_packets = c.egress_packets;
-                entry.tcp = c.tcp;
-                entry.udp = c.udp;
-                entry.icmp = c.icmp;
-                entry.sctp = c.sctp;
-                entry.gre = c.gre;
-                entry.esp = c.esp;
-                entry.other = c.other;
+                for c in per_cpu.iter() {
+                    entry.ingress_packets += c.ingress_packets;
+                    entry.egress_packets += c.egress_packets;
+                    entry.tcp += c.tcp;
+                    entry.udp += c.udp;
+                    entry.icmp += c.icmp;
+                    entry.sctp += c.sctp;
+                    entry.gre += c.gre;
+                    entry.esp += c.esp;
+                    entry.other += c.other;
+                }
             }
             let _ = map.remove(&key);
         }
@@ -209,7 +215,7 @@ impl KernelCapture {
     }
 
     fn drain_sources(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
-        let mut map: BpfHashMap<&mut MapData, SourceKey, u64> = self
+        let mut map: PerCpuHashMap<&mut MapData, SourceKey, u64> = self
             .ebpf
             .map_mut("SOURCES")
             .ok_or("object has no 'SOURCES' map")?
@@ -218,11 +224,12 @@ impl KernelCapture {
 
         let keys: Vec<SourceKey> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {
-            if let Ok(count) = map.get(&key, 0) {
+            if let Ok(per_cpu) = map.get(&key, 0) {
+                let total: u64 = per_cpu.iter().sum();
                 out.entry(from_addr(&key.victim))
                     .or_default()
                     .sources
-                    .insert(from_addr(&key.source), count);
+                    .insert(from_addr(&key.source), total);
             }
             let _ = map.remove(&key);
         }
@@ -230,7 +237,7 @@ impl KernelCapture {
     }
 
     fn drain_flows(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
-        let mut map: BpfHashMap<&mut MapData, FlowKey, u64> = self
+        let mut map: PerCpuHashMap<&mut MapData, FlowKey, u64> = self
             .ebpf
             .map_mut("FLOWS")
             .ok_or("object has no 'FLOWS' map")?
@@ -239,11 +246,11 @@ impl KernelCapture {
 
         let keys: Vec<FlowKey> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {
-            if let Ok(count) = map.get(&key, 0) {
+            if let Ok(per_cpu) = map.get(&key, 0) {
                 let victim = from_addr(&key.victim);
                 out.entry(victim).or_default().flows.insert(
                     (from_addr(&key.source), victim, key.dst_port, key.proto),
-                    count,
+                    per_cpu.iter().sum(),
                 );
             }
             let _ = map.remove(&key);

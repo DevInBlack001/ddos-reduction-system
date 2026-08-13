@@ -161,13 +161,38 @@ mv -f "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary updated: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
+# Rebuild the eBPF object
+# =============================================================================
+# Only when one is already installed. A deployment on the libpcap backend has
+# no toolchain and should not start needing one at update time.
+BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
+    info "Rebuilding the eBPF programs..."
+    if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
+        install -o root -g root -m 644 \
+            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
+            "$BPF_OBJECT_DIR/ddos-stage1.o"
+        success "eBPF object updated."
+    else
+        # Leaving the old object in place would silently run the previous
+        # version against a new binary, so say so loudly.
+        warn "eBPF rebuild FAILED. The installed object is now older than the"
+        warn "binary. Run scripts/build-ebpf.sh for the reason, or start with"
+        warn "--capture-mode pcap until it is fixed."
+    fi
+fi
+
+# =============================================================================
 # Reapply CAP_NET_RAW capability
 # =============================================================================
 if command -v setcap &>/dev/null; then
     # The setcap capability is stored in the inode extended attributes.
     # Replacing the binary clears them, we must reapply after every update.
-    setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
-    success "CAP_NET_RAW reapplied."
+    # The kernel backend also needs to load programs and attach them. The
+    # systemd unit grants these ambiently; setcap covers running by hand.
+    setcap cap_net_raw,cap_bpf,cap_net_admin,cap_perfmon+ep "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null \
+        || setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
+    success "Capabilities reapplied."
 else
     warn "setcap not found. Run the binary as root."
 fi

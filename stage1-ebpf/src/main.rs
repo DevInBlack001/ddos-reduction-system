@@ -22,17 +22,34 @@
 use aya_ebpf::{
     bindings::{xdp_action, TC_ACT_PIPE},
     macros::{classifier, map, xdp},
-    maps::{HashMap, LpmTrie},
+    maps::{LpmTrie, PerCpuHashMap},
     programs::{TcContext, XdpContext},
 };
 use core::mem;
 use ddos_stage1_common::{v4_mapped, Addr, Counters, FlowKey, SourceKey};
 use network_types::{
-    eth::{EthHdr, EtherType},
+    eth::EthHdr,
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
+
+/// Ethertypes, read as raw bytes rather than through an enum.
+///
+/// Loading arbitrary wire bytes into an enum with a fixed set of variants is
+/// undefined behaviour the moment traffic carries anything else, and VLAN
+/// tagged frames do exactly that.
+const ETH_P_IPV4: u16 = 0x0800;
+const ETH_P_IPV6: u16 = 0x86DD;
+const ETH_P_8021Q: u16 = 0x8100;
+const ETH_P_8021AD: u16 = 0x88A8;
+
+/// Bytes a VLAN tag adds: the ethertype that introduced it plus the tag.
+const VLAN_HDR_LEN: usize = 4;
+
+/// How many stacked VLAN tags to walk. Two covers 802.1Q and QinQ, and a fixed
+/// bound is what lets the verifier accept this at all.
+const MAX_VLAN_DEPTH: usize = 2;
 
 /// Protected hosts, as a prefix trie so a single lookup serves both an
 /// explicit address list and a subnet. An address list is stored as full
@@ -41,19 +58,21 @@ use network_types::{
 static PROTECTED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
 
 /// Per host counters for the current window.
+/// Per CPU so concurrent receive queues cannot lose an increment. Each CPU
+/// updates only its own slot, and user space sums them when draining.
 #[map]
-static COUNTERS: HashMap<Addr, Counters> = HashMap::with_max_entries(256, 0);
+static COUNTERS: PerCpuHashMap<Addr, Counters> = PerCpuHashMap::with_max_entries(256, 0);
 
 /// Per host, per source packet counts. User space computes entropy from this.
 ///
 /// Bounded because the key is attacker controlled: a randomized source flood
 /// would otherwise try to allocate an entry per packet.
 #[map]
-static SOURCES: HashMap<SourceKey, u64> = HashMap::with_max_entries(65_536, 0);
+static SOURCES: PerCpuHashMap<SourceKey, u64> = PerCpuHashMap::with_max_entries(65_536, 0);
 
 /// Flow table behind the dashboard's network map.
 #[map]
-static FLOWS: HashMap<FlowKey, u64> = HashMap::with_max_entries(8192, 0);
+static FLOWS: PerCpuHashMap<FlowKey, u64> = PerCpuHashMap::with_max_entries(8192, 0);
 
 #[xdp]
 pub fn ingress(ctx: XdpContext) -> u32 {
@@ -90,29 +109,49 @@ struct Parsed {
     l4_offset: usize,
 }
 
-/// Parse Ethernet and IP. Returns `None` for anything that is not IPv4 or
-/// IPv6, and for anything truncated.
+/// Parse Ethernet, any VLAN tags, and IP.
+///
+/// Returns `None` for anything that is not IPv4 or IPv6, and for anything too
+/// short to read. VLAN tagged frames are followed rather than skipped: the
+/// pcap backend's filter has always accepted them, so ignoring them here would
+/// make the two backends disagree on the same traffic.
 #[inline(always)]
 unsafe fn parse(start: usize, end: usize) -> Option<Parsed> {
-    let eth: *const EthHdr = ptr_at(start, end, 0)?;
+    // The ethertype sits after the two MAC addresses. Read as raw bytes,
+    // because a frame can carry any value here and only some are known.
+    let mut offset = EthHdr::LEN - mem::size_of::<u16>();
+    let mut ether_type = u16::from_be(*(ptr_at::<u16>(start, end, offset)?));
+    offset += mem::size_of::<u16>();
 
-    match (*eth).ether_type {
-        EtherType::Ipv4 => {
-            let ip: *const Ipv4Hdr = ptr_at(start, end, EthHdr::LEN)?;
+    // Walk stacked tags. Bounded rather than looping until a non VLAN type,
+    // both because QinQ is as deep as this needs to go and because the
+    // verifier rejects a loop it cannot bound.
+    for _ in 0..MAX_VLAN_DEPTH {
+        if ether_type != ETH_P_8021Q && ether_type != ETH_P_8021AD {
+            break;
+        }
+        // The tag is two bytes of control data followed by the real ethertype.
+        ether_type = u16::from_be(*(ptr_at::<u16>(start, end, offset + 2)?));
+        offset += VLAN_HDR_LEN;
+    }
+
+    match ether_type {
+        ETH_P_IPV4 => {
+            let ip: *const Ipv4Hdr = ptr_at(start, end, offset)?;
             Some(Parsed {
                 source: v4_mapped((*ip).src_addr.to_ne_bytes()),
                 dest: v4_mapped((*ip).dst_addr.to_ne_bytes()),
                 proto: (*ip).proto,
-                l4_offset: EthHdr::LEN + Ipv4Hdr::LEN,
+                l4_offset: offset + Ipv4Hdr::LEN,
             })
         }
-        EtherType::Ipv6 => {
-            let ip: *const Ipv6Hdr = ptr_at(start, end, EthHdr::LEN)?;
+        ETH_P_IPV6 => {
+            let ip: *const Ipv6Hdr = ptr_at(start, end, offset)?;
             Some(Parsed {
                 source: (*ip).src_addr.in6_u.u6_addr8,
                 dest: (*ip).dst_addr.in6_u.u6_addr8,
                 proto: (*ip).next_hdr,
-                l4_offset: EthHdr::LEN + Ipv6Hdr::LEN,
+                l4_offset: offset + Ipv6Hdr::LEN,
             })
         }
         _ => None,
@@ -168,7 +207,7 @@ fn bump_counters(victim: &Addr, proto: IpProto, ingress_side: bool) {
 }
 
 #[inline(always)]
-fn bump(map: &HashMap<SourceKey, u64>, key: &SourceKey) {
+fn bump(map: &PerCpuHashMap<SourceKey, u64>, key: &SourceKey) {
     let next = match unsafe { map.get(key) } {
         Some(n) => *n + 1,
         None => 1,

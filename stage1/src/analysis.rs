@@ -53,6 +53,50 @@ const MAX_TRACKED_FLOWS: usize = 8192;
 /// target looking frozen for up to twenty.
 const HEARTBEAT_SECS: f64 = 2.0;
 
+/// Bounds on the entropy standard deviation.
+///
+/// The floor matters more than the ceiling. Entropy is normalized to [0, 1],
+/// so a baseline built during uniform traffic produces a standard deviation
+/// near zero, which puts the boundary almost exactly on the mean. Around half
+/// of ordinary windows then fall below their own mean and are flagged, which
+/// is a degenerate statistic rather than a sensitive one.
+const MIN_SIGMA_H: f64 = 0.05;
+const MAX_SIGMA_H: f64 = 0.15;
+
+/// Dominance below which traffic is too spread out to be a concentrated
+/// flood, whatever the entropy figure says.
+const DISTRIBUTED_DOMINANCE: f64 = 0.40;
+
+/// Whether this window may update the baseline and be saved to disk.
+///
+/// A flagged window normally freezes the baseline, which is what stops a slow
+/// ramp attacker from teaching the sensor that their flood is normal.
+///
+/// The exception is a window flagged only on entropy, at a normal rate, with
+/// traffic spread across many sources. That combination cannot be a
+/// concentrated flood: low entropy means concentration, and concentration
+/// would show up as a high dominant ratio. Without the exception, an entropy
+/// boundary sitting too close to the mean freezes the baseline permanently,
+/// so the standard deviation can never grow to reflect real variation and the
+/// false positives sustain themselves.
+fn window_is_clean(
+    anomaly_flags: u8,
+    cooldown_counter: usize,
+    dominant_ip_ratio: f64,
+    rate: f64,
+    rate_ceiling: f64,
+) -> bool {
+    if cooldown_counter > 0 {
+        return false;
+    }
+    if anomaly_flags == 0 {
+        return true;
+    }
+    anomaly_flags == FLAG_ENTROPY_ANOMALY
+        && dominant_ip_ratio < DISTRIBUTED_DOMINANCE
+        && rate <= rate_ceiling
+}
+
 /// Whether a window's entropy counts as an anomaly.
 ///
 /// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
@@ -506,10 +550,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             let ceiling_r = (0.2 * target_state.welford_rate.mean).max(10000.0);
             let sigma_r = raw_sigma_r.max(50.0).min(ceiling_r);
 
-            // Cap entropy standard deviation at 0.15 (normalized scale), floor at 0.02.
-            // (Entropy is now normalized [0, 1], so these are proportionally smaller
-            // than the raw-entropy-era values of 0.5 ceiling / 0.05 floor.)
-            let sigma_h = raw_sigma_h.max(0.02).min(0.15);
+            let sigma_h = raw_sigma_h.clamp(MIN_SIGMA_H, MAX_SIGMA_H);
 
             // 2. High-Sensitivity Cooldown Mode & Entropy-Guided Scaling:
             // - If we are within the cooldown recovery window, reduce the baseline multiplier to increase sensitivity.
@@ -564,7 +605,13 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // and we are not in cooldown. This keeps the baseline stable and prevents statistical explosion.
             // Named because the baseline snapshot below reuses the same
             // condition. A save must never capture mid attack state.
-            let is_clean_window = anomaly_flags == 0 && target_state.cooldown_counter == 0;
+            let is_clean_window = window_is_clean(
+                anomaly_flags,
+                target_state.cooldown_counter,
+                dominant_ip_ratio,
+                r,
+                target_state.welford_rate.mean + sigma_r,
+            );
             if is_clean_window {
                 // Outlier Rejection: Reject updates if the sample is > 5 standard deviations away.
                 // Baseline Capping: Impose a hard ceiling of 10000.0 pps on the Welford mean rate.
@@ -778,6 +825,72 @@ mod tests {
     /// timeout tick, that would flag every quiet second, mark the window
     /// dirty, and stop V4 baseline persistence from saving.
     #[test]
+    #[test]
+    fn a_flagged_window_normally_freezes_the_baseline() {
+        // The poisoning defence: a slow ramp attacker must not be able to
+        // teach the sensor that their flood is normal.
+        assert!(!window_is_clean(FLAG_RATE_ANOMALY, 0, 0.1, 10.0, 100.0));
+        assert!(!window_is_clean(
+            FLAG_RATE_ANOMALY | FLAG_ENTROPY_ANOMALY,
+            0,
+            0.1,
+            10.0,
+            100.0
+        ));
+    }
+
+    #[test]
+    fn a_cooldown_window_is_never_clean() {
+        assert!(!window_is_clean(0, 3, 0.1, 10.0, 100.0));
+    }
+
+    #[test]
+    fn an_unflagged_window_is_clean() {
+        assert!(window_is_clean(0, 0, 0.9, 10.0, 100.0));
+    }
+
+    #[test]
+    fn a_distributed_entropy_only_flag_still_updates_the_baseline() {
+        // The false positive case. Without this the boundary freezes at its
+        // warm-up value and the false positives sustain themselves.
+        assert!(window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, 10.0, 100.0));
+    }
+
+    #[test]
+    fn a_concentrated_entropy_flag_still_freezes_the_baseline() {
+        // Concentration is what a real flood looks like, so this one has to
+        // keep freezing.
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.85, 10.0, 100.0));
+    }
+
+    #[test]
+    fn an_entropy_flag_at_an_elevated_rate_freezes_the_baseline(){
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, 500.0, 100.0));
+    }
+
+    #[test]
+    fn the_entropy_sigma_floor_keeps_the_boundary_off_the_mean() {
+        // A baseline built on uniform traffic produces a near zero standard
+        // deviation, which would put the boundary on top of the mean and flag
+        // about half of all ordinary windows.
+        let raw_sigma_h = 0.0001_f64;
+        let sigma_h = raw_sigma_h.clamp(MIN_SIGMA_H, MAX_SIGMA_H);
+        let mean_h = 0.98;
+        let boundary = mean_h - 2.0 * sigma_h;
+        // Compared against the floor itself rather than a literal, so this
+        // keeps testing the intent if the floor is retuned.
+        let gap = mean_h - boundary;
+        assert!(
+            gap >= 2.0 * MIN_SIGMA_H - f64::EPSILON,
+            "boundary sat {gap:.4} below the mean, too close to be meaningful"
+        );
+    }
+
+    #[test]
+    fn the_entropy_sigma_ceiling_still_applies() {
+        assert_eq!(0.9_f64.clamp(MIN_SIGMA_H, MAX_SIGMA_H), MAX_SIGMA_H);
+    }
+
     fn quiet_window_does_not_raise_an_entropy_anomaly() {
         // Derived the same way as production: mean minus k sigma over the
         // learned baseline, not a fixed threshold.

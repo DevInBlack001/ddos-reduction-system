@@ -286,11 +286,21 @@ else
     warn "Nightly toolchain unavailable. Skipping the eBPF backend."
 fi
 
+BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+
 if $EBPF_READY; then
     info "Building the eBPF programs..."
     if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
-        success "eBPF programs built."
+        # The sensor loads this into the kernel as a privileged process, so a
+        # non root account able to replace it would be running its own kernel
+        # code. Root owned directory, not writable by anyone else.
+        install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
+        install -o root -g root -m 644 \
+            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
+            "$BPF_OBJECT_DIR/ddos-stage1.o"
+        success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
     else
+        EBPF_READY=false
         warn "eBPF build failed. Run scripts/build-ebpf.sh to see why."
         warn "Stage 1 will still build and run on the libpcap backend."
     fi
@@ -449,8 +459,15 @@ SupplementaryGroups=ddos-ipc
 # root. AmbientCapabilities grants it at exec time regardless of the
 # binary's file capabilities (setcap above still matters for anyone running
 # the binary directly outside systemd).
-AmbientCapabilities=CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_RAW
+# CAP_NET_RAW covers libpcap. The kernel backend also needs CAP_BPF to load
+# programs and create maps, and CAP_NET_ADMIN to attach XDP and TC. Granting
+# them unconditionally keeps one unit working for both backends; without them
+# --capture-mode kernel fails under systemd while working by hand as root,
+# which is a confusing way to find out.
+AmbientCapabilities=CAP_NET_RAW CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+# Loading eBPF programs needs locked memory on kernels before 5.11.
+LimitMEMLOCK=infinity
 NoNewPrivileges=true
 ExecStart=$EXEC_START
 Restart=on-failure
