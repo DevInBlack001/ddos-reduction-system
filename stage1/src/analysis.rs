@@ -58,6 +58,44 @@ const HEARTBEAT_SECS: f64 = 2.0;
 /// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
 /// for an empty window, which would otherwise look identical to a
 /// maximally concentrated single-source flood every time traffic goes quiet.
+/// Where per window observations come from.
+///
+/// Both arms end up filling the same accumulators on `TargetState`, so the
+/// window close below is identical either way and cannot tell them apart.
+pub enum PacketSource {
+    /// One `PacketMeta` per packet, from the libpcap capture threads.
+    Channel(Receiver<PacketMeta>),
+    /// Counts already totalled in kernel maps, drained once per tick.
+    Kernel(Box<crate::kernel::KernelCapture>),
+}
+
+/// Get the state for a protected host, creating it and restoring any saved
+/// baseline on first sight.
+///
+/// Returns `None` when dynamic tracking is capped, which only applies without
+/// a configured target list.
+fn ensure_target<'a>(
+    targets_map: &'a mut HashMap<IpAddr, TargetState>,
+    victim: IpAddr,
+    cfg: &AnalysisConfig,
+    persisted: &Option<PersistedState>,
+) -> Option<&'a mut TargetState> {
+    if !targets_map.contains_key(&victim) {
+        if cfg.victim_targets.is_none() && targets_map.len() >= 100 {
+            return None;
+        }
+        let restored = persistence::lookup(persisted, &victim);
+        if let Some(ref r) = restored {
+            info!(
+                "Analysis [victim={}]: restored baseline from persisted state (rate n={}, entropy n={}/{}).",
+                victim, r.rate_n, r.entropy_n, crate::welford::WARMUP_WINDOWS
+            );
+        }
+        targets_map.insert(victim, TargetState::new(cfg.ewma_alpha, restored.as_ref()));
+    }
+    targets_map.get_mut(&victim)
+}
+
 fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize) -> bool {
     packet_count >= MIN_PACKETS_FOR_ENTROPY && h < boundary
 }
@@ -69,7 +107,7 @@ fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize) -> bool {
 /// `rx` channel closes (capture thread exited or an unrecoverable error occurred).
 ///
 /// Returns when the channel closes.
-pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
+pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
     info!(
         "Analysis: thread started | targets={:?} | k={} | α={}",
         cfg.victim_targets, cfg.k, cfg.ewma_alpha
@@ -136,7 +174,52 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         // packet implicates only its own destination; a timeout tick has to
         // consider every victim being tracked, since any of them could be
         // sitting on an open window with no traffic to close it.
-        let victims_to_check: Vec<IpAddr> = match rx.recv_timeout(WINDOW_TICK) {
+        let victims_to_check: Vec<IpAddr> = match source {
+            // The kernel counted everything already. One drain per tick
+            // replaces the per packet loop entirely.
+            PacketSource::Kernel(ref mut capture) => {
+                std::thread::sleep(WINDOW_TICK);
+                match capture.drain() {
+                    Ok(samples) => {
+                        for (victim_ip, sample) in samples {
+                            for ((src, dst, port, proto), count) in &sample.flows {
+                                let key = (*src, *dst, *port, *proto);
+                                let at_capacity = flow_counts.len() >= MAX_TRACKED_FLOWS;
+                                match flow_counts.get_mut(&key) {
+                                    Some(existing) => *existing += *count as u32,
+                                    None if !at_capacity => {
+                                        flow_counts.insert(key, *count as u32);
+                                    }
+                                    None => {}
+                                }
+                            }
+
+                            let target_state =
+                                match ensure_target(&mut targets_map, victim_ip, &cfg, &persisted_state) {
+                                    Some(t) => t,
+                                    None => continue,
+                                };
+
+                            for (src_ip, count) in &sample.sources {
+                                target_state.entropy.add_packets(*src_ip, *count as u32);
+                                *target_state.ip_counts.entry(*src_ip).or_insert(0) += *count as u32;
+                            }
+                            target_state.window_packet_count += sample.ingress_packets as usize;
+                            target_state.egress_packet_count += sample.egress_packets;
+                            target_state.tcp_count += sample.tcp as u32;
+                            target_state.udp_count += sample.udp as u32;
+                            target_state.icmp_count += sample.icmp as u32;
+                            target_state.sctp_count += sample.sctp as u32;
+                            target_state.gre_count += sample.gre as u32;
+                            target_state.esp_count += sample.esp as u32;
+                        }
+                    }
+                    Err(e) => warn!("Analysis: could not read the kernel maps: {e}"),
+                }
+                targets_map.keys().copied().collect()
+            }
+
+            PacketSource::Channel(ref rx) => match rx.recv_timeout(WINDOW_TICK) {
             Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => targets_map.keys().copied().collect(),
             Ok(meta) => {
@@ -176,23 +259,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                     continue;
                 }
 
-                // Initialize state for destination IP if not already present
-                if !targets_map.contains_key(&meta.dst_ip) {
-                    if cfg.victim_targets.is_none() && targets_map.len() >= 100 {
-                        // Prevent memory leak by capping dynamic tracking list size
-                        continue;
-                    }
-                    let restored = persistence::lookup(&persisted_state, &meta.dst_ip);
-                    if let Some(ref r) = restored {
-                        info!(
-                            "Analysis [victim={}]: restored baseline from persisted state (rate n={}, entropy n={}/{}).",
-                            meta.dst_ip, r.rate_n, r.entropy_n, crate::welford::WARMUP_WINDOWS
-                        );
-                    }
-                    targets_map.insert(meta.dst_ip, TargetState::new(cfg.ewma_alpha, restored.as_ref()));
-                }
-
-                let target_state = targets_map.get_mut(&meta.dst_ip).unwrap();
+                let target_state =
+                    match ensure_target(&mut targets_map, meta.dst_ip, &cfg, &persisted_state) {
+                        Some(t) => t,
+                        None => continue,
+                    };
 
                 // Egress packets only answer how much got through. Keeping
                 // them out of the statistics stops past mitigation from
@@ -220,6 +291,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 
                 vec![meta.dst_ip]
             }
+            },
         };
 
         for victim_ip in victims_to_check {
@@ -818,7 +890,7 @@ mod tests {
         };
 
         let (tx, rx) = bounded(1024);
-        let handle = std::thread::spawn(move || run_analysis_thread(cfg, rx));
+        let handle = std::thread::spawn(move || run_analysis_thread(cfg, PacketSource::Channel(rx)));
 
         // Enough packets to satisfy MIN_PACKETS_FOR_ENTROPY, then stop sending.
         for _ in 0..25 {

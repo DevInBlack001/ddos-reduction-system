@@ -114,6 +114,19 @@ struct CliArgs {
     baseline_path:      String,
     /// V4: reject a persisted baseline older than this many seconds.
     baseline_ttl_secs:  f64,
+    /// Which capture backend to use.
+    capture_mode:       CaptureMode,
+    /// Where the compiled eBPF object lives, for the kernel backend.
+    bpf_object:         String,
+}
+
+/// How packets are observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    /// libpcap in user space. Works anywhere.
+    Pcap,
+    /// XDP and TC in the kernel. Needs driver support and the compiled object.
+    Kernel,
 }
 
 impl CliArgs {
@@ -122,6 +135,8 @@ impl CliArgs {
         let args: Vec<String> = env::args().collect();
         let mut interface = String::new();
         let mut egress_interface: Option<String> = None;
+        let mut capture_mode = CaptureMode::Pcap;
+        let mut bpf_object = crate::kernel::DEFAULT_OBJECT_PATH.to_string();
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
         let mut k         = 2.0_f64;
@@ -144,6 +159,23 @@ impl CliArgs {
                 "--egress-interface" => {
                     i += 1;
                     egress_interface = args.get(i).cloned();
+                }
+                "--capture-mode" => {
+                    i += 1;
+                    match args.get(i).map(|s| s.as_str()) {
+                        Some("pcap") => capture_mode = CaptureMode::Pcap,
+                        Some("kernel") | Some("xdp") => capture_mode = CaptureMode::Kernel,
+                        other => {
+                            eprintln!("Error: --capture-mode takes 'pcap' or 'kernel', got {other:?}.");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "--bpf-object" => {
+                    i += 1;
+                    if let Some(v) = args.get(i) {
+                        bpf_object = v.clone();
+                    }
                 }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
@@ -260,7 +292,7 @@ impl CliArgs {
             None
         };
 
-        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs }
+        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object }
     }
 }
 
@@ -270,6 +302,10 @@ fn print_usage(bin: &str) {
     );
     eprintln!("Options:");
     eprintln!("  --interface  <IFACE>   Ingress interface to sniff (e.g., br0)");
+    eprintln!("  --capture-mode <MODE>  pcap (default) or kernel. 'kernel' uses XDP and TC");
+    eprintln!("                         instead of libpcap, and needs the compiled object");
+    eprintln!("  --bpf-object <PATH>    eBPF object for the kernel backend");
+    eprintln!("                         [default: {}]", crate::kernel::DEFAULT_OBJECT_PATH);
     eprintln!("  --egress-interface <IFACE>  V5: egress interface. Enables drop-rate measurement");
     eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
@@ -461,6 +497,44 @@ fn main() {
         egress_enabled:     args.egress_interface.is_some(),
     };
 
+    // The kernel backend replaces the capture threads entirely: no pcap
+    // handles, no channel, and the analysis loop drains maps on its own tick.
+    if args.capture_mode == CaptureMode::Kernel {
+        let targets = match args.victim_targets.as_ref() {
+            Some(t) => t,
+            None => {
+                eprintln!("Error: the kernel backend needs --victim-ips or --victim-subnet.");
+                eprintln!("It matches on protected hosts in the kernel, so there is no");
+                eprintln!("equivalent of running without a filter.");
+                process::exit(1);
+            }
+        };
+
+        info!("main: capture backend = kernel (XDP and TC)");
+        let capture = match kernel::KernelCapture::load(
+            &args.bpf_object,
+            &args.interface,
+            args.egress_interface.as_deref(),
+            targets,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("main: could not start the kernel backend: {e}");
+                log::error!("main: build the object with scripts/build-ebpf.sh, or run with");
+                log::error!("main: --capture-mode pcap to use the libpcap backend instead.");
+                process::exit(1);
+            }
+        };
+
+        analysis::run_analysis_thread(
+            analysis_cfg,
+            analysis::PacketSource::Kernel(Box::new(capture)),
+        );
+        return;
+    }
+
+    info!("main: capture backend = pcap");
+
     // Privilege pre-check: attempt to open the interface NOW, on the main
     // thread, before spawning anything. If pcap fails here it almost always
     // means missing CAP_NET_RAW (not running as root).
@@ -491,7 +565,7 @@ fn main() {
     let analysis_handle = std::thread::Builder::new()
         .name("analysis".to_string())
         .spawn(move || {
-            analysis::run_analysis_thread(analysis_cfg, rx);
+            analysis::run_analysis_thread(analysis_cfg, analysis::PacketSource::Channel(rx));
         })
         .expect("failed to spawn analysis thread");
 
