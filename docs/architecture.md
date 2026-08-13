@@ -82,7 +82,63 @@ The channel is bounded on purpose. If analysis falls badly behind, capture
 blocks rather than allocating without limit. A stalled capture is visible and
 safe; unbounded memory growth is neither.
 
-## Capture
+## Capture Backends
+
+Two, selectable at launch.
+
+**libpcap**, the original. Described in the rest of this section. Works
+anywhere, and remains the fallback for interfaces where XDP cannot attach.
+
+**XDP and TC**, in development for 1.0.0. Packet processing moves into the
+kernel, so counting happens in the driver path rather than after a copy to user
+space.
+
+The second is not finished. What exists today is the kernel half: two programs
+in one object, with the maps they accumulate into. The user space loader that
+drains those maps is still to come, so libpcap remains the only working path.
+
+### How the eBPF Half Is Arranged
+
+```
+stage1-common/    types crossing the kernel boundary, no_std, repr(C)
+stage1-ebpf/      the programs, built for bpfel-unknown-none on nightly
+stage1/           the sensor, built for the host on stable
+```
+
+The eBPF crate is deliberately outside the sensor's workspace. The two halves
+target different architectures and different toolchains, and a shared workspace
+cannot express that.
+
+`ingress` runs on XDP, before the kernel builds an skb. `egress` runs on TC,
+because XDP hooks the driver receive path and cannot observe egress at all.
+
+Nothing is decided in the kernel. There is no floating point and no `log2` in
+BPF, so entropy, the rate, and every boundary stay in user space exactly as
+described in [detection.md](detection.md). The programs only accumulate:
+
+| Map | Holds |
+|-|-|
+| `PROTECTED` | Protected hosts, as a prefix trie |
+| `COUNTERS` | Per host packet and protocol counts |
+| `SOURCES` | Per host, per source counts, which entropy is computed from |
+| `FLOWS` | The flow table behind the network map |
+
+`PROTECTED` is a prefix trie so one lookup serves both an address list and a
+subnet, with a list stored as full length prefixes. Addresses are 16 bytes
+throughout, IPv4 stored mapped, matching what the feature vector already puts
+on the wire.
+
+`SOURCES` and `FLOWS` are bounded for the same reason the user space flow map
+is: their keys come from packet headers, so a randomized source flood would
+otherwise try to allocate an entry per packet.
+
+Build it with `scripts/build-ebpf.sh`. It needs a nightly toolchain and
+bpf-linker, both of which `scripts/install.sh` sets up by detecting the LLVM
+already on the machine rather than requiring a particular version. Details are
+in [testing.md](testing.md).
+
+The backend is optional. Without the toolchain, Stage 1 still builds and runs
+on libpcap.
 
 ### BPF Filtering
 
@@ -163,6 +219,9 @@ rather than as a zero drop rate, since a genuine zero is a meaningful reading.
 ## File Layout
 
 ```
+stage1-common/     types shared with the eBPF programs
+stage1-ebpf/src/   the XDP and TC programs
+
 stage1/src/
   main.rs          CLI, privilege check, thread startup
   capture.rs       pcap capture and header parsing
@@ -199,6 +258,8 @@ scripts/
   update.sh        rebuild and restart
   uninstall.sh     teardown
   run.sh           development runner for both stages
+  build-ebpf.sh    compile the eBPF programs
+  test.sh          run every suite
 ```
 
 ## Dependencies

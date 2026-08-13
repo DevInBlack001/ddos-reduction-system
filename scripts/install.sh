@@ -154,6 +154,8 @@ install_deps_apt() {
         build-essential \
         pkg-config \
         curl \
+        llvm \
+        clang \
         python3 \
         python3-pip \
         python3-venv \
@@ -167,6 +169,9 @@ install_deps_dnf() {
         gcc \
         pkg-config \
         curl \
+        llvm \
+        llvm-devel \
+        clang \
         python3 \
         python3-pip \
         ipset
@@ -178,6 +183,9 @@ install_deps_yum() {
         gcc \
         pkgconfig \
         curl \
+        llvm \
+        llvm-devel \
+        clang \
         python3 \
         python3-pip \
         ipset
@@ -192,6 +200,8 @@ install_deps_apk() {
         pkgconfig \
         curl \
         bash \
+        llvm-dev \
+        clang \
         python3 \
         py3-pip \
         ipset \
@@ -233,6 +243,58 @@ fi
 
 # Ensure the stable toolchain is the active one.
 rustup default stable &>/dev/null || true
+
+# =============================================================================
+# eBPF build toolchain (optional)
+# =============================================================================
+# The XDP capture backend is compiled separately: it targets BPF bytecode on
+# nightly, while the sensor targets the host on stable. This is best effort.
+# A machine without it still builds and runs Stage 1 on the libpcap backend.
+info "Setting up the eBPF build toolchain..."
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-toolchain.sh"
+
+EBPF_READY=false
+
+if ! nightly_ready; then
+    info "Installing the nightly toolchain and rust-src (needed to build core)..."
+    rustup toolchain install nightly --component rust-src --profile minimal &>/dev/null || true
+fi
+
+if nightly_ready; then
+    if command -v bpf-linker &>/dev/null; then
+        success "bpf-linker already present: $(bpf-linker --version 2>/dev/null || echo unknown)"
+        EBPF_READY=true
+    elif detect_llvm; then
+        info "Found LLVM $LLVM_MAJOR at $LLVM_PREFIX. Installing a matching bpf-linker..."
+        # Version is chosen from the LLVM actually installed, not pinned here:
+        # bpf-linker links against LLVM, and which LLVM a machine has is its
+        # distribution's decision. Candidates are tried until one builds.
+        if CHOSEN=$(install_bpf_linker "$LLVM_MAJOR" "$LLVM_PREFIX"); then
+            success "bpf-linker installed ($CHOSEN, built against LLVM $LLVM_MAJOR)."
+            EBPF_READY=true
+        else
+            warn "Could not build bpf-linker against LLVM $LLVM_MAJOR."
+            warn "Stage 1 will still build and run on the libpcap backend."
+        fi
+    else
+        warn "No LLVM installation found, so bpf-linker cannot be built."
+        warn "Install your distribution's llvm and clang packages, then re-run."
+    fi
+else
+    warn "Nightly toolchain unavailable. Skipping the eBPF backend."
+fi
+
+if $EBPF_READY; then
+    info "Building the eBPF programs..."
+    if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
+        success "eBPF programs built."
+    else
+        warn "eBPF build failed. Run scripts/build-ebpf.sh to see why."
+        warn "Stage 1 will still build and run on the libpcap backend."
+    fi
+fi
 
 # =============================================================================
 # Compile Stage 1 in release mode

@@ -1,6 +1,25 @@
 # Testing
 
-Both suites run in seconds and neither needs a live network.
+Everything runs in seconds and none of it needs a live network.
+
+## Everything At Once
+
+```bash
+scripts/test.sh
+```
+
+Runs the Rust suite, the Python suite, and the eBPF build check, reporting each
+separately so a failure says which one. A suite whose toolchain is missing is
+skipped rather than failed, since not every contributor can build eBPF. It
+exits non zero if anything fails, or if everything was skipped.
+
+Individual components:
+
+```bash
+scripts/test.sh stage1
+scripts/test.sh stage2
+scripts/test.sh ebpf
+```
 
 ## Stage 1
 
@@ -43,6 +62,58 @@ runs anywhere the service runs, with no extra dependency to install.
 `httpx` is absent, so `fastapi.testclient` is unavailable. The auth routes are
 plain functions and are called directly with a stand in request object, and the
 async middleware is driven through a small helper.
+
+## eBPF
+
+```bash
+scripts/build-ebpf.sh
+```
+
+There is no unit test framework for BPF bytecode. What can be checked without a
+kernel to load into is that the object builds and that every program and map
+made it in, which is what the script verifies before installing the object.
+
+Building needs three things, and the script names whichever is missing:
+
+| Requirement | Why |
+|-|-|
+| nightly toolchain | aya-ebpf needs `build-std`, which is nightly only |
+| `rust-src` on nightly | `build-std` compiles core from source |
+| `bpf-linker` | Links the BPF object |
+| LLVM | What bpf-linker links against |
+
+`scripts/install.sh` sets all of this up. No version is pinned anywhere: it
+finds the newest LLVM on the machine and picks a bpf-linker that builds against
+it, because which LLVM you have is your distribution's decision, not this
+project's.
+
+That matters because the two move together. bpf-linker releases from 0.11 call
+an interface introduced in LLVM 20, so on a distribution still shipping LLVM 19
+they fail at link time with an undefined symbol. The installer tries candidates
+in an order chosen from the detected LLVM and keeps the first that builds,
+rather than asserting a compatibility table that would age badly.
+
+Doing it by hand, if you prefer:
+
+```bash
+rustup toolchain install nightly --component rust-src
+LLVM_PREFIX=$(llvm-config --prefix) PATH="$(llvm-config --bindir):$PATH" \
+    cargo install bpf-linker
+```
+
+If that fails on an undefined LLVM symbol, add `--version "^0.9"`. Note that
+bpf-linker reads `LLVM_PREFIX` and wants `llvm-config` on `PATH`; it does not
+use the `LLVM_SYS_*_PREFIX` variable that llvm-sys documents.
+
+The eBPF backend is optional. A machine without any of this still builds and
+runs Stage 1 on the libpcap backend, and `install.sh` treats it as best effort
+for that reason.
+
+**Compiling is not the same as loading.** The kernel verifier checks the
+program when it is attached, on a host with a real interface, and can reject
+something that built cleanly. Bounds proofs, map access patterns, and
+instruction limits are all verifier concerns that the compiler does not catch.
+Treat a successful build as necessary, not sufficient.
 
 ## Conventions
 

@@ -77,6 +77,24 @@ The test suite uses the standard library's `unittest`. Do not add pytest or
 another runner without discussing it first; the suite is deliberately
 dependency free so it runs anywhere the service does.
 
+### eBPF Programs (optional)
+
+The XDP capture backend is compiled separately, because it targets BPF bytecode
+on nightly while the sensor targets the host on stable.
+
+```bash
+scripts/build-ebpf.sh
+```
+
+It needs a nightly toolchain with `rust-src`, plus `bpf-linker` and the LLVM it
+links against. `scripts/install.sh` sets that up, choosing a bpf-linker that
+matches whatever LLVM your distribution ships rather than requiring a specific
+version. Do not add a pinned version back: bpf-linker and LLVM move together,
+and the right pairing differs per machine.
+
+This is optional. Without it, Stage 1 still builds and runs on libpcap, and
+`scripts/test.sh` skips the eBPF check rather than failing.
+
 ### Full Install
 
 `scripts/install.sh` builds Stage 1, installs the binary, creates the Python
@@ -86,8 +104,16 @@ in the wiki.
 
 ## Testing Expectations
 
-**Every behavioural change needs a test.** Both suites run fast enough that
+**Every behavioural change needs a test.** Everything runs fast enough that
 there is no excuse for skipping it.
+
+```bash
+scripts/test.sh
+```
+
+That runs the Rust suite, the Python suite, and the eBPF build check, and
+reports each separately. Anything whose toolchain is missing is skipped rather
+than failed. Pass `stage1`, `stage2`, or `ebpf` to run one.
 
 - Stage 1 tests live beside the code in a `mod tests` block.
 - Stage 2 tests live in `stage2/tests/`, one file per module.

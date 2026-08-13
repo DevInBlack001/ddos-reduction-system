@@ -72,6 +72,16 @@ sudo systemctl enable --now ddos-stage1
 The dashboard is on port 8000. Full instructions, including the network layout
 this depends on, are in the wiki.
 
+The installer also sets up the eBPF build toolchain when it can, matching
+whatever LLVM your distribution ships. That part is optional: without it the
+sensor still builds and runs on libpcap.
+
+To run the test suites:
+
+```bash
+scripts/test.sh
+```
+
 
 ## Documentation
 

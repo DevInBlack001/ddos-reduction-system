@@ -1,0 +1,11 @@
+[package]
+name = "ddos-stage1-common"
+version = "0.1.0"
+edition = "2021"
+
+# Shared by the BPF programs and the user space loader, so it must build for
+# the BPF target too: no_std, no dependencies.
+[dependencies]
+
+[lib]
+path = "src/lib.rs"

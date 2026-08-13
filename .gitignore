@@ -7,6 +7,11 @@ attachments/*
 # Build output, the target/ directory is large (hundreds of MB) and fully
 # reproducible with `cargo build`. Never commit it.
 stage1/target/
+stage1-ebpf/target/
+stage1-common/target/
+
+# The compiled eBPF object, produced by scripts/build-ebpf.sh.
+stage1/src/bpf/
 
 # Cargo lock file for binaries (keep for libraries, but this is a binary crate).
 # Committing Cargo.lock is recommended for reproducible builds, remove this
