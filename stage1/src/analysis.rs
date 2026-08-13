@@ -84,6 +84,16 @@ fn window_is_clean(
         && rate <= rate_ceiling
 }
 
+/// How far the running mean may sit from the peacetime reference before it is
+/// treated as poisoned and reverted.
+const MAX_BASELINE_DRIFT: f64 = 0.50;
+
+/// Whether the running mean has drifted far enough from the slow reference to
+/// look like poisoning rather than ordinary variation.
+fn baseline_has_drifted(mean: f64, reference: f64) -> bool {
+    reference > 0.0 && (mean - reference).abs() / reference > MAX_BASELINE_DRIFT
+}
+
 /// Whether a window's entropy counts as an anomaly.
 ///
 /// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
@@ -512,8 +522,10 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
                     victim_ip:   victim_ip,
                 };
+                // The IPC layer reports the connection going down and coming
+                // back. Repeating it here would be one line per window.
                 if !ipc.send(&fv) {
-                    warn!("Analysis [victim={}]: IPC send failed during warm-up; Stage 2 may be offline", victim_ip);
+                    log::debug!("Analysis [victim={victim_ip}]: warm-up window not delivered");
                 }
 
                 continue;
@@ -613,17 +625,28 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     target_state.welford_entropy.update(h);
                 }
 
-                // Peacetime Reference (Long-Term Drift Detection):
-                // Update peacetime references with alpha = 0.001
-                let rate_ref = target_state.peacetime_rate_ref.get_or_insert(r);
+                // A very slow average, used below to notice the baseline
+                // drifting somewhere it should not.
+                //
+                // Seeded from the mean it will be compared against, not from
+                // the current window. Seeding from one window sets the
+                // reference to whatever that moment happened to read, which
+                // then disagrees with a two hundred sample mean immediately
+                // and reports ordinary variation as drift.
+                let mean_rate_now = target_state.welford_rate.mean;
+                let mean_entropy_now = target_state.welford_entropy.mean;
+
+                let rate_ref = target_state.peacetime_rate_ref.get_or_insert(mean_rate_now);
                 *rate_ref = 0.001 * r + 0.999 * (*rate_ref);
 
-                let entropy_ref = target_state.peacetime_entropy_ref.get_or_insert(h);
+                let entropy_ref = target_state
+                    .peacetime_entropy_ref
+                    .get_or_insert(mean_entropy_now);
                 *entropy_ref = 0.001 * h + 0.999 * (*entropy_ref);
             
-                // Baseline Poisoning Check:
-                // Revert running mean if it drifts > 50% from peacetime reference.
-                if (*rate_ref) > 0.0 && (target_state.welford_rate.mean - *rate_ref).abs() / (*rate_ref) > 0.50 {
+                // Revert the running mean if it has drifted away from the
+                // slow reference, which is what a poisoning attempt looks like.
+                if baseline_has_drifted(target_state.welford_rate.mean, *rate_ref) {
                     warn!(
                         "[!!!] Baseline Poisoning Detected for victim {}! Welford mean rate ({:.2}) deviated >50% from peacetime reference ({:.2}). Reverting mean.",
                         victim_ip, target_state.welford_rate.mean, *rate_ref
@@ -691,7 +714,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 if ipc.send(&fv) {
                     target_state.last_sent_time = timestamp;
                 } else {
-                    warn!("Analysis: IPC send failed for window #{}[victim={}]; Stage 2 may be offline", target_state.window_id, victim_ip);
+                    // See the warm-up send above: the IPC layer owns reporting
+                    // that Stage 2 is unreachable.
+                    log::debug!(
+                        "Analysis: window #{} [victim={victim_ip}] not delivered",
+                        target_state.window_id
+                    );
                 }
             } else {
                 // Nothing to report.
@@ -810,6 +838,37 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn a_baseline_matching_its_reference_has_not_drifted() {
+        assert!(!baseline_has_drifted(100.0, 100.0));
+        assert!(!baseline_has_drifted(120.0, 100.0));
+    }
+
+    #[test]
+    fn a_baseline_far_from_its_reference_has_drifted() {
+        assert!(baseline_has_drifted(200.0, 100.0));
+        assert!(baseline_has_drifted(40.0, 100.0));
+    }
+
+    #[test]
+    fn an_unset_reference_never_reports_drift() {
+        // Division by zero would otherwise make this fire on every window.
+        assert!(!baseline_has_drifted(50.0, 0.0));
+    }
+
+    #[test]
+    fn seeding_the_reference_from_the_mean_reports_no_immediate_drift() {
+        // The reference used to be seeded from a single window. A quiet
+        // moment right after warm-up then set it far below a mean built from
+        // two hundred windows, and ordinary variation was reported as
+        // poisoning. Seeding from the mean starts them in agreement.
+        let learned_mean = 18.32;
+        let one_quiet_window = 8.50;
+
+        assert!(baseline_has_drifted(learned_mean, one_quiet_window));
+        assert!(!baseline_has_drifted(learned_mean, learned_mean));
+    }
 
     #[test]
     fn a_flagged_window_normally_freezes_the_baseline() {
