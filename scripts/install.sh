@@ -54,6 +54,11 @@ SERVICE_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
 
+# Toolchain discovery, used by both the Rust and eBPF steps below.
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-toolchain.sh"
+load_cargo_env
+
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -226,23 +231,23 @@ success "System dependencies installed."
 info "Checking for Rust toolchain..."
 
 if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
-    RUST_VER=$(rustc --version)
-    success "Rust already installed: $RUST_VER"
+    success "Rust already installed: $(rustc --version)"
 else
     info "Rust not found. Installing via rustup..."
-    # -y  : non-interactive, accept defaults
-    # --no-modify-path : do not modify PATH in shell profiles (we source manually)
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --no-modify-path --default-toolchain stable
-
-    # Source the Cargo environment for the rest of this script.
-    # shellcheck source=/dev/null
-    source "$HOME/.cargo/env"
+    if ! ensure_rustup; then
+        error "Could not install the Rust toolchain. Install cargo and rustc"
+        error "from your distribution, or rustup from https://rustup.rs, then"
+        error "re-run this script."
+        exit 1
+    fi
     success "Rust toolchain installed: $(rustc --version)"
 fi
 
-# Ensure the stable toolchain is the active one.
-rustup default stable &>/dev/null || true
+# Only meaningful when rustup is managing the toolchain. A distribution
+# install has no notion of a default and the call is a harmless no-op.
+if command -v rustup &>/dev/null; then
+    rustup default stable &>/dev/null || true
+fi
 
 # =============================================================================
 # eBPF build toolchain (optional)
@@ -252,12 +257,22 @@ rustup default stable &>/dev/null || true
 # A machine without it still builds and runs Stage 1 on the libpcap backend.
 info "Setting up the eBPF build toolchain..."
 
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/lib-toolchain.sh"
-
 EBPF_READY=false
 
-if ! nightly_ready; then
+# cargo can come from a distribution package with no rustup alongside it. That
+# builds the sensor fine but cannot add nightly or rust-src, so rustup is
+# installed here rather than assumed.
+if ! command -v rustup &>/dev/null; then
+    info "rustup not found. Installing it so a nightly toolchain can be added..."
+    if ensure_rustup; then
+        success "rustup installed: $(rustup --version 2>/dev/null | head -1)"
+    else
+        warn "Could not install rustup. Skipping the kernel capture backend."
+        warn "Stage 1 will still build and run on the libpcap backend."
+    fi
+fi
+
+if command -v rustup &>/dev/null && ! nightly_ready; then
     info "Installing the nightly toolchain and rust-src (needed to build core)..."
     rustup toolchain install nightly --component rust-src --profile minimal &>/dev/null || true
 fi
@@ -290,7 +305,8 @@ BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
 
 if $EBPF_READY; then
     info "Building the eBPF programs..."
-    if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
+    EBPF_LOG="$(mktemp)"
+    if bash "$SCRIPT_DIR/build-ebpf.sh" >"$EBPF_LOG" 2>&1; then
         # The sensor loads this into the kernel as a privileged process, so a
         # non root account able to replace it would be running its own kernel
         # code. Root owned directory, not writable by anyone else.
@@ -299,10 +315,17 @@ if $EBPF_READY; then
             "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
             "$BPF_OBJECT_DIR/ddos-stage1.o"
         success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
+        rm -f "$EBPF_LOG"
     else
         EBPF_READY=false
-        warn "eBPF build failed. Run scripts/build-ebpf.sh to see why."
-        warn "Stage 1 will still build and run on the libpcap backend."
+        warn "eBPF build failed. The reason follows; the installation continues"
+        warn "and Stage 1 will run on the libpcap backend."
+        echo
+        # Showing the reason here saves a second run just to find out what
+        # went wrong.
+        sed 's/^/    /' "$EBPF_LOG" | tail -n 25
+        echo
+        warn "Full output kept at $EBPF_LOG"
     fi
 fi
 

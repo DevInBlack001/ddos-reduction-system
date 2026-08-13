@@ -76,6 +76,11 @@ The installer also sets up the eBPF build toolchain when it can, matching
 whatever LLVM your distribution ships. That part is optional: without it the
 sensor still builds and runs on libpcap.
 
+The sensor has two capture backends. libpcap is the default and works
+anywhere. With the toolchain in place, `--capture-mode kernel` counts packets
+in the driver path via XDP and TC instead, waking user space once per window
+rather than once per packet. Detection is identical either way.
+
 To run the test suites:
 
 ```bash

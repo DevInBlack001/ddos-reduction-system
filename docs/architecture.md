@@ -86,16 +86,19 @@ safe; unbounded memory growth is neither.
 
 Two, selectable at launch.
 
-**libpcap**, the original. Described in the rest of this section. Works
-anywhere, and remains the fallback for interfaces where XDP cannot attach.
+**libpcap**, the default. Described in the rest of this section. Works
+anywhere, and remains the fallback for interfaces where XDP cannot attach and
+for machines without the eBPF build toolchain.
 
-**XDP and TC**, in development for 1.0.0. Packet processing moves into the
-kernel, so counting happens in the driver path rather than after a copy to user
-space.
+**XDP and TC**, selected with `--capture-mode kernel`. Packet counting moves
+into the kernel, so it happens in the driver path rather than after a copy to
+user space. User space wakes once per window to drain the maps.
 
-The second is not finished. What exists today is the kernel half: two programs
-in one object, with the maps they accumulate into. The user space loader that
-drains those maps is still to come, so libpcap remains the only working path.
+The two differ only in how per window accumulators are filled. Everything from
+the window close onward is the same code, so detection cannot tell them apart.
+
+The kernel backend needs a compiled object and the capabilities to load it, so
+it is opt in. Without it the sensor behaves exactly as it always has.
 
 ### How the eBPF Half Is Arranged
 
@@ -139,6 +142,28 @@ in [testing.md](testing.md).
 
 The backend is optional. Without the toolchain, Stage 1 still builds and runs
 on libpcap.
+
+### Running It
+
+```bash
+ddos_stage1 --interface <IFACE> --egress-interface <IFACE> \
+            --victim-subnet <CIDR> --capture-mode kernel
+```
+
+The kernel backend requires `--victim-ips` or `--victim-subnet`. Matching
+happens in the kernel against the trie, so there is no equivalent of running
+without a filter.
+
+Attachment prefers driver mode and falls back to generic, logging which one it
+got. Generic mode is correct but costs more per packet, so a measurement taken
+in it is not a measurement of the driver path.
+
+Loading and attaching need `CAP_BPF` and `CAP_NET_ADMIN`, which the service
+unit grants. Running the binary by hand needs root or the same capabilities via
+`setcap`.
+
+Neither the programs nor the qdisc go away when the process exits.
+`scripts/uninstall.sh` detaches both.
 
 ### BPF Filtering
 

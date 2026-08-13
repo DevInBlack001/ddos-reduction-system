@@ -22,7 +22,7 @@
 use aya_ebpf::{
     bindings::{xdp_action, TC_ACT_PIPE},
     macros::{classifier, map, xdp},
-    maps::{LpmTrie, PerCpuHashMap},
+    maps::{LpmTrie, PerCpuArray, PerCpuHashMap},
     programs::{TcContext, XdpContext},
 };
 use core::mem;
@@ -73,6 +73,14 @@ static SOURCES: PerCpuHashMap<SourceKey, u64> = PerCpuHashMap::with_max_entries(
 /// Flow table behind the dashboard's network map.
 #[map]
 static FLOWS: PerCpuHashMap<FlowKey, u64> = PerCpuHashMap::with_max_entries(8192, 0);
+
+/// A single zeroed `Counters`, used only to seed a new entry.
+///
+/// The kernel zero initialises array maps, and nothing here ever writes to
+/// this one, so reading index 0 always yields zeros. That is the way to get a
+/// zeroed struct without a stack allocation, which would compile to a memset.
+#[map]
+static ZEROED: PerCpuArray<Counters> = PerCpuArray::with_max_entries(1, 0);
 
 #[xdp]
 pub fn ingress(ctx: XdpContext) -> u32 {
@@ -183,10 +191,20 @@ fn is_protected(addr: &Addr) -> bool {
 
 #[inline(always)]
 fn bump_counters(victim: &Addr, proto: IpProto, ingress_side: bool) {
-    let mut c = match unsafe { COUNTERS.get(victim) } {
-        Some(existing) => *existing,
-        None => Counters::default(),
-    };
+    // Seed the entry on first sight. The zeroed value comes from a map the
+    // kernel zero initialises, because building one on the stack compiles to
+    // a memset and BPF has no implementation of it.
+    if unsafe { COUNTERS.get(victim) }.is_none() {
+        let Some(zero) = ZEROED.get(0) else { return };
+        if COUNTERS.insert(victim, zero, 0).is_err() {
+            return;
+        }
+    }
+
+    // Updated through a pointer rather than read, copied, and written back.
+    // Copying would put the whole struct on the stack for no benefit.
+    let Some(c) = COUNTERS.get_ptr_mut(victim) else { return };
+    let c = unsafe { &mut *c };
 
     if ingress_side {
         c.ingress_packets += 1;
@@ -202,8 +220,6 @@ fn bump_counters(victim: &Addr, proto: IpProto, ingress_side: bool) {
     } else {
         c.egress_packets += 1;
     }
-
-    let _ = COUNTERS.insert(victim, &c, 0);
 }
 
 #[inline(always)]

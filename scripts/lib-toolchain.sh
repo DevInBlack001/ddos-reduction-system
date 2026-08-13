@@ -87,9 +87,57 @@ llvm_packages_for() {
     esac
 }
 
+# Put cargo and rustup on PATH, wherever they were installed.
+#
+# sudo resets PATH from secure_path, so a toolchain in a home directory is
+# invisible to a script run with sudo even though it is installed. Worse, a
+# rustup installed by `sudo install.sh` lands in root's home, so the invoking
+# user cannot see it either. Both homes are checked.
+load_cargo_env() {
+    local home_dir
+    for home_dir in "$HOME" "/root" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d: -f6)"; do
+        [[ -n "$home_dir" && -d "$home_dir/.cargo/bin" ]] || continue
+        case ":$PATH:" in
+            *":$home_dir/.cargo/bin:"*) ;;
+            *) PATH="$home_dir/.cargo/bin:$PATH" ;;
+        esac
+    done
+    export PATH
+}
+
+# Make sure rustup is available, installing it if it is not.
+#
+# A distribution package can provide cargo and rustc, which is enough to build
+# the sensor but not the eBPF programs: those need a nightly toolchain and the
+# rust-src component, and only rustup can add either. rustup coexists with a
+# distribution install rather than replacing it, since its shims live under
+# ~/.cargo/bin.
+#
+# Returns non zero if rustup is still unavailable afterwards, which callers
+# treat as "skip the eBPF backend", not as a fatal error.
+ensure_rustup() {
+    load_cargo_env
+    if command -v rustup &>/dev/null; then
+        return 0
+    fi
+
+    command -v curl &>/dev/null || return 1
+
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path --default-toolchain stable >/dev/null 2>&1 || return 1
+
+    # Puts ~/.cargo/bin on PATH for the rest of this script. Under sudo this is
+    # root's home, which is where the units expect to find it.
+    # shellcheck source=/dev/null
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+
+    command -v rustup &>/dev/null
+}
+
 # True when the nightly toolchain and rust-src are both present. aya-ebpf
 # builds core from source, which needs both, and neither is on stable.
 nightly_ready() {
+    load_cargo_env
     command -v rustup &>/dev/null || return 1
     rustup toolchain list 2>/dev/null | grep -q '^nightly' || return 1
     rustup component list --toolchain nightly 2>/dev/null \

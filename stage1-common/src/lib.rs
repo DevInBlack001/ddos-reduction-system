@@ -18,16 +18,15 @@ pub type Addr = [u8; 16];
 /// `octets` are in wire order. A header field holding the address as a `u32`
 /// already stores those bytes, so `to_ne_bytes` is the correct way to recover
 /// them, not `to_be_bytes`.
+/// Written as one literal rather than zeroing an array and then filling it.
+/// The zero and fill form compiles to a `memset`, which BPF has no
+/// implementation of, so the program fails to link.
 #[inline(always)]
 pub fn v4_mapped(octets: [u8; 4]) -> Addr {
-    let mut out = [0u8; 16];
-    out[10] = 0xff;
-    out[11] = 0xff;
-    out[12] = octets[0];
-    out[13] = octets[1];
-    out[14] = octets[2];
-    out[15] = octets[3];
-    out
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff,
+        octets[0], octets[1], octets[2], octets[3],
+    ]
 }
 
 /// How many leading bits of an IPv4 prefix become in the mapped form.

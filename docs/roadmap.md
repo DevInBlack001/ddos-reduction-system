@@ -25,16 +25,19 @@ a restart during an attack cannot build "normal" out of attack traffic.
 making drop effectiveness a measurement rather than an inference. Also NAT safe
 enforcement: addresses marked as shared are throttled but never hard blocked.
 
+**V6, XDP and eBPF acceleration.** Packet counting moved into the driver path
+using Aya, so it happens before the kernel builds a socket buffer per packet.
+Selected with `--capture-mode kernel`, alongside the original libpcap backend
+rather than replacing it.
+
+The one structural break in the roadmap. Counters live in kernel maps that user
+space drains once per window, instead of a packet at a time crossing a channel.
+Everything else on this list is additive by comparison.
+
+Detection did not move. There is no floating point in BPF, so entropy, the
+rate, and every boundary stay in user space exactly where they were.
+
 ## Planned
-
-**V6, XDP and eBPF acceleration.** Move packet processing into the driver path
-using Aya, so filtering happens before the kernel builds a socket buffer per
-packet.
-
-This is the one structural break in the roadmap. Capture largely stops existing
-as it is written today, counters move into kernel maps read from user space,
-and dropping happens in XDP rather than through ipset. Everything else on this
-list is additive by comparison.
 
 **V7, ensemble classification.** A multi model voting layer for evasion and
 stealth attacks, adding source port entropy, TTL variance, and TCP fingerprint
@@ -68,14 +71,19 @@ There is nothing to aggregate yet.
 
 Not roadmap items, but currently true and worth stating plainly.
 
-**Entropy false positives on consistent traffic.** When normal traffic is very
-uniform, the variance is small, so the boundary sits close to the mean and
-ordinary fluctuation crosses it. Raising the multiplier or the absolute floors
-works around it. A floor under the variance estimate is the likely fix.
-
 **Randomized source spoofing is not detected.** Covered in
 [detection.md](detection.md). It needs the V7 features, not a configuration
 change.
+
+**The source histogram is attacker fillable.** Its key includes the source
+address and it holds a bounded number of entries. A randomized source flood
+fills it, after which entropy is computed from a truncated histogram. Memory
+stays bounded, which is the part that matters, but the measurement degrades
+under exactly the attack class above.
+
+**The kernel backend has not been measured under load.** It has been seen
+working on ordinary traffic. How the maps behave during a real flood is
+untested, and no throughput comparison against libpcap has been made.
 
 ## References
 

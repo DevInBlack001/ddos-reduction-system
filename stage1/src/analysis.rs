@@ -21,10 +21,7 @@ use crate::{
     entropy::MIN_PACKETS_FOR_ENTROPY,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
     persistence::{self, PersistedState},
-    state::{
-        AnalysisConfig, TargetState, DEFAULT_DISTRIBUTED_DOMINANCE,
-        DEFAULT_ENTROPY_SIGMA_CEILING, DEFAULT_ENTROPY_SIGMA_FLOOR,
-    },
+    state::{AnalysisConfig, TargetState},
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use log::{info, warn};
@@ -801,6 +798,12 @@ mod tests {
     use super::*;
     use crate::capture::{Direction, PacketMeta, Protocol};
     use crate::ipc::FEATURE_VECTOR_BYTES;
+    // Production code reads these from AnalysisConfig; only the tests need the
+    // defaults themselves.
+    use crate::state::{
+        DEFAULT_DISTRIBUTED_DOMINANCE, DEFAULT_ENTROPY_SIGMA_CEILING,
+        DEFAULT_ENTROPY_SIGMA_FLOOR,
+    };
     use crossbeam_channel::bounded;
     use std::io::Read;
     use std::net::Ipv4Addr;
@@ -808,14 +811,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// A quiet window must not be read as an entropy anomaly.
-    ///
-    /// Entropy is 0.0 both for an empty window and for any window whose
-    /// packets all came from one source, so a lull looks identical to a
-    /// maximally concentrated flood. Once windows began closing on a
-    /// timeout tick, that would flag every quiet second, mark the window
-    /// dirty, and stop V4 baseline persistence from saving.
-    #[test]
     #[test]
     fn a_flagged_window_normally_freezes_the_baseline() {
         // The poisoning defence: a slow ramp attacker must not be able to
@@ -884,6 +879,14 @@ mod tests {
             DEFAULT_ENTROPY_SIGMA_CEILING);
     }
 
+    /// A quiet window must not be read as an entropy anomaly.
+    ///
+    /// Entropy is 0.0 both for an empty window and for any window whose
+    /// packets all came from one source, so a lull looks identical to a
+    /// maximally concentrated flood. Once windows began closing on a
+    /// timeout tick, that would flag every quiet second, mark the window
+    /// dirty, and stop baseline persistence from saving.
+    #[test]
     fn quiet_window_does_not_raise_an_entropy_anomaly() {
         // Derived the same way as production: mean minus k sigma over the
         // learned baseline, not a fixed threshold.

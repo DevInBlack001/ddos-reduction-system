@@ -23,13 +23,22 @@ success() { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+load_cargo_env
+
 if ! nightly_ready; then
     error "The eBPF programs need a nightly toolchain with rust-src."
     error "aya-ebpf builds core from source, which stable cannot do."
     error ""
-    error "  rustup toolchain install nightly --component rust-src"
-    error ""
-    error "Or run scripts/install.sh, which sets this up."
+    if command -v rustup &>/dev/null; then
+        error "  rustup toolchain install nightly --component rust-src"
+    else
+        error "rustup was not found in any of: \$HOME, /root, or \$SUDO_USER's home."
+        error "Install it, then re-run this script:"
+        error "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        error ""
+        error "If you installed it with 'sudo scripts/install.sh', it went to"
+        error "root's home. Run this script with sudo so it is found."
+    fi
     exit 1
 fi
 
@@ -79,5 +88,20 @@ mkdir -p "$OUT_DIR"
 install -m 644 "$OBJ" "$OUT_DIR/ddos-stage1.o"
 
 success "eBPF object built: $OUT_DIR/ddos-stage1.o ($(stat -c%s "$OBJ") bytes)"
+
+# The sensor loads from the installed path, not the build tree. Without this a
+# rebuild looks successful while the running system keeps the old object, or
+# none at all.
+RUNTIME_DIR="/usr/local/lib/ddos_stage1"
+if [[ $EUID -eq 0 ]]; then
+    install -d -o root -g root -m 755 "$RUNTIME_DIR"
+    install -o root -g root -m 644 "$OBJ" "$RUNTIME_DIR/ddos-stage1.o"
+    success "Installed for the sensor: $RUNTIME_DIR/ddos-stage1.o"
+elif [[ -d "$RUNTIME_DIR" ]]; then
+    warn "Not running as root, so $RUNTIME_DIR was not updated."
+    warn "The sensor loads from there, so re-run with sudo or pass"
+    warn "--bpf-object $OUT_DIR/ddos-stage1.o to use this build directly."
+fi
+
 warn "Compiling only. The kernel verifier checks this at load time, on a host"
 warn "with a real interface, and can still reject it."

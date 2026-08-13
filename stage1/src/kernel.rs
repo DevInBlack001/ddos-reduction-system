@@ -70,8 +70,24 @@ impl KernelCapture {
         egress: Option<&str>,
         targets: &VictimTargets,
     ) -> Result<Self, String> {
+        // Checked before loading, because aya reports a missing file the same
+        // way it reports a malformed one and the two need different fixes.
+        match std::fs::metadata(object_path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "no eBPF object at '{object_path}'. Build and install it with \
+                     scripts/build-ebpf.sh, or point --bpf-object at one"
+                ));
+            }
+            Err(e) => return Err(format!("cannot read '{object_path}': {e}")),
+            Ok(m) if m.len() == 0 => {
+                return Err(format!("'{object_path}' is empty, so a build wrote nothing"))
+            }
+            Ok(_) => {}
+        }
+
         let mut ebpf = Ebpf::load_file(object_path)
-            .map_err(|e| format!("failed to load '{object_path}': {e}"))?;
+            .map_err(|e| format!("failed to load '{object_path}': {}", error_chain(&e)))?;
 
         Self::populate_targets(&mut ebpf, targets)?;
 
@@ -85,7 +101,7 @@ impl KernelCapture {
             .map_err(|e| format!("'ingress' is not an XDP program: {e}"))?;
         program
             .load()
-            .map_err(|e| format!("verifier rejected 'ingress': {e}"))?;
+            .map_err(|e| format!("verifier rejected 'ingress': {}", error_chain(&e)))?;
 
         // Driver mode is tried explicitly rather than letting the kernel
         // choose, so the log says which one is actually in use.
@@ -94,7 +110,9 @@ impl KernelCapture {
             Err(_) => {
                 program
                     .attach(ingress, XdpMode::Skb)
-                    .map_err(|e| format!("could not attach XDP to '{ingress}': {e}"))?;
+                    .map_err(|e| {
+                        format!("could not attach XDP to '{ingress}': {}", error_chain(&e))
+                    })?;
                 warn!(
                     "Kernel: '{ingress}' has no native XDP support, using generic mode. \
                      This still works but costs more per packet than the driver hook."
@@ -115,10 +133,10 @@ impl KernelCapture {
                 .map_err(|e| format!("'egress' is not a classifier: {e}"))?;
             program
                 .load()
-                .map_err(|e| format!("verifier rejected 'egress': {e}"))?;
+                .map_err(|e| format!("verifier rejected 'egress': {}", error_chain(&e)))?;
             program
                 .attach(iface, TcAttachType::Egress)
-                .map_err(|e| format!("could not attach TC to '{iface}': {e}"))?;
+                .map_err(|e| format!("could not attach TC to '{iface}': {}", error_chain(&e)))?;
 
             info!("Kernel: TC attached to '{iface}' for drop measurement");
             egress_interface = Some(iface.to_string());
@@ -267,6 +285,21 @@ impl Drop for KernelCapture {
             let _ = tc::qdisc_detach_program(iface, TcAttachType::Egress, "egress");
         }
     }
+}
+
+/// Flatten an error and everything that caused it into one line.
+///
+/// aya wraps the real reason several layers down, so the outermost message is
+/// usually just "error loading <path>". Verifier rejections in particular
+/// carry their log in an inner error, and without this they are invisible.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        out.push_str(&format!(": {inner}"));
+        source = inner.source();
+    }
+    out
 }
 
 /// Convert to the 16 byte form the maps use. IPv4 is stored mapped, so one key

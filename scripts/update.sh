@@ -42,6 +42,12 @@ SERVICE2_NAME="ddos-stage2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
 STAGE2_DIR="$(dirname "$SCRIPT_DIR")/stage2"
+BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+
+# Toolchain discovery, used by the Rust and eBPF steps below.
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-toolchain.sh"
+load_cargo_env
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -101,6 +107,17 @@ if $UPDATE_TOOLCHAIN; then
     if command -v rustup &>/dev/null; then
         rustup update stable 2>&1
         success "Rust toolchain updated: $(rustc --version)"
+    elif [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
+        # This deployment uses the kernel backend, which needs a nightly
+        # toolchain to rebuild. Without rustup that is impossible, so install
+        # it rather than silently shipping a stale object.
+        info "rustup not found but the kernel backend is installed. Installing rustup..."
+        if ensure_rustup; then
+            rustup update stable &>/dev/null || true
+            success "rustup installed: $(rustc --version)"
+        else
+            warn "Could not install rustup. The eBPF object cannot be rebuilt."
+        fi
     else
         warn "rustup not found. Skipping toolchain update (using existing compiler)."
     fi
@@ -165,7 +182,6 @@ success "Binary updated: $INSTALL_DIR/$BINARY_NAME"
 # =============================================================================
 # Only when one is already installed. A deployment on the libpcap backend has
 # no toolchain and should not start needing one at update time.
-BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
 if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
     info "Rebuilding the eBPF programs..."
     if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
