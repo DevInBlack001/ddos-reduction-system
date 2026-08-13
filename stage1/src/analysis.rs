@@ -21,7 +21,10 @@ use crate::{
     entropy::MIN_PACKETS_FOR_ENTROPY,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
     persistence::{self, PersistedState},
-    state::{AnalysisConfig, TargetState},
+    state::{
+        AnalysisConfig, TargetState, DEFAULT_DISTRIBUTED_DOMINANCE,
+        DEFAULT_ENTROPY_SIGMA_CEILING, DEFAULT_ENTROPY_SIGMA_FLOOR,
+    },
 };
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use log::{info, warn};
@@ -53,20 +56,6 @@ const MAX_TRACKED_FLOWS: usize = 8192;
 /// target looking frozen for up to twenty.
 const HEARTBEAT_SECS: f64 = 2.0;
 
-/// Bounds on the entropy standard deviation.
-///
-/// The floor matters more than the ceiling. Entropy is normalized to [0, 1],
-/// so a baseline built during uniform traffic produces a standard deviation
-/// near zero, which puts the boundary almost exactly on the mean. Around half
-/// of ordinary windows then fall below their own mean and are flagged, which
-/// is a degenerate statistic rather than a sensitive one.
-const MIN_SIGMA_H: f64 = 0.05;
-const MAX_SIGMA_H: f64 = 0.15;
-
-/// Dominance below which traffic is too spread out to be a concentrated
-/// flood, whatever the entropy figure says.
-const DISTRIBUTED_DOMINANCE: f64 = 0.40;
-
 /// Whether this window may update the baseline and be saved to disk.
 ///
 /// A flagged window normally freezes the baseline, which is what stops a slow
@@ -83,6 +72,7 @@ fn window_is_clean(
     anomaly_flags: u8,
     cooldown_counter: usize,
     dominant_ip_ratio: f64,
+    distributed_dominance: f64,
     rate: f64,
     rate_ceiling: f64,
 ) -> bool {
@@ -93,7 +83,7 @@ fn window_is_clean(
         return true;
     }
     anomaly_flags == FLAG_ENTROPY_ANOMALY
-        && dominant_ip_ratio < DISTRIBUTED_DOMINANCE
+        && dominant_ip_ratio < distributed_dominance
         && rate <= rate_ceiling
 }
 
@@ -548,9 +538,9 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // but also enforce a floor to prevent zero-baseline lockout.
             // Cap rate standard deviation at 10000.0 pps or 20% of the mean (whichever is larger), floor at 50.0.
             let ceiling_r = (0.2 * target_state.welford_rate.mean).max(10000.0);
-            let sigma_r = raw_sigma_r.max(50.0).min(ceiling_r);
+            let sigma_r = raw_sigma_r.max(cfg.rate_sigma_floor).min(ceiling_r);
 
-            let sigma_h = raw_sigma_h.clamp(MIN_SIGMA_H, MAX_SIGMA_H);
+            let sigma_h = raw_sigma_h.clamp(cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling);
 
             // 2. High-Sensitivity Cooldown Mode & Entropy-Guided Scaling:
             // - If we are within the cooldown recovery window, reduce the baseline multiplier to increase sensitivity.
@@ -609,6 +599,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 anomaly_flags,
                 target_state.cooldown_counter,
                 dominant_ip_ratio,
+                cfg.distributed_dominance,
                 r,
                 target_state.welford_rate.mean + sigma_r,
             );
@@ -829,11 +820,12 @@ mod tests {
     fn a_flagged_window_normally_freezes_the_baseline() {
         // The poisoning defence: a slow ramp attacker must not be able to
         // teach the sensor that their flood is normal.
-        assert!(!window_is_clean(FLAG_RATE_ANOMALY, 0, 0.1, 10.0, 100.0));
+        assert!(!window_is_clean(FLAG_RATE_ANOMALY, 0, 0.1, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
         assert!(!window_is_clean(
             FLAG_RATE_ANOMALY | FLAG_ENTROPY_ANOMALY,
             0,
             0.1,
+            DEFAULT_DISTRIBUTED_DOMINANCE,
             10.0,
             100.0
         ));
@@ -841,31 +833,31 @@ mod tests {
 
     #[test]
     fn a_cooldown_window_is_never_clean() {
-        assert!(!window_is_clean(0, 3, 0.1, 10.0, 100.0));
+        assert!(!window_is_clean(0, 3, 0.1, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
     }
 
     #[test]
     fn an_unflagged_window_is_clean() {
-        assert!(window_is_clean(0, 0, 0.9, 10.0, 100.0));
+        assert!(window_is_clean(0, 0, 0.9, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
     }
 
     #[test]
     fn a_distributed_entropy_only_flag_still_updates_the_baseline() {
         // The false positive case. Without this the boundary freezes at its
         // warm-up value and the false positives sustain themselves.
-        assert!(window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, 10.0, 100.0));
+        assert!(window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
     }
 
     #[test]
     fn a_concentrated_entropy_flag_still_freezes_the_baseline() {
         // Concentration is what a real flood looks like, so this one has to
         // keep freezing.
-        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.85, 10.0, 100.0));
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.85, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
     }
 
     #[test]
     fn an_entropy_flag_at_an_elevated_rate_freezes_the_baseline(){
-        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, 500.0, 100.0));
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, DEFAULT_DISTRIBUTED_DOMINANCE, 500.0, 100.0));
     }
 
     #[test]
@@ -874,21 +866,22 @@ mod tests {
         // deviation, which would put the boundary on top of the mean and flag
         // about half of all ordinary windows.
         let raw_sigma_h = 0.0001_f64;
-        let sigma_h = raw_sigma_h.clamp(MIN_SIGMA_H, MAX_SIGMA_H);
+        let sigma_h = raw_sigma_h.clamp(DEFAULT_ENTROPY_SIGMA_FLOOR, DEFAULT_ENTROPY_SIGMA_CEILING);
         let mean_h = 0.98;
         let boundary = mean_h - 2.0 * sigma_h;
         // Compared against the floor itself rather than a literal, so this
         // keeps testing the intent if the floor is retuned.
         let gap = mean_h - boundary;
         assert!(
-            gap >= 2.0 * MIN_SIGMA_H - f64::EPSILON,
+            gap >= 2.0 * DEFAULT_ENTROPY_SIGMA_FLOOR - f64::EPSILON,
             "boundary sat {gap:.4} below the mean, too close to be meaningful"
         );
     }
 
     #[test]
     fn the_entropy_sigma_ceiling_still_applies() {
-        assert_eq!(0.9_f64.clamp(MIN_SIGMA_H, MAX_SIGMA_H), MAX_SIGMA_H);
+        assert_eq!(0.9_f64.clamp(DEFAULT_ENTROPY_SIGMA_FLOOR, DEFAULT_ENTROPY_SIGMA_CEILING),
+            DEFAULT_ENTROPY_SIGMA_CEILING);
     }
 
     fn quiet_window_does_not_raise_an_entropy_anomaly() {

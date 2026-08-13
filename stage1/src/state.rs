@@ -16,6 +16,14 @@ use std::time::Instant;
 
 // AnalysisConfig
 
+/// Defaults for the tuning values on `AnalysisConfig`. Starting points, not
+/// values proven optimal: the right floor depends on how much a given
+/// network's traffic naturally varies.
+pub const DEFAULT_ENTROPY_SIGMA_FLOOR: f64 = 0.05;
+pub const DEFAULT_ENTROPY_SIGMA_CEILING: f64 = 0.15;
+pub const DEFAULT_RATE_SIGMA_FLOOR: f64 = 50.0;
+pub const DEFAULT_DISTRIBUTED_DOMINANCE: f64 = 0.40;
+
 /// Runtime parameters for the analysis thread.
 #[derive(Debug, Clone)]
 pub struct AnalysisConfig {
@@ -44,6 +52,27 @@ pub struct AnalysisConfig {
     /// V5: true when `--egress-interface` was supplied. Distinguishes "no
     /// egress sensor, drop rate unknown" from a genuine 0% drop rate.
     pub egress_enabled: bool,
+    /// Floor under the entropy standard deviation.
+    ///
+    /// The single most important tuning value after `k`. A baseline learned
+    /// on uniform traffic produces a standard deviation near zero, which puts
+    /// the boundary on top of the mean and flags roughly half of ordinary
+    /// windows. Raise it when normal traffic varies more than the default
+    /// assumes.
+    pub entropy_sigma_floor: f64,
+    /// Ceiling on the entropy standard deviation, so the boundary cannot
+    /// drift so wide that nothing ever trips it.
+    pub entropy_sigma_ceiling: f64,
+    /// Floor under the rate standard deviation, for the same reason as the
+    /// entropy floor.
+    pub rate_sigma_floor: f64,
+    /// Dominance below which traffic is too spread out to be a concentrated
+    /// flood, whatever the entropy figure says.
+    ///
+    /// Stage 2 has its own copy of this idea in
+    /// `dominant_ip_ratio_block_threshold`. They are separate processes and
+    /// this one cannot read that file, so if you change one, change both.
+    pub distributed_dominance: f64,
 }
 
 impl Default for AnalysisConfig {
@@ -58,6 +87,10 @@ impl Default for AnalysisConfig {
             baseline_path: persistence::DEFAULT_BASELINE_PATH.to_string(),
             baseline_ttl_secs: persistence::DEFAULT_TTL_SECS,
             egress_enabled: false,
+            entropy_sigma_floor:   DEFAULT_ENTROPY_SIGMA_FLOOR,
+            entropy_sigma_ceiling: DEFAULT_ENTROPY_SIGMA_CEILING,
+            rate_sigma_floor:      DEFAULT_RATE_SIGMA_FLOOR,
+            distributed_dominance: DEFAULT_DISTRIBUTED_DOMINANCE,
         }
     }
 }

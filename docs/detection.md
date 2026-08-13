@@ -147,6 +147,28 @@ Flags are a bitmask:
 Stage 2 takes this flag plus the rest of the feature vector and makes the final
 call.
 
+### Bounds on Sigma
+
+Both standard deviations are clamped, and the floors matter more than the
+ceilings.
+
+| Setting | Default |
+|-|-|
+| `--entropy-sigma-floor` | 0.05 |
+| `--entropy-sigma-ceiling` | 0.15 |
+| `--rate-sigma-floor` | 50.0 |
+
+Without a floor the boundary collapses onto the mean. Entropy is normalized to
+[0, 1], so a baseline learned during uniform traffic produces a standard
+deviation near zero, `mean - k * sigma` lands on `mean`, and about half of
+ordinary windows fall below their own mean by definition. That is a degenerate
+statistic, not a sensitive detector, and it spends the margin needed to
+recognise a real flood.
+
+The defaults are starting points, not values proven optimal. The right floor
+depends on how much a given network's traffic naturally varies, which is why
+it is a flag rather than a constant.
+
 ## Baseline Poisoning Defences
 
 Two complementary mechanisms, not one.
@@ -163,6 +185,17 @@ makes it safe. A recency cap without the freeze would be a net loss.
 On top of both: a ceiling on the mean rate, rejection of outliers beyond five
 sigma, and reversion to a peacetime reference if the mean drifts more than 50
 percent from an ultra slow reference average.
+
+**One narrow exception to the freeze.** A window flagged only on entropy, at a
+normal rate, with dominance below `--distributed-dominance`, still updates the
+baseline. That combination cannot be a concentrated flood: low entropy means
+concentration, and concentration would show as a high dominant ratio.
+
+The exception exists because the freeze and a too tight boundary reinforce each
+other. If the boundary sits close to the mean, ordinary windows get flagged,
+the baseline stops updating, the standard deviation never grows to reflect real
+variation, and the false positives sustain themselves. Every other flagged
+window still freezes, so the slow ramp defence is unchanged.
 
 ## Baseline Persistence
 

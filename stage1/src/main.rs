@@ -118,6 +118,11 @@ struct CliArgs {
     capture_mode:       CaptureMode,
     /// Where the compiled eBPF object lives, for the kernel backend.
     bpf_object:         String,
+    /// Detection tuning. See `AnalysisConfig` for what each one does.
+    entropy_sigma_floor:   f64,
+    entropy_sigma_ceiling: f64,
+    rate_sigma_floor:      f64,
+    distributed_dominance: f64,
 }
 
 /// How packets are observed.
@@ -137,6 +142,10 @@ impl CliArgs {
         let mut egress_interface: Option<String> = None;
         let mut capture_mode = CaptureMode::Pcap;
         let mut bpf_object = crate::kernel::DEFAULT_OBJECT_PATH.to_string();
+        let mut entropy_sigma_floor = state::DEFAULT_ENTROPY_SIGMA_FLOOR;
+        let mut entropy_sigma_ceiling = state::DEFAULT_ENTROPY_SIGMA_CEILING;
+        let mut rate_sigma_floor = state::DEFAULT_RATE_SIGMA_FLOOR;
+        let mut distributed_dominance = state::DEFAULT_DISTRIBUTED_DOMINANCE;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
         let mut k         = 2.0_f64;
@@ -176,6 +185,22 @@ impl CliArgs {
                     if let Some(v) = args.get(i) {
                         bpf_object = v.clone();
                     }
+                }
+                "--entropy-sigma-floor" => {
+                    i += 1;
+                    entropy_sigma_floor = parse_positive(args.get(i), "--entropy-sigma-floor");
+                }
+                "--entropy-sigma-ceiling" => {
+                    i += 1;
+                    entropy_sigma_ceiling = parse_positive(args.get(i), "--entropy-sigma-ceiling");
+                }
+                "--rate-sigma-floor" => {
+                    i += 1;
+                    rate_sigma_floor = parse_positive(args.get(i), "--rate-sigma-floor");
+                }
+                "--distributed-dominance" => {
+                    i += 1;
+                    distributed_dominance = parse_positive(args.get(i), "--distributed-dominance");
                 }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
@@ -292,7 +317,20 @@ impl CliArgs {
             None
         };
 
-        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object }
+        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
+               entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance }
+    }
+}
+
+/// Parse a tuning value, exiting with a readable message rather than silently
+/// falling back to a default the operator did not ask for.
+fn parse_positive(raw: Option<&String>, flag: &str) -> f64 {
+    match raw.and_then(|v| v.parse::<f64>().ok()) {
+        Some(v) if v > 0.0 && v.is_finite() => v,
+        _ => {
+            eprintln!("Error: {flag} needs a positive number, got {raw:?}.");
+            process::exit(1);
+        }
     }
 }
 
@@ -312,6 +350,15 @@ fn print_usage(bin: &str) {
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
     eprintln!("  --k          <FLOAT>   Anomaly multiplier k  [default: 2.0]");
     eprintln!("  --alpha      <FLOAT>   EWMA smoothing alpha  [default: 0.125]");
+    eprintln!();
+    eprintln!("Detection tuning (raise the entropy floor if normal traffic is being flagged):");
+    eprintln!("  --entropy-sigma-floor <F>    Smallest entropy deviation used for the");
+    eprintln!("                               boundary [default: {}]", state::DEFAULT_ENTROPY_SIGMA_FLOOR);
+    eprintln!("  --entropy-sigma-ceiling <F>  Largest, so the boundary cannot drift so");
+    eprintln!("                               wide nothing trips it [default: {}]", state::DEFAULT_ENTROPY_SIGMA_CEILING);
+    eprintln!("  --rate-sigma-floor <F>       Same floor for the rate, in pps [default: {}]", state::DEFAULT_RATE_SIGMA_FLOOR);
+    eprintln!("  --distributed-dominance <F>  Below this share from one source, traffic is");
+    eprintln!("                               too spread out to be a flood [default: {}]", state::DEFAULT_DISTRIBUTED_DOMINANCE);
     eprintln!("  --socket     <PATH>    IPC socket path       [default: /run/ddos_stage1/stage1.sock]");
     eprintln!("  --no-filter            Disable BPF filter (dev/test only)");
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
@@ -495,6 +542,10 @@ fn main() {
         baseline_path:      args.baseline_path.clone(),
         baseline_ttl_secs:  args.baseline_ttl_secs,
         egress_enabled:     args.egress_interface.is_some(),
+        entropy_sigma_floor:   args.entropy_sigma_floor,
+        entropy_sigma_ceiling: args.entropy_sigma_ceiling,
+        rate_sigma_floor:      args.rate_sigma_floor,
+        distributed_dominance: args.distributed_dominance,
     };
 
     // The kernel backend replaces the capture threads entirely: no pcap
