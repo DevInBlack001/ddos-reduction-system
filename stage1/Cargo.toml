@@ -43,3 +43,8 @@ log               = "0.4"
 env_logger        = "0.11"
 serde             = { version = "1", features = ["derive"] }
 serde_json        = "1"
+# Loads and attaches the XDP and TC programs, and reads their maps. The object
+# itself is built separately by scripts/build-ebpf.sh and loaded at runtime, so
+# the sensor still compiles on a machine with no eBPF toolchain.
+aya               = "0.14"
+ddos-stage1-common = { path = "../stage1-common", features = ["user"] }

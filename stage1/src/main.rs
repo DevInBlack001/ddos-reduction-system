@@ -14,6 +14,7 @@ mod capture;
 mod entropy;
 mod ewma;
 mod ipc;
+mod kernel;
 mod persistence;
 mod state;
 mod welford;
