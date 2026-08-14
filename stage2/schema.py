@@ -1,15 +1,9 @@
 """
 schema.py: the database layout, defined once.
 
-stage2.py and setup_admin.py both used to create these tables with their own
-CREATE TABLE statements, and the two disagreed: setup_admin.py declared
-logs.rate NOT NULL while stage2.py left it nullable. Since both used
-CREATE TABLE IF NOT EXISTS, whichever ran first decided the real layout, and
-the installer runs setup_admin.py first. Every incident with no measured rate
-then failed to write.
-
-Both callers now use apply(), so there is one definition and one place to
-change it.
+Every table is created here, via apply(), rather than by each caller with its
+own CREATE TABLE statement: two definitions of the same table with different
+constraints lets whichever runs first decide the real layout.
 """
 
 import logging

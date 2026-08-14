@@ -98,7 +98,7 @@ impl KernelCapture {
             .program_mut("ingress")
             .ok_or("object has no 'ingress' program")?
             .try_into()
-            .map_err(|e| format!("'ingress' is not an XDP program: {e}"))?;
+            .map_err(|e| format!("'ingress' is not an XDP program: {}", error_chain(&e)))?;
         program
             .load()
             .map_err(|e| format!("verifier rejected 'ingress': {}", error_chain(&e)))?;
@@ -130,7 +130,7 @@ impl KernelCapture {
                 .program_mut("egress")
                 .ok_or("object has no 'egress' program")?
                 .try_into()
-                .map_err(|e| format!("'egress' is not a classifier: {e}"))?;
+                .map_err(|e| format!("'egress' is not a classifier: {}", error_chain(&e)))?;
             program
                 .load()
                 .map_err(|e| format!("verifier rejected 'egress': {}", error_chain(&e)))?;
@@ -158,7 +158,7 @@ impl KernelCapture {
             .map_mut("PROTECTED")
             .ok_or("object has no 'PROTECTED' map")?
             .try_into()
-            .map_err(|e| format!("'PROTECTED' is not an LPM trie: {e}"))?;
+            .map_err(|e| format!("'PROTECTED' is not an LPM trie: {}", error_chain(&e)))?;
 
         let entries: Vec<(Addr, u32)> = match targets {
             VictimTargets::List(ips) => ips.iter().map(|ip| (to_addr(*ip), 128)).collect(),
@@ -176,7 +176,7 @@ impl KernelCapture {
         for (addr, prefix_len) in &entries {
             let key = aya::maps::lpm_trie::Key::new(*prefix_len, *addr);
             trie.insert(&key, 1u8, 0)
-                .map_err(|e| format!("could not add a protected host: {e}"))?;
+                .map_err(|e| format!("could not add a protected host: {}", error_chain(&e)))?;
         }
         info!("Kernel: {} protected host entries loaded", entries.len());
         Ok(())
@@ -209,7 +209,7 @@ impl KernelCapture {
             .map_mut("COUNTERS")
             .ok_or("object has no 'COUNTERS' map")?
             .try_into()
-            .map_err(|e| format!("'COUNTERS' has an unexpected type: {e}"))?;
+            .map_err(|e| format!("'COUNTERS' has an unexpected type: {}", error_chain(&e)))?;
 
         let keys: Vec<Addr> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {
@@ -238,7 +238,7 @@ impl KernelCapture {
             .map_mut("SOURCES")
             .ok_or("object has no 'SOURCES' map")?
             .try_into()
-            .map_err(|e| format!("'SOURCES' has an unexpected type: {e}"))?;
+            .map_err(|e| format!("'SOURCES' has an unexpected type: {}", error_chain(&e)))?;
 
         let keys: Vec<SourceKey> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {
@@ -260,7 +260,7 @@ impl KernelCapture {
             .map_mut("FLOWS")
             .ok_or("object has no 'FLOWS' map")?
             .try_into()
-            .map_err(|e| format!("'FLOWS' has an unexpected type: {e}"))?;
+            .map_err(|e| format!("'FLOWS' has an unexpected type: {}", error_chain(&e)))?;
 
         let keys: Vec<FlowKey> = map.keys().filter_map(|k| k.ok()).collect();
         for key in keys {

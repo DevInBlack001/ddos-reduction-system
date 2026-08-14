@@ -9,7 +9,6 @@ with `app.middleware("http")(auth.auth_middleware)`.
 """
 
 import time
-import sqlite3
 import secrets
 import logging
 
@@ -18,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Form, status
 from fastapi.responses import RedirectResponse, JSONResponse
 
 import config
+import db
 import state
 
 router = APIRouter()
@@ -81,15 +81,17 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     # Protected paths: static HTMLs, API routes, root path
+    refresh_cookie = False
+    session_id = None
     if path.endswith(".html") or path == "/" or path.startswith("/api/"):
         session_id = request.cookies.get("session_id")
         is_valid = False
         session = state.active_sessions.get(session_id)
         if session is not None:
-            # Check 10 minutes timeout (600s)
-            if time.time() - session["last_active"] <= 600:
+            if time.time() - session["last_active"] <= state.SESSION_IDLE_TIMEOUT_SECS:
                 session["last_active"] = time.time()  # refresh
                 is_valid = True
+                refresh_cookie = True
             else:
                 del state.active_sessions[session_id]
 
@@ -98,7 +100,20 @@ async def auth_middleware(request: Request, call_next):
                 return JSONResponse(status_code=401, content={"detail": "Session expired. Re-authenticate."})
             return RedirectResponse(url="/static/login.html")
 
-    return await call_next(request)
+    response = await call_next(request)
+    if refresh_cookie:
+        # The server-side session slides on activity; the cookie must too, or
+        # an actively used session still gets logged out at the fixed expiry
+        # set at login.
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            max_age=state.SESSION_IDLE_TIMEOUT_SECS,
+            httponly=True,
+            samesite="lax",
+            secure=config.tls_enabled(),
+        )
+    return response
 
 
 @router.post("/api/login")
@@ -111,7 +126,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
                 detail=f"Too many failed login attempts. Try again in up to {state.LOGIN_LOCKOUT_SECS // 60} minutes."
             )
 
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
         row = cursor.fetchone()
@@ -142,7 +157,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             response.set_cookie(
                 key="session_id",
                 value=session_token,
-                max_age=600,
+                max_age=state.SESSION_IDLE_TIMEOUT_SECS,
                 httponly=True,
                 samesite="lax",
                 secure=config.tls_enabled()

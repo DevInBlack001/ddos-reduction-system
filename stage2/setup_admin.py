@@ -8,6 +8,7 @@ import secrets
 import bcrypt
 
 import schema
+from models import _check_password_strength
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "stage2.db"))
 
@@ -64,7 +65,18 @@ def main():
         if not password:
             password = generate_random_password()
             is_generated = True
-            
+        else:
+            while True:
+                try:
+                    _check_password_strength(password)
+                    break
+                except ValueError as e:
+                    password = input(f"[!] {e} Try again (or press ENTER to auto-generate): ").strip()
+                    if not password:
+                        password = generate_random_password()
+                        is_generated = True
+                        break
+
         password_hash = hash_password(password)
 
         conn = sqlite3.connect(DB_PATH)

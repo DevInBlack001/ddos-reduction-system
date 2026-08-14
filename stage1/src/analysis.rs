@@ -94,6 +94,23 @@ fn baseline_has_drifted(mean: f64, reference: f64) -> bool {
     reference > 0.0 && (mean - reference).abs() / reference > MAX_BASELINE_DRIFT
 }
 
+/// Rate multiplier after entropy-guided scaling and the emergency volume
+/// override.
+///
+/// A raw rate `cfg.emergency_volume_sigma` standard deviations above the mean
+/// bypasses entropy scaling entirely, so a high-entropy flood cannot raise
+/// its own detection threshold without bound. Shared by the live boundary
+/// and the cooldown-triggering "real anomaly" check, which apply the same
+/// scaling against different `k` values.
+fn scaled_rate_k(cfg: &AnalysisConfig, base_k: f64, r: f64, mean_rate: f64, sigma_r: f64, h: f64, mean_h: f64) -> f64 {
+    if r > mean_rate + cfg.emergency_volume_sigma * sigma_r {
+        base_k
+    } else {
+        let divisor = if mean_h > 0.0 { mean_h } else { cfg.entropy_k_fallback };
+        base_k * (h / divisor).max(1.0)
+    }
+}
+
 /// Whether a window's entropy counts as an anomaly.
 ///
 /// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
@@ -539,46 +556,31 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 target_state.warmup_completed_logged = true;
             }
 
-            // Get raw standard deviations
             let raw_sigma_r = target_state.welford_rate.std_dev();
             let raw_sigma_h = target_state.welford_entropy.std_dev();
 
-            // 1. Sigma Ceiling & Floor: Cap the standard deviation to prevent the boundaries from drifting too wide,
-            // but also enforce a floor to prevent zero-baseline lockout.
-            // Cap rate standard deviation at 10000.0 pps or 20% of the mean (whichever is larger), floor at 50.0.
-            let ceiling_r = (0.2 * target_state.welford_rate.mean).max(10000.0);
+            // Bounded so the boundary can neither collapse onto the mean nor
+            // drift so wide that nothing ever trips it.
+            let ceiling_r = (cfg.rate_sigma_ceiling_ratio * target_state.welford_rate.mean)
+                .max(cfg.rate_sigma_ceiling_floor);
             let sigma_r = raw_sigma_r.max(cfg.rate_sigma_floor).min(ceiling_r);
-
             let sigma_h = raw_sigma_h.clamp(cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling);
 
-            // 2. High-Sensitivity Cooldown Mode & Entropy-Guided Scaling:
-            // - If we are within the cooldown recovery window, reduce the baseline multiplier to increase sensitivity.
-            // - Scale the rate multiplier up if the entropy is high (indicating high diversity/flash crowd)
-            //   to avoid false rate alarms.
+            // Cooldown reduces k, floored at 1.0, so a target stays easier to
+            // re-detect right after a resolved anomaly.
             let base_k = if target_state.cooldown_counter > 0 {
-                (cfg.k * 0.5).max(1.0)
+                (cfg.k * cfg.cooldown_k_factor).max(1.0)
             } else {
                 cfg.k
             };
 
-            // Dynamic k-Scaling: Scale k relative to the running mean of entropy (mean_h)
-            // instead of a hardcoded 4.0 divisor. Use 4.0 as a fallback if mean_h is 0.0 (warmup).
-            // Also enforce an Emergency Volume Cap: if raw rate exceeds 10 standard deviations above the mean,
-            // override entropy scaling to prevent high-entropy botnet floods from evading detection.
             let mean_h = target_state.welford_entropy.mean;
-            let rate_k = if r > (target_state.welford_rate.mean + 10.0 * sigma_r) {
-                base_k
-            } else {
-                let divisor = if mean_h > 0.0 { mean_h } else { 0.8 };
-                base_k * (h / divisor).max(1.0)
-            };
+            let rate_k = scaled_rate_k(&cfg, base_k, r, target_state.welford_rate.mean, sigma_r, h, mean_h);
             let entropy_k = base_k;
 
-            // Evaluate the two anomaly thresholds.
             let rate_boundary    = target_state.welford_rate.mean + rate_k * sigma_r;
             let entropy_boundary = target_state.welford_entropy.mean - entropy_k * sigma_h;
 
-            // Build anomaly flags bitmask.
             let mut anomaly_flags: u8 = 0;
             if r > rate_boundary {
                 anomaly_flags |= FLAG_RATE_ANOMALY;
@@ -587,21 +589,14 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 anomaly_flags |= FLAG_ENTROPY_ANOMALY;
             }
 
-            // Determine if this window breached the original configuration-level threshold (real anomaly).
-            // This prevents the system from getting trapped in an infinite cooldown loop due to minor
-            // normal fluctuations breaching the tighter active_k.
-            let real_rate_k = if r > (target_state.welford_rate.mean + 10.0 * sigma_r) {
-                cfg.k
-            } else {
-                let divisor = if mean_h > 0.0 { mean_h } else { 0.8 };
-                cfg.k * (h / divisor).max(1.0)
-            };
+            // Recomputed against cfg.k rather than the cooldown-tightened
+            // base_k, so a minor fluctuation cannot keep refilling its own
+            // cooldown window.
+            let real_rate_k = scaled_rate_k(&cfg, cfg.k, r, target_state.welford_rate.mean, sigma_r, h, mean_h);
             let real_rate_boundary = target_state.welford_rate.mean + real_rate_k * sigma_r;
             let real_entropy_boundary = target_state.welford_entropy.mean - cfg.k * sigma_h;
             let is_real_anomaly = r > real_rate_boundary || h < real_entropy_boundary;
 
-            // 3. Conditional Updates: Feed scalars into Welford accumulators ONLY if the window is clean
-            // and we are not in cooldown. This keeps the baseline stable and prevents statistical explosion.
             // Named because the baseline snapshot below reuses the same
             // condition. A save must never capture mid attack state.
             let is_clean_window = window_is_clean(
@@ -613,51 +608,50 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 target_state.welford_rate.mean + sigma_r,
             );
             if is_clean_window {
-                // Outlier Rejection: Reject updates if the sample is > 5 standard deviations away.
-                // Baseline Capping: Impose a hard ceiling of 10000.0 pps on the Welford mean rate.
-                let is_rate_outlier = sigma_r > 0.0 && (r - target_state.welford_rate.mean).abs() > 5.0 * sigma_r;
-                if !is_rate_outlier && target_state.welford_rate.mean < 10000.0 {
+                let is_rate_outlier = sigma_r > 0.0
+                    && (r - target_state.welford_rate.mean).abs() > cfg.outlier_sigma * sigma_r;
+                if !is_rate_outlier && target_state.welford_rate.mean < cfg.rate_mean_cap {
                     target_state.welford_rate.update(r);
                 }
 
-                let is_entropy_outlier = sigma_h > 0.0 && (h - target_state.welford_entropy.mean).abs() > 5.0 * sigma_h;
+                let is_entropy_outlier = sigma_h > 0.0
+                    && (h - target_state.welford_entropy.mean).abs() > cfg.outlier_sigma * sigma_h;
                 if !is_entropy_outlier {
                     target_state.welford_entropy.update(h);
                 }
 
                 // A very slow average, used below to notice the baseline
-                // drifting somewhere it should not.
-                //
-                // Seeded from the mean it will be compared against, not from
-                // the current window. Seeding from one window sets the
-                // reference to whatever that moment happened to read, which
-                // then disagrees with a two hundred sample mean immediately
-                // and reports ordinary variation as drift.
+                // drifting somewhere it should not. Seeded from the mean it
+                // will be compared against: seeding from one window instead
+                // disagrees with a two hundred sample mean immediately and
+                // reports ordinary variation as drift.
                 let mean_rate_now = target_state.welford_rate.mean;
                 let mean_entropy_now = target_state.welford_entropy.mean;
+                let w = cfg.peacetime_ewma_weight;
 
                 let rate_ref = target_state.peacetime_rate_ref.get_or_insert(mean_rate_now);
-                *rate_ref = 0.001 * r + 0.999 * (*rate_ref);
+                *rate_ref = w * r + (1.0 - w) * (*rate_ref);
 
                 let entropy_ref = target_state
                     .peacetime_entropy_ref
                     .get_or_insert(mean_entropy_now);
-                *entropy_ref = 0.001 * h + 0.999 * (*entropy_ref);
-            
+                *entropy_ref = w * h + (1.0 - w) * (*entropy_ref);
+
                 // Revert the running mean if it has drifted away from the
                 // slow reference, which is what a poisoning attempt looks like.
                 if baseline_has_drifted(target_state.welford_rate.mean, *rate_ref) {
                     warn!(
-                        "[!!!] Baseline Poisoning Detected for victim {}! Welford mean rate ({:.2}) deviated >50% from peacetime reference ({:.2}). Reverting mean.",
-                        victim_ip, target_state.welford_rate.mean, *rate_ref
+                        "Analysis [victim={}]: baseline poisoning suspected, mean rate ({:.2}) deviated >{:.0}% from the peacetime reference ({:.2}); reverting.",
+                        victim_ip, target_state.welford_rate.mean, MAX_BASELINE_DRIFT * 100.0, *rate_ref
                     );
                     target_state.welford_rate.mean = *rate_ref;
                 }
             }
 
-            // Manage cooldown counter: if a real anomaly is detected, set to 10. Otherwise decrement.
+            // A real anomaly (re)starts the cooldown window; otherwise it
+            // counts down.
             if is_real_anomaly {
-                target_state.cooldown_counter = 10;
+                target_state.cooldown_counter = cfg.cooldown_windows as usize;
             } else if target_state.cooldown_counter > 0 {
                 target_state.cooldown_counter -= 1;
             }
@@ -741,8 +735,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             }
 
             // V4: periodically persist ALL targets' baselines, but only when
-            // triggered from a clean window (is_clean_window, captured above --
-            // the same gate that decides whether to feed Welford live). That
+            // triggered from a clean window (is_clean_window, captured above):
+            // the same gate that decides whether to feed Welford live. That
             // guarantees the file on disk can never be a mid-attack snapshot.
             // Rate-limited to SAVE_INTERVAL_SECS regardless of how many clean
             // windows close in between, to bound both disk I/O and how much

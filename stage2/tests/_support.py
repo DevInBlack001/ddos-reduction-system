@@ -100,14 +100,26 @@ class FakeRequest:
         self.client = FakeClient(host) if host else None
 
 
-def run_middleware(middleware, request, response="passed through"):
-    """Drive the async auth middleware and return whatever came back.
+class _PassedThroughResponse(str):
+    """A pass-through sentinel that also tolerates response.set_cookie().
 
-    A string sentinel stands in for the downstream response, so a test can
-    tell "the request was allowed through" from "the middleware answered
-    it itself".
+    A string stand-in for the downstream response lets a test tell "the
+    request was allowed through" from "the middleware answered it itself"
+    via a plain equality check. The middleware refreshes the session cookie
+    on every valid request, which calls set_cookie() on whatever call_next
+    returned, so the sentinel needs to accept that call too.
     """
+
+    def set_cookie(self, **kwargs):
+        pass
+
+
+def run_middleware(middleware, request, response=None):
+    """Drive the async auth middleware and return whatever came back."""
     import asyncio
+
+    if response is None:
+        response = _PassedThroughResponse("passed through")
 
     async def call_next(_request):
         return response

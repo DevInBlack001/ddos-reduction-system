@@ -7,7 +7,6 @@ import time
 import csv
 import math
 import uuid
-import sqlite3
 import logging
 from io import BytesIO, StringIO
 from xml.sax.saxutils import escape as xml_escape
@@ -23,6 +22,7 @@ from reportlab.graphics.shapes import Drawing, Rect, Circle, Line, String as RLS
 from reportlab.pdfgen import canvas as pdfcanvas
 
 import config
+import db
 import state
 import enforcement
 from auth import get_session_username
@@ -52,7 +52,7 @@ LABEL_COLOR = colors.HexColor('#333333')
 @router.get("/api/logs/export/csv")
 def export_csv():
     try:
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         cursor.execute("SELECT timestamp, src_ip, dst_ip, proto, rate, entropy, classification FROM logs ORDER BY id DESC")
         rows = cursor.fetchall()
@@ -490,7 +490,7 @@ def export_pdf(payload: PdfReportPayload, request: Request):
 
         elements.append(Paragraph("LATEST RECORDED THREAT METADATA (LAST 100 INCIDENTS)", header_style))
 
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         cursor.execute("SELECT timestamp, src_ip, dst_ip, rate, entropy, classification FROM logs ORDER BY id DESC LIMIT 100")
         rows = cursor.fetchall()

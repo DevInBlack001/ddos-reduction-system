@@ -9,6 +9,7 @@ sends synchronously and reports per-channel success/failure, since the
 entire point of a "test" button is immediate feedback on misconfiguration.
 """
 
+import re
 import smtplib
 import logging
 import queue
@@ -26,6 +27,29 @@ router = APIRouter()
 
 _alert_queue = queue.Queue(maxsize=100)
 
+_WEBHOOK_PATH_RE = re.compile(r"/api/webhooks/\d+/[A-Za-z0-9_-]+")
+
+
+def _redact_secrets(text: str, cfg: dict) -> str:
+    """Strip credentials from an error string before it is logged or
+    returned to the dashboard.
+
+    A network exception does not necessarily contain the webhook URL as one
+    contiguous substring; requests/urllib3 often format the host and the
+    path into separate parts of the message. Matching the path pattern
+    itself, rather than the full URL, catches it either way. The SMTP
+    username and password are matched as literal substrings since those are
+    not reformatted by smtplib.
+    """
+    text = _WEBHOOK_PATH_RE.sub("/api/webhooks/REDACTED", text)
+    password = cfg.get("smtp_app_password") or ""
+    username = cfg.get("smtp_username") or ""
+    if password:
+        text = text.replace(password, "REDACTED")
+    if username:
+        text = text.replace(username, "REDACTED")
+    return text
+
 
 def send_discord_alert(message: str):
     """Returns (success, error_message)."""
@@ -35,13 +59,15 @@ def send_discord_alert(message: str):
     try:
         resp = requests.post(cfg["discord_webhook_url"], json={"content": message}, timeout=10)
         if resp.status_code >= 300:
+            body = _redact_secrets(resp.text[:200], cfg)
             err = f"Discord webhook returned HTTP {resp.status_code}"
-            logging.error(f"[-] {err}: {resp.text[:200]}")
+            logging.error(f"[-] {err}: {body}")
             return False, err
         return True, ""
     except Exception as e:
-        logging.error(f"[-] Failed to send Discord alert: {e}")
-        return False, str(e)
+        err = _redact_secrets(str(e), cfg)
+        logging.error(f"[-] Failed to send Discord alert: {err}")
+        return False, err
 
 
 def send_email_alert(subject: str, body: str):
@@ -60,8 +86,9 @@ def send_email_alert(subject: str, body: str):
             server.sendmail(cfg["smtp_username"], cfg["email_recipients"], msg.as_string())
         return True, ""
     except Exception as e:
-        logging.error(f"[-] Failed to send email alert: {e}")
-        return False, str(e)
+        err = _redact_secrets(str(e), cfg)
+        logging.error(f"[-] Failed to send email alert: {err}")
+        return False, err
 
 
 def dispatch_alert(subject: str, message: str):

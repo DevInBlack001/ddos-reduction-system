@@ -354,16 +354,24 @@ info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
 install -m 755 "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary installed: $INSTALL_DIR/$BINARY_NAME"
 
-# Grant CAP_NET_RAW so the binary can capture packets without running as root.
+# Grant capabilities so the binary can run without root. CAP_NET_RAW covers
+# libpcap; CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON cover the kernel backend loading
+# and attaching programs. Falls back to CAP_NET_RAW alone on a kernel too old
+# to recognise the others, since pcap capture must still work either way.
 if command -v setcap &>/dev/null; then
-    setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
-    success "CAP_NET_RAW capability granted, binary can run without sudo."
+    if setcap cap_net_raw,cap_bpf,cap_net_admin,cap_perfmon+ep "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null; then
+        success "Capabilities granted (CAP_NET_RAW, CAP_BPF, CAP_NET_ADMIN, CAP_PERFMON), binary can run without sudo."
+    else
+        setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
+        success "CAP_NET_RAW capability granted, binary can run without sudo."
+        warn "Could not grant CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON; the kernel backend needs root or --capture-mode pcap when run by hand."
+    fi
 else
     warn "setcap not found. You will need to run $BINARY_NAME as root."
 fi
 
-# Dedicated, unprivileged service account for Stage 1. It only needs
-# CAP_NET_RAW (granted above via setcap, and again below via the systemd
+# Dedicated, unprivileged service account for Stage 1. It only needs the
+# capabilities granted above via setcap (and again below via the systemd
 # unit's AmbientCapabilities), not full root, running the packet-capture
 # daemon as root means any bug in it has root's blast radius for no reason.
 # ddos-ipc is a shared group so this account can reach the Stage 1 <-> Stage

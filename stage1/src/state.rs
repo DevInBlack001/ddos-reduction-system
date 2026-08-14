@@ -23,6 +23,15 @@ pub const DEFAULT_ENTROPY_SIGMA_FLOOR: f64 = 0.05;
 pub const DEFAULT_ENTROPY_SIGMA_CEILING: f64 = 0.15;
 pub const DEFAULT_RATE_SIGMA_FLOOR: f64 = 50.0;
 pub const DEFAULT_DISTRIBUTED_DOMINANCE: f64 = 0.40;
+pub const DEFAULT_EMERGENCY_VOLUME_SIGMA: f64 = 10.0;
+pub const DEFAULT_ENTROPY_K_FALLBACK: f64 = 0.8;
+pub const DEFAULT_RATE_SIGMA_CEILING_RATIO: f64 = 0.2;
+pub const DEFAULT_RATE_SIGMA_CEILING_FLOOR: f64 = 10000.0;
+pub const DEFAULT_OUTLIER_SIGMA: f64 = 5.0;
+pub const DEFAULT_RATE_MEAN_CAP: f64 = 10000.0;
+pub const DEFAULT_COOLDOWN_WINDOWS: u64 = 10;
+pub const DEFAULT_COOLDOWN_K_FACTOR: f64 = 0.5;
+pub const DEFAULT_PEACETIME_EWMA_WEIGHT: f64 = 0.001;
 
 /// Runtime parameters for the analysis thread.
 #[derive(Debug, Clone)]
@@ -73,6 +82,33 @@ pub struct AnalysisConfig {
     /// `dominant_ip_ratio_block_threshold`. They are separate processes and
     /// this one cannot read that file, so if you change one, change both.
     pub distributed_dominance: f64,
+    /// Rate deviation, in standard deviations above the mean, past which
+    /// entropy-based k scaling is bypassed and the plain multiplier applies.
+    /// Stops a high-entropy botnet flood from raising its own threshold
+    /// without bound.
+    pub emergency_volume_sigma: f64,
+    /// Divisor used for entropy-guided k scaling when the learned mean
+    /// entropy is still 0.0, i.e. during warm-up.
+    pub entropy_k_fallback: f64,
+    /// The rate standard deviation's ceiling is this fraction of the mean,
+    /// or `rate_sigma_ceiling_floor`, whichever is larger.
+    pub rate_sigma_ceiling_ratio: f64,
+    /// Floor under the rate sigma ceiling; see `rate_sigma_ceiling_ratio`.
+    pub rate_sigma_ceiling_floor: f64,
+    /// A sample this many standard deviations from the mean is rejected as
+    /// an outlier rather than folded into the baseline.
+    pub outlier_sigma: f64,
+    /// Hard ceiling on the learned mean rate, in packets per second.
+    pub rate_mean_cap: f64,
+    /// How many windows of heightened sensitivity follow a real anomaly.
+    pub cooldown_windows: u64,
+    /// How much a window inside the cooldown window reduces k, floored at
+    /// 1.0 so it can never fall below one standard deviation.
+    pub cooldown_k_factor: f64,
+    /// EWMA weight used for the peacetime reference. Deliberately much
+    /// smaller than `ewma_alpha`: the reference needs to move slower than
+    /// the mean it guards, or it cannot tell drift from ordinary variation.
+    pub peacetime_ewma_weight: f64,
 }
 
 impl Default for AnalysisConfig {
@@ -91,6 +127,15 @@ impl Default for AnalysisConfig {
             entropy_sigma_ceiling: DEFAULT_ENTROPY_SIGMA_CEILING,
             rate_sigma_floor:      DEFAULT_RATE_SIGMA_FLOOR,
             distributed_dominance: DEFAULT_DISTRIBUTED_DOMINANCE,
+            emergency_volume_sigma: DEFAULT_EMERGENCY_VOLUME_SIGMA,
+            entropy_k_fallback:     DEFAULT_ENTROPY_K_FALLBACK,
+            rate_sigma_ceiling_ratio: DEFAULT_RATE_SIGMA_CEILING_RATIO,
+            rate_sigma_ceiling_floor: DEFAULT_RATE_SIGMA_CEILING_FLOOR,
+            outlier_sigma:          DEFAULT_OUTLIER_SIGMA,
+            rate_mean_cap:          DEFAULT_RATE_MEAN_CAP,
+            cooldown_windows:       DEFAULT_COOLDOWN_WINDOWS,
+            cooldown_k_factor:      DEFAULT_COOLDOWN_K_FACTOR,
+            peacetime_ewma_weight:  DEFAULT_PEACETIME_EWMA_WEIGHT,
         }
     }
 }
@@ -132,7 +177,7 @@ impl TargetState {
     /// for this address was loaded and is still within its TTL.
     ///
     /// Everything NOT restored here (window_id, ip_counts, timing fields)
-    /// is intentionally transient and correctly starts fresh regardless --
+    /// is intentionally transient and correctly starts fresh regardless;
     /// see persistence.rs's module docs for why only the statistical
     /// baseline itself is worth carrying across a restart.
     pub fn new(ewma_alpha: f64, persisted: Option<&PersistedBaseline>) -> Self {

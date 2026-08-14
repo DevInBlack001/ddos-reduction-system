@@ -1,9 +1,9 @@
 """
 state.py: Shared, in-memory, mutable state for the running Stage 2 process.
 
-Always reached via `import state; state.xxx`, never `from state import xxx`
--- `last_metrics` gets rebound to a new dict every window, and a `from`
-import would keep pointing at the stale object.
+Always reached via `import state; state.xxx`, never `from state import xxx`:
+`last_metrics` gets rebound to a new dict every window, and a `from` import
+would keep pointing at the stale object.
 """
 
 # Most recent window's metrics, across all victims (last one received wins).
@@ -55,6 +55,14 @@ failed_login_attempts = {}  # client_ip -> list of failure timestamps
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECS = 300
 LOGIN_LOCKOUT_SECS = 300
+
+# Throttling for the admin-password re-entry account management requires
+# (users.py), keyed by the caller's own username: the same lockout policy
+# as login, since the caller already holds a valid session and could
+# otherwise guess unboundedly.
+failed_reauth_attempts = {}  # username -> list of failure timestamps
+
+SESSION_IDLE_TIMEOUT_SECS = 600
 
 # victim_ip -> last classification seen, so alerts.py only alerts on an
 # actual transition, not every window spent classified DDoS.

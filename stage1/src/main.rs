@@ -123,6 +123,15 @@ struct CliArgs {
     entropy_sigma_ceiling: f64,
     rate_sigma_floor:      f64,
     distributed_dominance: f64,
+    emergency_volume_sigma:   f64,
+    entropy_k_fallback:       f64,
+    rate_sigma_ceiling_ratio: f64,
+    rate_sigma_ceiling_floor: f64,
+    outlier_sigma:            f64,
+    rate_mean_cap:            f64,
+    cooldown_windows:         u64,
+    cooldown_k_factor:        f64,
+    peacetime_ewma_weight:    f64,
 }
 
 /// How packets are observed.
@@ -146,6 +155,15 @@ impl CliArgs {
         let mut entropy_sigma_ceiling = state::DEFAULT_ENTROPY_SIGMA_CEILING;
         let mut rate_sigma_floor = state::DEFAULT_RATE_SIGMA_FLOOR;
         let mut distributed_dominance = state::DEFAULT_DISTRIBUTED_DOMINANCE;
+        let mut emergency_volume_sigma = state::DEFAULT_EMERGENCY_VOLUME_SIGMA;
+        let mut entropy_k_fallback = state::DEFAULT_ENTROPY_K_FALLBACK;
+        let mut rate_sigma_ceiling_ratio = state::DEFAULT_RATE_SIGMA_CEILING_RATIO;
+        let mut rate_sigma_ceiling_floor = state::DEFAULT_RATE_SIGMA_CEILING_FLOOR;
+        let mut outlier_sigma = state::DEFAULT_OUTLIER_SIGMA;
+        let mut rate_mean_cap = state::DEFAULT_RATE_MEAN_CAP;
+        let mut cooldown_windows = state::DEFAULT_COOLDOWN_WINDOWS;
+        let mut cooldown_k_factor = state::DEFAULT_COOLDOWN_K_FACTOR;
+        let mut peacetime_ewma_weight = state::DEFAULT_PEACETIME_EWMA_WEIGHT;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
         let mut k         = 2.0_f64;
@@ -201,6 +219,42 @@ impl CliArgs {
                 "--distributed-dominance" => {
                     i += 1;
                     distributed_dominance = parse_positive(args.get(i), "--distributed-dominance");
+                }
+                "--emergency-volume-sigma" => {
+                    i += 1;
+                    emergency_volume_sigma = parse_positive(args.get(i), "--emergency-volume-sigma");
+                }
+                "--entropy-k-fallback" => {
+                    i += 1;
+                    entropy_k_fallback = parse_positive(args.get(i), "--entropy-k-fallback");
+                }
+                "--rate-sigma-ceiling-ratio" => {
+                    i += 1;
+                    rate_sigma_ceiling_ratio = parse_positive(args.get(i), "--rate-sigma-ceiling-ratio");
+                }
+                "--rate-sigma-ceiling-floor" => {
+                    i += 1;
+                    rate_sigma_ceiling_floor = parse_positive(args.get(i), "--rate-sigma-ceiling-floor");
+                }
+                "--outlier-sigma" => {
+                    i += 1;
+                    outlier_sigma = parse_positive(args.get(i), "--outlier-sigma");
+                }
+                "--rate-mean-cap" => {
+                    i += 1;
+                    rate_mean_cap = parse_positive(args.get(i), "--rate-mean-cap");
+                }
+                "--cooldown-windows" => {
+                    i += 1;
+                    cooldown_windows = parse_positive_u64(args.get(i), "--cooldown-windows");
+                }
+                "--cooldown-k-factor" => {
+                    i += 1;
+                    cooldown_k_factor = parse_positive(args.get(i), "--cooldown-k-factor");
+                }
+                "--peacetime-ewma-weight" => {
+                    i += 1;
+                    peacetime_ewma_weight = parse_positive(args.get(i), "--peacetime-ewma-weight");
                 }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
@@ -318,7 +372,9 @@ impl CliArgs {
         };
 
         Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
-               entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance }
+               entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
+               emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
+               outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight }
     }
 }
 
@@ -334,6 +390,17 @@ fn parse_positive(raw: Option<&String>, flag: &str) -> f64 {
     }
 }
 
+/// Same as `parse_positive`, for tuning values that count whole windows.
+fn parse_positive_u64(raw: Option<&String>, flag: &str) -> u64 {
+    match raw.and_then(|v| v.parse::<u64>().ok()) {
+        Some(v) if v > 0 => v,
+        _ => {
+            eprintln!("Error: {flag} needs a positive whole number, got {raw:?}.");
+            process::exit(1);
+        }
+    }
+}
+
 fn print_usage(bin: &str) {
     eprintln!(
         "\nUsage: {bin} --interface <IFACE> [--victim-ips <IP1,IP2,...> | --victim-subnet <SUBNET>] [OPTIONS]\n"
@@ -344,7 +411,7 @@ fn print_usage(bin: &str) {
     eprintln!("                         instead of libpcap, and needs the compiled object");
     eprintln!("  --bpf-object <PATH>    eBPF object for the kernel backend");
     eprintln!("                         [default: {}]", crate::kernel::DEFAULT_OBJECT_PATH);
-    eprintln!("  --egress-interface <IFACE>  V5: egress interface. Enables drop-rate measurement");
+    eprintln!("  --egress-interface <IFACE>  Egress interface. Enables drop-rate measurement");
     eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
@@ -359,13 +426,32 @@ fn print_usage(bin: &str) {
     eprintln!("  --rate-sigma-floor <F>       Same floor for the rate, in pps [default: {}]", state::DEFAULT_RATE_SIGMA_FLOOR);
     eprintln!("  --distributed-dominance <F>  Below this share from one source, traffic is");
     eprintln!("                               too spread out to be a flood [default: {}]", state::DEFAULT_DISTRIBUTED_DOMINANCE);
+    eprintln!("  --emergency-volume-sigma <F> Rate deviation, in sigma, past which entropy");
+    eprintln!("                               scaling of k is bypassed [default: {}]", state::DEFAULT_EMERGENCY_VOLUME_SIGMA);
+    eprintln!("  --entropy-k-fallback <F>     Divisor for entropy-guided k scaling before a");
+    eprintln!("                               baseline entropy is learned [default: {}]", state::DEFAULT_ENTROPY_K_FALLBACK);
+    eprintln!("  --rate-sigma-ceiling-ratio <F>  Rate sigma ceiling as a fraction of the mean");
+    eprintln!("                                  [default: {}]", state::DEFAULT_RATE_SIGMA_CEILING_RATIO);
+    eprintln!("  --rate-sigma-ceiling-floor <F>  Floor under that ceiling, in pps");
+    eprintln!("                                  [default: {}]", state::DEFAULT_RATE_SIGMA_CEILING_FLOOR);
+    eprintln!("  --outlier-sigma <F>          Samples this many sigma from the mean are");
+    eprintln!("                               rejected rather than folded into the baseline");
+    eprintln!("                               [default: {}]", state::DEFAULT_OUTLIER_SIGMA);
+    eprintln!("  --rate-mean-cap <F>          Hard ceiling on the learned mean rate, in pps");
+    eprintln!("                               [default: {}]", state::DEFAULT_RATE_MEAN_CAP);
+    eprintln!("  --cooldown-windows <N>       Windows of heightened sensitivity after a real");
+    eprintln!("                               anomaly [default: {}]", state::DEFAULT_COOLDOWN_WINDOWS);
+    eprintln!("  --cooldown-k-factor <F>      How much cooldown reduces k, floored at 1.0");
+    eprintln!("                               [default: {}]", state::DEFAULT_COOLDOWN_K_FACTOR);
+    eprintln!("  --peacetime-ewma-weight <F>  EWMA weight for the slow poisoning-detection");
+    eprintln!("                               reference [default: {}]", state::DEFAULT_PEACETIME_EWMA_WEIGHT);
     eprintln!("  --socket     <PATH>    IPC socket path       [default: /run/ddos_stage1/stage1.sock]");
     eprintln!("  --no-filter            Disable BPF filter (dev/test only)");
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
     eprintln!("  --train-csv  <PATH>    Write ALL post-warmup feature vectors to CSV (training mode)");
     eprintln!("  --label      <INT>     Class label for training CSV rows (0=normal, 1=flash_crowd, 2=ddos)");
-    eprintln!("  --baseline-path <PATH> V4: persisted baseline file [default: /var/lib/ddos_stage1/baselines.json]");
-    eprintln!("  --baseline-ttl-secs <N> V4: reject a persisted baseline older than N seconds [default: 3600]");
+    eprintln!("  --baseline-path <PATH> Persisted baseline file [default: /var/lib/ddos_stage1/baselines.json]");
+    eprintln!("  --baseline-ttl-secs <N> Reject a persisted baseline older than N seconds [default: 3600]");
     eprintln!("  --help, -h             Show this message");
     eprintln!();
     eprintln!("Environment:");
@@ -501,10 +587,7 @@ fn main() {
     builder.target(env_logger::Target::Pipe(Box::new(LogSplitter { file: log_file })));
     builder.init();
 
-    info!("╔══════════════════════════════════════════════════════════╗");
-    info!("║  FLOD System | Stage 1 (Rust)                            ║");
-    info!("║  Abdullah Armiyao | Cyber Security Lab Work             ║");
-    info!("╚══════════════════════════════════════════════════════════╝");
+    info!("FLOD System: Stage 1 sensor starting");
 
     // Build the capture and analysis configurations.
 
@@ -546,6 +629,15 @@ fn main() {
         entropy_sigma_ceiling: args.entropy_sigma_ceiling,
         rate_sigma_floor:      args.rate_sigma_floor,
         distributed_dominance: args.distributed_dominance,
+        emergency_volume_sigma:   args.emergency_volume_sigma,
+        entropy_k_fallback:       args.entropy_k_fallback,
+        rate_sigma_ceiling_ratio: args.rate_sigma_ceiling_ratio,
+        rate_sigma_ceiling_floor: args.rate_sigma_ceiling_floor,
+        outlier_sigma:            args.outlier_sigma,
+        rate_mean_cap:            args.rate_mean_cap,
+        cooldown_windows:         args.cooldown_windows,
+        cooldown_k_factor:        args.cooldown_k_factor,
+        peacetime_ewma_weight:    args.peacetime_ewma_weight,
     };
 
     // The kernel backend replaces the capture threads entirely: no pcap

@@ -113,7 +113,9 @@ The entropy alarm cannot fire, because entropy is high rather than low.
 
 The rate alarm is harder to trip. Entropy guided scaling widens `k` when
 entropy is high, so a high entropy flood raises its own detection threshold.
-Only the fixed emergency multiplier still applies.
+Only the emergency multiplier still applies: a rate more than
+`--emergency-volume-sigma` (default 10.0) standard deviations above the mean
+bypasses entropy scaling regardless of how high entropy has climbed.
 
 Such a flood below that bar tends to be classified as a flash crowd.
 Enforcement would not help much even if it were classified correctly: blocking
@@ -157,6 +159,8 @@ ceilings.
 | `--entropy-sigma-floor` | 0.05 |
 | `--entropy-sigma-ceiling` | 0.15 |
 | `--rate-sigma-floor` | 50.0 |
+| `--rate-sigma-ceiling-ratio` | 0.2 |
+| `--rate-sigma-ceiling-floor` | 10000.0 |
 
 Without a floor the boundary collapses onto the mean. Entropy is normalized to
 [0, 1], so a baseline learned during uniform traffic produces a standard
@@ -165,9 +169,25 @@ ordinary windows fall below their own mean by definition. That is a degenerate
 statistic, not a sensitive detector, and it spends the margin needed to
 recognise a real flood.
 
+The rate sigma ceiling is `--rate-sigma-ceiling-ratio` of the mean, or
+`--rate-sigma-ceiling-floor`, whichever is larger, so the boundary can widen
+with genuinely variable traffic without drifting so far that nothing ever
+trips it.
+
 The defaults are starting points, not values proven optimal. The right floor
 depends on how much a given network's traffic naturally varies, which is why
 it is a flag rather than a constant.
+
+### Cooldown
+
+A real anomaly, evaluated against `--k` rather than the tightened boundary
+below, opens a cooldown window of `--cooldown-windows` (default 10) windows.
+Inside it, `k` is reduced by `--cooldown-k-factor` (default 0.5, floored at
+1.0), so a target recovering from a resolved anomaly stays easier to
+re-detect than it would under the ordinary boundary.
+
+`--entropy-k-fallback` (default 0.8) is the divisor entropy guided k scaling
+uses before a baseline entropy has been learned, i.e. during warm-up.
 
 ## Baseline Poisoning Defences
 
@@ -182,9 +202,13 @@ dragging "normal" up to include their own flood.
 *more* poisonable, since shorter memory is easier to shift. The freeze is what
 makes it safe. A recency cap without the freeze would be a net loss.
 
-On top of both: a ceiling on the mean rate, rejection of outliers beyond five
-sigma, and reversion to a peacetime reference if the mean drifts more than 50
-percent away from it.
+On top of both: a ceiling on the mean rate (`--rate-mean-cap`, default
+10000.0 pps), rejection of outliers beyond `--outlier-sigma` (default 5.0)
+standard deviations, and reversion to a peacetime reference if the mean
+drifts more than 50 percent away from it. The reference itself is an EWMA
+with weight `--peacetime-ewma-weight` (default 0.001), deliberately far
+slower than `--alpha`: it needs to move slower than the mean it guards, or it
+cannot distinguish drift from ordinary variation.
 
 **The peacetime reference is seeded from the mean it guards.** It is an
 extremely slow average, so it takes on the order of a thousand windows to
