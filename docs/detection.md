@@ -184,7 +184,16 @@ makes it safe. A recency cap without the freeze would be a net loss.
 
 On top of both: a ceiling on the mean rate, rejection of outliers beyond five
 sigma, and reversion to a peacetime reference if the mean drifts more than 50
-percent from an ultra slow reference average.
+percent away from it.
+
+**The peacetime reference is seeded from the mean it guards.** It is an
+extremely slow average, so it takes on the order of a thousand windows to
+converge on its own. Seeding it from a single window instead sets it to
+whatever that one moment happened to read, and comparing that against a mean
+built from two hundred windows disagrees immediately. The guard then reports
+ordinary variation as poisoning and overwrites a correctly learned baseline
+with a worse number. Seeded from the mean, the two start in agreement and
+diverge only when something genuinely drifts.
 
 **One narrow exception to the freeze.** A window flagged only on entropy, at a
 normal rate, with dominance below `--distributed-dominance`, still updates the
