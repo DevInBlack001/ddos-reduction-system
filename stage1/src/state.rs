@@ -23,6 +23,11 @@ pub const DEFAULT_ENTROPY_SIGMA_FLOOR: f64 = 0.05;
 pub const DEFAULT_ENTROPY_SIGMA_CEILING: f64 = 0.15;
 pub const DEFAULT_RATE_SIGMA_FLOOR: f64 = 50.0;
 pub const DEFAULT_DISTRIBUTED_DOMINANCE: f64 = 0.40;
+/// Five times the window close threshold. Sized so that "every packet came
+/// from one source" is a statement about the traffic rather than about a
+/// window that happened to be quiet. Not a measured value: raise it if quiet
+/// single client windows are being flagged on your network.
+pub const DEFAULT_ENTROPY_MIN_PACKETS: usize = 100;
 pub const DEFAULT_EMERGENCY_VOLUME_SIGMA: f64 = 10.0;
 pub const DEFAULT_ENTROPY_K_FALLBACK: f64 = 0.8;
 pub const DEFAULT_RATE_SIGMA_CEILING_RATIO: f64 = 0.2;
@@ -82,6 +87,15 @@ pub struct AnalysisConfig {
     /// `dominant_ip_ratio_block_threshold`. They are separate processes and
     /// this one cannot read that file, so if you change one, change both.
     pub distributed_dominance: f64,
+    /// Packets a window needs before its entropy is allowed to raise an
+    /// anomaly.
+    ///
+    /// Concentration is only meaningful when there were enough packets for it
+    /// to be surprising. A quiet window where one client happened to be the
+    /// only one active reads as total concentration and is not an attack.
+    /// Separate from the window close threshold on purpose: raising this must
+    /// not change when windows close.
+    pub entropy_min_packets: usize,
     /// Rate deviation, in standard deviations above the mean, past which
     /// entropy-based k scaling is bypassed and the plain multiplier applies.
     /// Stops a high-entropy botnet flood from raising its own threshold
@@ -127,6 +141,7 @@ impl Default for AnalysisConfig {
             entropy_sigma_ceiling: DEFAULT_ENTROPY_SIGMA_CEILING,
             rate_sigma_floor:      DEFAULT_RATE_SIGMA_FLOOR,
             distributed_dominance: DEFAULT_DISTRIBUTED_DOMINANCE,
+            entropy_min_packets:   DEFAULT_ENTROPY_MIN_PACKETS,
             emergency_volume_sigma: DEFAULT_EMERGENCY_VOLUME_SIGMA,
             entropy_k_fallback:     DEFAULT_ENTROPY_K_FALLBACK,
             rate_sigma_ceiling_ratio: DEFAULT_RATE_SIGMA_CEILING_RATIO,

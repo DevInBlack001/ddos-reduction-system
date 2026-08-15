@@ -56,7 +56,37 @@ pub struct KernelCapture {
     /// Kept so the egress qdisc can be removed on the way out if this created
     /// it. Attaching TC needs a clsact qdisc present on the interface.
     egress_interface: Option<String>,
+    ingress: String,
+    stats: DrainStats,
+    last_status: std::time::Instant,
 }
+
+/// What the last status interval saw.
+///
+/// The pcap backend logs captured and forwarded counts every few seconds, and
+/// that is how a gap between what arrived and what was analysed gets noticed.
+/// Without an equivalent here a quiet network and a backend that has stopped
+/// counting look identical.
+#[derive(Default)]
+struct DrainStats {
+    ingress_packets: u64,
+    egress_packets: u64,
+    /// Distinct source addresses drained. Worth watching because the key is
+    /// attacker controlled: a randomized source flood fills `SOURCES`, after
+    /// which entropy is computed from a truncated histogram. Memory stays
+    /// bounded, but the measurement degrades silently.
+    source_entries: u64,
+    flow_entries: u64,
+    drains: u64,
+    errors: u64,
+}
+
+/// How often to log the status line, matching the pcap backend.
+const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Entries `SOURCES` can hold, from the map definition in the eBPF crate.
+/// Used only to report how full it is.
+const SOURCES_CAPACITY: u64 = 65_536;
 
 impl KernelCapture {
     /// Load the object, populate the protected host set, and attach both
@@ -145,7 +175,43 @@ impl KernelCapture {
         Ok(Self {
             ebpf,
             egress_interface,
+            ingress: ingress.to_string(),
+            stats: DrainStats::default(),
+            last_status: std::time::Instant::now(),
         })
+    }
+
+    /// Log what the last interval drained, on the same cadence the pcap
+    /// backend uses. Called from the analysis loop after each drain.
+    pub fn log_status_if_due(&mut self) {
+        if self.last_status.elapsed() < STATUS_INTERVAL {
+            return;
+        }
+        let s = &self.stats;
+        let fill = (s.source_entries as f64 / SOURCES_CAPACITY as f64) * 100.0;
+        info!(
+            "Kernel: status | interface={} | ingress={} | egress={} | sources={} ({:.1}% of map) \
+             | flows={} | drains={} | errors={}",
+            self.ingress,
+            s.ingress_packets,
+            s.egress_packets,
+            s.source_entries,
+            fill,
+            s.flow_entries,
+            s.drains,
+            s.errors,
+        );
+        // A full source map means entropy is being computed from a truncated
+        // histogram, which is worth saying out loud rather than leaving to be
+        // inferred from the percentage.
+        if s.source_entries >= SOURCES_CAPACITY {
+            warn!(
+                "Kernel: the source map is full, so entropy is being computed from a \
+                 partial view of the sources. Expect it to read higher than it should."
+            );
+        }
+        self.stats = DrainStats::default();
+        self.last_status = std::time::Instant::now();
     }
 
     /// Fill the prefix trie the programs consult to decide whether a packet is
@@ -196,11 +262,23 @@ impl KernelCapture {
     pub fn drain(&mut self) -> Result<HashMap<IpAddr, WindowSample>, String> {
         let mut out: HashMap<IpAddr, WindowSample> = HashMap::new();
 
-        self.drain_counters(&mut out)?;
-        self.drain_sources(&mut out)?;
-        self.drain_flows(&mut out)?;
+        let result = self
+            .drain_counters(&mut out)
+            .and_then(|_| self.drain_sources(&mut out))
+            .and_then(|_| self.drain_flows(&mut out));
 
-        Ok(out)
+        self.stats.drains += 1;
+        if result.is_err() {
+            self.stats.errors += 1;
+        }
+        for sample in out.values() {
+            self.stats.ingress_packets += sample.ingress_packets;
+            self.stats.egress_packets += sample.egress_packets;
+            self.stats.source_entries += sample.sources.len() as u64;
+            self.stats.flow_entries += sample.flows.len() as u64;
+        }
+
+        result.map(|_| out)
     }
 
     fn drain_counters(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {

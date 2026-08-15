@@ -21,10 +21,13 @@
 
 use std::{collections::HashMap, net::IpAddr};
 
-/// Minimum number of packets required for a statistically meaningful entropy
-/// calculation.  Windows closing with fewer packets than this (e.g. during
-/// the 1.0s hard-cap in very low traffic) should be treated with caution.
-pub const MIN_PACKETS_FOR_ENTROPY: usize = 20;
+/// Packets a window needs before it is worth closing early rather than
+/// waiting for the time cap.
+///
+/// This is only about when to close. Whether the resulting entropy is a
+/// trustworthy basis for an anomaly is a separate and much higher bar, set by
+/// `--entropy-min-packets`.
+pub const MIN_PACKETS_TO_CLOSE: usize = 20;
 
 // EntropyAccumulator
 

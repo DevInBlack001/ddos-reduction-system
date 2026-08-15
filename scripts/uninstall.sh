@@ -206,6 +206,7 @@ fi
 info "Removing runtime and persisted-state directories..."
 rm -rf "/run/ddos_stage1"
 rm -rf "/var/lib/ddos_stage1"
+rm -rf "/etc/ddos_stage1"
 rm -rf "/etc/ddos_stage2"
 success "Runtime and state directories removed."
 

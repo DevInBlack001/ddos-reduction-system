@@ -81,6 +81,10 @@ anywhere. With the toolchain in place, `--capture-mode kernel` counts packets
 in the driver path via XDP and TC instead, waking user space once per window
 rather than once per packet. Detection is identical either way.
 
+Detection tuning is measured rather than guessed. `scripts/calibrate.py` reads
+the sensor's own log, samples ordinary traffic, and works out where the anomaly
+boundaries belong on your network.
+
 To run the test suites:
 
 ```bash

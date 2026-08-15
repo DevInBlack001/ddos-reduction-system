@@ -37,6 +37,11 @@ Everything else on this list is additive by comparison.
 Detection did not move. There is no floating point in BPF, so entropy, the
 rate, and every boundary stay in user space exactly where they were.
 
+Tuning became measurable in the same milestone. `scripts/calibrate.py` derives
+the sigma floors from the sensor's own window log rather than leaving an
+operator to read journal excerpts by hand, and every value it can set is a
+flag with a documented default rather than a constant.
+
 ## Planned
 
 **V7, ensemble classification.** A multi model voting layer for evasion and

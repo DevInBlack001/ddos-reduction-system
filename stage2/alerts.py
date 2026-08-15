@@ -29,6 +29,24 @@ _alert_queue = queue.Queue(maxsize=100)
 
 _WEBHOOK_PATH_RE = re.compile(r"/api/webhooks/\d+/[A-Za-z0-9_-]+")
 
+# Whether each channel's last attempt already reported a failure. A gateway
+# with no route out fails on every alert, and an identical error per attempt
+# buries everything else in the journal.
+_reported_down = {"discord": False, "email": False}
+
+
+def _report_failure(channel: str, message: str):
+    """Log a channel failure the first time, then stay quiet until it works."""
+    if not _reported_down[channel]:
+        logging.error(f"[-] {message}")
+        _reported_down[channel] = True
+
+
+def _report_recovered(channel: str):
+    if _reported_down[channel]:
+        logging.info(f"[+] {channel.capitalize()} alerts are working again.")
+        _reported_down[channel] = False
+
 
 def _redact_secrets(text: str, cfg: dict) -> str:
     """Strip credentials from an error string before it is logged or
@@ -61,12 +79,13 @@ def send_discord_alert(message: str):
         if resp.status_code >= 300:
             body = _redact_secrets(resp.text[:200], cfg)
             err = f"Discord webhook returned HTTP {resp.status_code}"
-            logging.error(f"[-] {err}: {body}")
+            _report_failure("discord", f"{err}: {body}")
             return False, err
+        _report_recovered("discord")
         return True, ""
     except Exception as e:
         err = _redact_secrets(str(e), cfg)
-        logging.error(f"[-] Failed to send Discord alert: {err}")
+        _report_failure("discord", f"Failed to send Discord alert: {err}")
         return False, err
 
 
@@ -84,10 +103,11 @@ def send_email_alert(subject: str, body: str):
             server.starttls()
             server.login(cfg["smtp_username"], cfg["smtp_app_password"])
             server.sendmail(cfg["smtp_username"], cfg["email_recipients"], msg.as_string())
+        _report_recovered("email")
         return True, ""
     except Exception as e:
         err = _redact_secrets(str(e), cfg)
-        logging.error(f"[-] Failed to send email alert: {err}")
+        _report_failure("email", f"Failed to send email alert: {err}")
         return False, err
 
 

@@ -96,10 +96,18 @@ below its boundary rather than above.
 Entropy describes this window's diversity, not a trend. The trend is what the
 Welford accumulator holds.
 
-**A sample size gate applies.** An empty window scores 0.0, which is
-indistinguishable from a maximally concentrated flood. Windows below a minimum
-packet count therefore cannot raise an entropy anomaly, which also covers the
-handful of packets from a single source that a quiet period produces.
+**A sample size gate applies.** Entropy is 0.0 both for an empty window and for
+one where a single client happened to be the only one active. Neither is a
+flood, and on the entropy figure alone neither is distinguishable from one.
+
+Windows below `--entropy-min-packets` (default 100) therefore cannot raise an
+entropy anomaly. Concentration only means something when there were enough
+packets for it to be surprising: "every packet came from one source" is
+trivially true when there was one participant.
+
+This is deliberately separate from the threshold that decides when a window
+closes, which is much lower. Sharing one number would mean that raising the
+anomaly bar silently changed the windowing.
 
 ### Spoofing Inverts This
 
@@ -177,6 +185,55 @@ trips it.
 The defaults are starting points, not values proven optimal. The right floor
 depends on how much a given network's traffic naturally varies, which is why
 it is a flag rather than a constant.
+
+### Measuring the Floors
+
+`scripts/calibrate.py` derives both floors from the sensor's own log rather
+than from a guess. It reads the per window debug lines out of the journal,
+keeps only the windows the sensor treated as ordinary (cooldown at zero, so
+neither an anomaly nor one of the windows following one), and waits until
+every protected host has 1000 of them.
+
+For each host it takes the mean, the trimmed peak rate, the trimmed entropy
+trough, and a median absolute deviation as a robust standard deviation. The
+recommended floor is the larger of that spread and the value that puts the
+boundary just past ordinary traffic:
+
+```
+rate floor    = max(robust_sigma(r), (peak_r * (1 + margin) - mean_r) / k)
+entropy floor = max(robust_sigma(h), (mean_h - trough_h * (1 - margin)) / k)
+```
+
+`k` is read from the sensor's own startup line. The rate uses `--k` rather
+than the entropy scaled `k` actually applied at runtime, because that scaling
+only ever widens the boundary, so `--k` is the tightest case and gives the
+larger floor.
+
+One set of floors covers every target, so the widest host wins. Erring high
+costs sensitivity on the quietest host; erring low flags the busiest one
+continuously, which also freezes its baseline. The first is recoverable and
+the second is not. The script warns when the per host values differ by more
+than a factor of four, because one global value then fits neither.
+
+```bash
+sudo python3 scripts/calibrate.py --auto-debug              # measure, report
+sudo python3 scripts/calibrate.py --auto-debug --apply      # measure and save
+sudo python3 scripts/calibrate.py --since -6h               # reuse history
+sudo python3 scripts/calibrate.py --reset                   # back to defaults
+```
+
+The per window samples are logged at debug level only, so `--auto-debug`
+raises `RUST_LOG` for the run and lowers it again afterwards. `--apply` writes
+`/etc/ddos_stage1/tuning.env`, which the unit reads through an optional
+`EnvironmentFile` and expands at the end of `ExecStart`. Later flags win, so
+a calibration overrides whatever the installer chose without the script
+needing to know the interface, the targets, or the capture mode. Deleting the
+file returns those values.
+
+The script also reports when a host's traffic has outgrown its learned mean,
+which is a state the baseline cannot leave on its own, since every flagged
+window freezes it. `--clear-baseline` deletes the persisted file so the
+sensor relearns at the current level.
 
 ### Cooldown
 

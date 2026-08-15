@@ -210,6 +210,25 @@ and what was analysed points at a cause:
 A large `truncated` count alongside `parse_failed` at zero is the healthy
 state.
 
+The kernel backend logs its own line on the same cadence, since the counters
+above come from code that only the pcap backend runs:
+
+| Counter | Meaning |
+|-|-|
+| `ingress` | Packets counted toward protected hosts |
+| `egress` | Packets counted on the egress hook |
+| `sources` | Distinct source addresses drained, and how full the map is |
+| `flows` | Flow table entries drained |
+| `drains` | Map reads in the interval |
+| `errors` | Map reads that failed |
+
+`sources` is the one to watch. Its key is attacker controlled, so a randomized
+source flood fills the map, after which entropy is computed from a partial view
+of the sources and reads higher than it should. Memory stays bounded, which is
+the important part, but the measurement degrades quietly. A separate warning
+fires when the map is full rather than leaving that to be inferred from the
+percentage.
+
 ## Egress Measurement
 
 Before this existed, "did mitigation work?" could only be inferred. The gateway

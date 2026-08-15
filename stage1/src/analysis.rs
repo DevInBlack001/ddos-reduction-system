@@ -18,7 +18,7 @@
 
 use crate::{
     capture::{Direction, PacketMeta, Protocol},
-    entropy::MIN_PACKETS_FOR_ENTROPY,
+    entropy::MIN_PACKETS_TO_CLOSE,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
     persistence::{self, PersistedState},
     state::{AnalysisConfig, TargetState},
@@ -111,11 +111,6 @@ fn scaled_rate_k(cfg: &AnalysisConfig, base_k: f64, r: f64, mean_rate: f64, sigm
     }
 }
 
-/// Whether a window's entropy counts as an anomaly.
-///
-/// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
-/// for an empty window, which would otherwise look identical to a
-/// maximally concentrated single-source flood every time traffic goes quiet.
 /// Where per window observations come from.
 ///
 /// Both arms end up filling the same accumulators on `TargetState`, so the
@@ -154,17 +149,80 @@ fn ensure_target<'a>(
     targets_map.get_mut(&victim)
 }
 
-fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize) -> bool {
-    packet_count >= MIN_PACKETS_FOR_ENTROPY && h < boundary
+/// Whether a window's entropy counts as an anomaly.
+///
+/// Requires a minimum sample size, because entropy is 0.0 both for an empty
+/// window and for one where a single client happened to be the only one
+/// active. Neither is a flood, and both are indistinguishable from one on the
+/// entropy figure alone.
+fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize, min_packets: usize) -> bool {
+    packet_count >= min_packets && h < boundary
 }
 
-/// Receive `PacketMeta` records from the capture thread and run the three-layer
-/// pipeline indefinitely.
+/// Print every tuning value in force, and warn about ones set where they
+/// would stop detection working.
 ///
-/// Intended to be called from within `std::thread::spawn()`. Returns when the
-/// `rx` channel closes (capture thread exited or an unrecoverable error occurred).
+/// Detection tuning fails asymmetrically. Too sensitive announces itself in
+/// the log within minutes; too insensitive is silent until an attack lands and
+/// nothing fires. Printing the effective values makes a typo visible at
+/// startup instead of during an incident.
+pub fn log_effective_tuning(cfg: &AnalysisConfig) {
+    info!(
+        "Analysis: tuning | entropy sigma {}..{} | rate sigma floor {} | \
+         entropy min packets {} | distributed dominance {} | emergency {}σ | \
+         cooldown {} windows",
+        cfg.entropy_sigma_floor,
+        cfg.entropy_sigma_ceiling,
+        cfg.rate_sigma_floor,
+        cfg.entropy_min_packets,
+        cfg.distributed_dominance,
+        cfg.emergency_volume_sigma,
+        cfg.cooldown_windows,
+    );
+
+    // Bounds are advisory. An operator who means it can still pass anything;
+    // the point is that a mistake is not silent.
+    if cfg.entropy_sigma_floor >= cfg.entropy_sigma_ceiling {
+        warn!(
+            "Analysis: the entropy sigma floor ({}) is not below its ceiling ({}), \
+             so the boundary cannot adapt at all.",
+            cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling
+        );
+    }
+    if cfg.entropy_sigma_ceiling >= 1.0 {
+        warn!(
+            "Analysis: an entropy sigma ceiling of {} is at or above the full range \
+             of normalized entropy, so the entropy alarm will effectively never fire.",
+            cfg.entropy_sigma_ceiling
+        );
+    }
+    if cfg.entropy_min_packets > 10_000 {
+        warn!(
+            "Analysis: --entropy-min-packets is {}, so windows below that size can \
+             never raise an entropy anomaly. Check this is what you meant.",
+            cfg.entropy_min_packets
+        );
+    }
+    if cfg.k > 10.0 {
+        warn!(
+            "Analysis: k is {}, which puts both boundaries far from the mean. \
+             Detection will be very hard to trip.",
+            cfg.k
+        );
+    }
+    if cfg.distributed_dominance >= 1.0 {
+        warn!(
+            "Analysis: --distributed-dominance is {}, so every entropy only window \
+             updates the baseline. That weakens the slow ramp poisoning defence.",
+            cfg.distributed_dominance
+        );
+    }
+}
+
+/// Run the three layer pipeline against `source` indefinitely.
 ///
-/// Returns when the channel closes.
+/// Returns when a channel source closes. The kernel source never closes, so
+/// that arm runs until the process does.
 pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
     info!(
         "Analysis: thread started | targets={:?} | k={} | α={}",
@@ -237,6 +295,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // replaces the per packet loop entirely.
             PacketSource::Kernel(ref mut capture) => {
                 std::thread::sleep(WINDOW_TICK);
+                capture.log_status_if_due();
                 match capture.drain() {
                     Ok(samples) => {
                         for (victim_ip, sample) in samples {
@@ -367,7 +426,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             let window_elapsed = now_instant.duration_since(target_state.last_window_close).as_secs_f64();
             let packet_count = target_state.entropy.packet_count();
 
-            let should_close = (window_elapsed >= 0.5 && packet_count >= MIN_PACKETS_FOR_ENTROPY)
+            let should_close = (window_elapsed >= 0.5 && packet_count >= MIN_PACKETS_TO_CLOSE)
                             || (window_elapsed >= 1.0);
 
             if !should_close {
@@ -585,7 +644,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             if r > rate_boundary {
                 anomaly_flags |= FLAG_RATE_ANOMALY;
             }
-            if entropy_anomaly_fires(h, entropy_boundary, packet_count) {
+            if entropy_anomaly_fires(h, entropy_boundary, packet_count, cfg.entropy_min_packets) {
                 anomaly_flags |= FLAG_ENTROPY_ANOMALY;
             }
 
@@ -823,8 +882,8 @@ mod tests {
     // Production code reads these from AnalysisConfig; only the tests need the
     // defaults themselves.
     use crate::state::{
-        DEFAULT_DISTRIBUTED_DOMINANCE, DEFAULT_ENTROPY_SIGMA_CEILING,
-        DEFAULT_ENTROPY_SIGMA_FLOOR,
+        DEFAULT_DISTRIBUTED_DOMINANCE, DEFAULT_ENTROPY_MIN_PACKETS,
+        DEFAULT_ENTROPY_SIGMA_CEILING, DEFAULT_ENTROPY_SIGMA_FLOOR,
     };
     use crossbeam_channel::bounded;
     use std::io::Read;
@@ -946,15 +1005,42 @@ mod tests {
         let (mean_h, sigma_h, k) = (0.92_f64, 0.03_f64, 2.0_f64);
         let boundary = mean_h - k * sigma_h;
 
+        let gate = DEFAULT_ENTROPY_MIN_PACKETS;
+
         // Empty window.
-        assert!(!entropy_anomaly_fires(0.0, boundary, 0));
+        assert!(!entropy_anomaly_fires(0.0, boundary, 0, gate));
         // A handful of packets from a single source also scores 0.0.
-        assert!(!entropy_anomaly_fires(0.0, boundary, MIN_PACKETS_FOR_ENTROPY - 1));
+        assert!(!entropy_anomaly_fires(0.0, boundary, gate - 1, gate));
 
         // With a real sample behind it, concentration still fires.
-        assert!(entropy_anomaly_fires(0.10, boundary, MIN_PACKETS_FOR_ENTROPY));
+        assert!(entropy_anomaly_fires(0.10, boundary, gate, gate));
         // And diverse traffic still does not.
-        assert!(!entropy_anomaly_fires(0.95, boundary, MIN_PACKETS_FOR_ENTROPY));
+        assert!(!entropy_anomaly_fires(0.95, boundary, gate, gate));
+    }
+
+    #[test]
+    fn a_quiet_single_client_window_does_not_look_like_a_flood() {
+        // The residual false positive the gate exists for. One client sending
+        // a burst while the others are idle scores total concentration, which
+        // is true and meaningless: there was only one participant.
+        let boundary = 0.9417;
+        let one_busy_client = 31; // packets, seen on the sensor VM
+
+        assert!(!entropy_anomaly_fires(
+            0.0,
+            boundary,
+            one_busy_client,
+            DEFAULT_ENTROPY_MIN_PACKETS
+        ));
+        // The old gate of 20 let exactly this through.
+        assert!(entropy_anomaly_fires(0.0, boundary, one_busy_client, MIN_PACKETS_TO_CLOSE));
+    }
+
+    #[test]
+    fn a_real_flood_still_fires_through_the_gate() {
+        // The flood seen on the VM: six figures of pps, so the packet count
+        // clears any sane gate.
+        assert!(entropy_anomaly_fires(0.0007, 0.9417, 50_000, DEFAULT_ENTROPY_MIN_PACKETS));
     }
 
     /// The flow map must stay bounded under a randomized-source flood, and
@@ -1054,7 +1140,7 @@ mod tests {
         let (tx, rx) = bounded(1024);
         let handle = std::thread::spawn(move || run_analysis_thread(cfg, PacketSource::Channel(rx)));
 
-        // Enough packets to satisfy MIN_PACKETS_FOR_ENTROPY, then stop sending.
+        // Enough packets to satisfy MIN_PACKETS_TO_CLOSE, then stop sending.
         for _ in 0..25 {
             tx.send(packet()).expect("send");
         }

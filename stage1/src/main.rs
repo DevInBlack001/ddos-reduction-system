@@ -123,6 +123,7 @@ struct CliArgs {
     entropy_sigma_ceiling: f64,
     rate_sigma_floor:      f64,
     distributed_dominance: f64,
+    entropy_min_packets:   usize,
     emergency_volume_sigma:   f64,
     entropy_k_fallback:       f64,
     rate_sigma_ceiling_ratio: f64,
@@ -155,6 +156,7 @@ impl CliArgs {
         let mut entropy_sigma_ceiling = state::DEFAULT_ENTROPY_SIGMA_CEILING;
         let mut rate_sigma_floor = state::DEFAULT_RATE_SIGMA_FLOOR;
         let mut distributed_dominance = state::DEFAULT_DISTRIBUTED_DOMINANCE;
+        let mut entropy_min_packets = state::DEFAULT_ENTROPY_MIN_PACKETS;
         let mut emergency_volume_sigma = state::DEFAULT_EMERGENCY_VOLUME_SIGMA;
         let mut entropy_k_fallback = state::DEFAULT_ENTROPY_K_FALLBACK;
         let mut rate_sigma_ceiling_ratio = state::DEFAULT_RATE_SIGMA_CEILING_RATIO;
@@ -219,6 +221,10 @@ impl CliArgs {
                 "--distributed-dominance" => {
                     i += 1;
                     distributed_dominance = parse_positive(args.get(i), "--distributed-dominance");
+                }
+                "--entropy-min-packets" => {
+                    i += 1;
+                    entropy_min_packets = parse_positive(args.get(i), "--entropy-min-packets") as usize;
                 }
                 "--emergency-volume-sigma" => {
                     i += 1;
@@ -373,6 +379,7 @@ impl CliArgs {
 
         Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
                entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
+               entropy_min_packets,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
                outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight }
     }
@@ -426,6 +433,8 @@ fn print_usage(bin: &str) {
     eprintln!("  --rate-sigma-floor <F>       Same floor for the rate, in pps [default: {}]", state::DEFAULT_RATE_SIGMA_FLOOR);
     eprintln!("  --distributed-dominance <F>  Below this share from one source, traffic is");
     eprintln!("                               too spread out to be a flood [default: {}]", state::DEFAULT_DISTRIBUTED_DOMINANCE);
+    eprintln!("  --entropy-min-packets <N>    Packets a window needs before its entropy may");
+    eprintln!("                               raise an anomaly [default: {}]", state::DEFAULT_ENTROPY_MIN_PACKETS);
     eprintln!("  --emergency-volume-sigma <F> Rate deviation, in sigma, past which entropy");
     eprintln!("                               scaling of k is bypassed [default: {}]", state::DEFAULT_EMERGENCY_VOLUME_SIGMA);
     eprintln!("  --entropy-k-fallback <F>     Divisor for entropy-guided k scaling before a");
@@ -629,6 +638,7 @@ fn main() {
         entropy_sigma_ceiling: args.entropy_sigma_ceiling,
         rate_sigma_floor:      args.rate_sigma_floor,
         distributed_dominance: args.distributed_dominance,
+        entropy_min_packets:   args.entropy_min_packets,
         emergency_volume_sigma:   args.emergency_volume_sigma,
         entropy_k_fallback:       args.entropy_k_fallback,
         rate_sigma_ceiling_ratio: args.rate_sigma_ceiling_ratio,
@@ -639,6 +649,10 @@ fn main() {
         cooldown_k_factor:        args.cooldown_k_factor,
         peacetime_ewma_weight:    args.peacetime_ewma_weight,
     };
+
+    // Before the interface check, so a configuration mistake is reported even
+    // when the interface itself is what fails.
+    analysis::log_effective_tuning(&analysis_cfg);
 
     // The kernel backend replaces the capture threads entirely: no pcap
     // handles, no channel, and the analysis loop drains maps on its own tick.
