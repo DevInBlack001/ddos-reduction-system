@@ -72,6 +72,25 @@ sudo systemctl enable --now ddos-stage1
 The dashboard is on port 8000. Full instructions, including the network layout
 this depends on, are in the wiki.
 
+The installer also sets up the eBPF build toolchain when it can, matching
+whatever LLVM your distribution ships. That part is optional: without it the
+sensor still builds and runs on libpcap.
+
+The sensor has two capture backends. libpcap is the default and works
+anywhere. With the toolchain in place, `--capture-mode kernel` counts packets
+in the driver path via XDP and TC instead, waking user space once per window
+rather than once per packet. Detection is identical either way.
+
+Detection tuning is measured rather than guessed. `scripts/calibrate.py` reads
+the sensor's own log, samples ordinary traffic, and works out where the anomaly
+boundaries belong on your network.
+
+To run the test suites:
+
+```bash
+scripts/test.sh
+```
+
 
 ## Documentation
 

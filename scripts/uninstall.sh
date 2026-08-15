@@ -160,6 +160,38 @@ else
 fi
 
 # =============================================================================
+# Detach the eBPF programs and remove the object
+# =============================================================================
+# Attachments outlive the process. Stopping the service leaves XDP on the
+# interface and a clsact qdisc behind, so both are cleared explicitly rather
+# than left for the next reboot.
+BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+
+if command -v ip &>/dev/null; then
+    for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+        if ip link show "$iface" 2>/dev/null | grep -q xdp; then
+            info "Detaching XDP from $iface..."
+            ip link set dev "$iface" xdp off 2>/dev/null || true
+        fi
+    done
+fi
+
+if command -v tc &>/dev/null; then
+    for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+        if tc qdisc show dev "$iface" 2>/dev/null | grep -q clsact; then
+            info "Removing the clsact qdisc from $iface..."
+            tc qdisc del dev "$iface" clsact 2>/dev/null || true
+        fi
+    done
+fi
+
+if [[ -d "$BPF_OBJECT_DIR" ]]; then
+    info "Removing eBPF object directory: $BPF_OBJECT_DIR"
+    rm -rf "$BPF_OBJECT_DIR"
+    success "eBPF object removed."
+fi
+
+# =============================================================================
 # Remove the IPC socket file (if a previous run left it behind)
 # =============================================================================
 if [[ -S "$SOCKET_FILE" ]] || [[ -f "$SOCKET_FILE" ]]; then
@@ -174,6 +206,7 @@ fi
 info "Removing runtime and persisted-state directories..."
 rm -rf "/run/ddos_stage1"
 rm -rf "/var/lib/ddos_stage1"
+rm -rf "/etc/ddos_stage1"
 rm -rf "/etc/ddos_stage2"
 success "Runtime and state directories removed."
 

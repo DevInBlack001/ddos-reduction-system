@@ -21,10 +21,13 @@
 
 use std::{collections::HashMap, net::IpAddr};
 
-/// Minimum number of packets required for a statistically meaningful entropy
-/// calculation.  Windows closing with fewer packets than this (e.g. during
-/// the 1.0s hard-cap in very low traffic) should be treated with caution.
-pub const MIN_PACKETS_FOR_ENTROPY: usize = 20;
+/// Packets a window needs before it is worth closing early rather than
+/// waiting for the time cap.
+///
+/// This is only about when to close. Whether the resulting entropy is a
+/// trustworthy basis for an anomaly is a separate and much higher bar, set by
+/// `--entropy-min-packets`.
+pub const MIN_PACKETS_TO_CLOSE: usize = 20;
 
 // EntropyAccumulator
 
@@ -59,8 +62,20 @@ impl EntropyAccumulator {
     /// decision is made by the analysis loop based on elapsed time and
     /// minimum packet count, not by this accumulator.
     pub fn add_packet(&mut self, src_ip: IpAddr) {
-        *self.counts.entry(src_ip).or_insert(0) += 1;
-        self.packet_count += 1;
+        self.add_packets(src_ip, 1);
+    }
+
+    /// Record `count` packets from one source at once.
+    ///
+    /// The kernel backend arrives with counts already totalled per source, so
+    /// adding them one at a time would put a per packet loop back into user
+    /// space, which is the cost the backend exists to remove.
+    pub fn add_packets(&mut self, src_ip: IpAddr, count: u32) {
+        if count == 0 {
+            return;
+        }
+        *self.counts.entry(src_ip).or_insert(0) += count;
+        self.packet_count += count as usize;
     }
 
     /// Compute Normalized Shannon Entropy over the current window, then
@@ -147,6 +162,46 @@ pub fn compute_normalized_entropy(counts: &HashMap<IpAddr, u32>, total_packets: 
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+
+    #[test]
+    fn adding_in_bulk_matches_adding_one_at_a_time() {
+        // The two backends use different arms of this, so they have to agree
+        // exactly or the same traffic would score different entropy.
+        let mut one_at_a_time = EntropyAccumulator::new();
+        for _ in 0..40 {
+            one_at_a_time.add_packet(ip(198, 51, 100, 1));
+        }
+        for _ in 0..10 {
+            one_at_a_time.add_packet(ip(198, 51, 100, 2));
+        }
+
+        let mut bulk = EntropyAccumulator::new();
+        bulk.add_packets(ip(198, 51, 100, 1), 40);
+        bulk.add_packets(ip(198, 51, 100, 2), 10);
+
+        assert_eq!(one_at_a_time.packet_count(), bulk.packet_count());
+        assert_eq!(one_at_a_time.compute_and_reset(), bulk.compute_and_reset());
+    }
+
+    #[test]
+    fn a_bulk_add_of_zero_changes_nothing() {
+        let mut acc = EntropyAccumulator::new();
+        acc.add_packets(ip(198, 51, 100, 1), 5);
+        acc.add_packets(ip(198, 51, 100, 2), 0);
+        // A source contributing no packets must not become a bucket, which
+        // would raise the unique count and change the normalisation.
+        assert_eq!(acc.packet_count(), 5);
+        assert_eq!(acc.compute_and_reset(), 0.0);
+    }
+
+    #[test]
+    fn bulk_adds_accumulate_across_calls() {
+        let mut acc = EntropyAccumulator::new();
+        acc.add_packets(ip(198, 51, 100, 1), 3);
+        acc.add_packets(ip(198, 51, 100, 1), 4);
+        assert_eq!(acc.packet_count(), 7);
+    }
 
     /// Helper to build an IpAddr::V4 quickly in tests.
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {

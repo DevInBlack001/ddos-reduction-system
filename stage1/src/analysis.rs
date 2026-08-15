@@ -18,7 +18,7 @@
 
 use crate::{
     capture::{Direction, PacketMeta, Protocol},
-    entropy::MIN_PACKETS_FOR_ENTROPY,
+    entropy::MIN_PACKETS_TO_CLOSE,
     ipc::{FeatureVector, IpcSocket, FLAG_ENTROPY_ANOMALY, FLAG_RATE_ANOMALY},
     persistence::{self, PersistedState},
     state::{AnalysisConfig, TargetState},
@@ -53,23 +53,177 @@ const MAX_TRACKED_FLOWS: usize = 8192;
 /// target looking frozen for up to twenty.
 const HEARTBEAT_SECS: f64 = 2.0;
 
-/// Whether a window's entropy counts as an anomaly.
+/// Whether this window may update the baseline and be saved to disk.
 ///
-/// Requires a minimum sample size: `compute_normalized_entropy` returns 0.0
-/// for an empty window, which would otherwise look identical to a
-/// maximally concentrated single-source flood every time traffic goes quiet.
-fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize) -> bool {
-    packet_count >= MIN_PACKETS_FOR_ENTROPY && h < boundary
+/// A flagged window normally freezes the baseline, which is what stops a slow
+/// ramp attacker from teaching the sensor that their flood is normal.
+///
+/// The exception is a window flagged only on entropy, at a normal rate, with
+/// traffic spread across many sources. That combination cannot be a
+/// concentrated flood: low entropy means concentration, and concentration
+/// would show up as a high dominant ratio. Without the exception, an entropy
+/// boundary sitting too close to the mean freezes the baseline permanently,
+/// so the standard deviation can never grow to reflect real variation and the
+/// false positives sustain themselves.
+fn window_is_clean(
+    anomaly_flags: u8,
+    cooldown_counter: usize,
+    dominant_ip_ratio: f64,
+    distributed_dominance: f64,
+    rate: f64,
+    rate_ceiling: f64,
+) -> bool {
+    if cooldown_counter > 0 {
+        return false;
+    }
+    if anomaly_flags == 0 {
+        return true;
+    }
+    anomaly_flags == FLAG_ENTROPY_ANOMALY
+        && dominant_ip_ratio < distributed_dominance
+        && rate <= rate_ceiling
 }
 
-/// Receive `PacketMeta` records from the capture thread and run the three-layer
-/// pipeline indefinitely.
+/// How far the running mean may sit from the peacetime reference before it is
+/// treated as poisoned and reverted.
+const MAX_BASELINE_DRIFT: f64 = 0.50;
+
+/// Whether the running mean has drifted far enough from the slow reference to
+/// look like poisoning rather than ordinary variation.
+fn baseline_has_drifted(mean: f64, reference: f64) -> bool {
+    reference > 0.0 && (mean - reference).abs() / reference > MAX_BASELINE_DRIFT
+}
+
+/// Rate multiplier after entropy-guided scaling and the emergency volume
+/// override.
 ///
-/// Intended to be called from within `std::thread::spawn()`. Returns when the
-/// `rx` channel closes (capture thread exited or an unrecoverable error occurred).
+/// A raw rate `cfg.emergency_volume_sigma` standard deviations above the mean
+/// bypasses entropy scaling entirely, so a high-entropy flood cannot raise
+/// its own detection threshold without bound. Shared by the live boundary
+/// and the cooldown-triggering "real anomaly" check, which apply the same
+/// scaling against different `k` values.
+fn scaled_rate_k(cfg: &AnalysisConfig, base_k: f64, r: f64, mean_rate: f64, sigma_r: f64, h: f64, mean_h: f64) -> f64 {
+    if r > mean_rate + cfg.emergency_volume_sigma * sigma_r {
+        base_k
+    } else {
+        let divisor = if mean_h > 0.0 { mean_h } else { cfg.entropy_k_fallback };
+        base_k * (h / divisor).max(1.0)
+    }
+}
+
+/// Where per window observations come from.
 ///
-/// Returns when the channel closes.
-pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
+/// Both arms end up filling the same accumulators on `TargetState`, so the
+/// window close below is identical either way and cannot tell them apart.
+pub enum PacketSource {
+    /// One `PacketMeta` per packet, from the libpcap capture threads.
+    Channel(Receiver<PacketMeta>),
+    /// Counts already totalled in kernel maps, drained once per tick.
+    Kernel(Box<crate::kernel::KernelCapture>),
+}
+
+/// Get the state for a protected host, creating it and restoring any saved
+/// baseline on first sight.
+///
+/// Returns `None` when dynamic tracking is capped, which only applies without
+/// a configured target list.
+fn ensure_target<'a>(
+    targets_map: &'a mut HashMap<IpAddr, TargetState>,
+    victim: IpAddr,
+    cfg: &AnalysisConfig,
+    persisted: &Option<PersistedState>,
+) -> Option<&'a mut TargetState> {
+    if !targets_map.contains_key(&victim) {
+        if cfg.victim_targets.is_none() && targets_map.len() >= 100 {
+            return None;
+        }
+        let restored = persistence::lookup(persisted, &victim);
+        if let Some(ref r) = restored {
+            info!(
+                "Analysis [victim={}]: restored baseline from persisted state (rate n={}, entropy n={}/{}).",
+                victim, r.rate_n, r.entropy_n, crate::welford::WARMUP_WINDOWS
+            );
+        }
+        targets_map.insert(victim, TargetState::new(cfg.ewma_alpha, restored.as_ref()));
+    }
+    targets_map.get_mut(&victim)
+}
+
+/// Whether a window's entropy counts as an anomaly.
+///
+/// Requires a minimum sample size, because entropy is 0.0 both for an empty
+/// window and for one where a single client happened to be the only one
+/// active. Neither is a flood, and both are indistinguishable from one on the
+/// entropy figure alone.
+fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize, min_packets: usize) -> bool {
+    packet_count >= min_packets && h < boundary
+}
+
+/// Print every tuning value in force, and warn about ones set where they
+/// would stop detection working.
+///
+/// Detection tuning fails asymmetrically. Too sensitive announces itself in
+/// the log within minutes; too insensitive is silent until an attack lands and
+/// nothing fires. Printing the effective values makes a typo visible at
+/// startup instead of during an incident.
+pub fn log_effective_tuning(cfg: &AnalysisConfig) {
+    info!(
+        "Analysis: tuning | entropy sigma {}..{} | rate sigma floor {} | \
+         entropy min packets {} | distributed dominance {} | emergency {}σ | \
+         cooldown {} windows",
+        cfg.entropy_sigma_floor,
+        cfg.entropy_sigma_ceiling,
+        cfg.rate_sigma_floor,
+        cfg.entropy_min_packets,
+        cfg.distributed_dominance,
+        cfg.emergency_volume_sigma,
+        cfg.cooldown_windows,
+    );
+
+    // Bounds are advisory. An operator who means it can still pass anything;
+    // the point is that a mistake is not silent.
+    if cfg.entropy_sigma_floor >= cfg.entropy_sigma_ceiling {
+        warn!(
+            "Analysis: the entropy sigma floor ({}) is not below its ceiling ({}), \
+             so the boundary cannot adapt at all.",
+            cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling
+        );
+    }
+    if cfg.entropy_sigma_ceiling >= 1.0 {
+        warn!(
+            "Analysis: an entropy sigma ceiling of {} is at or above the full range \
+             of normalized entropy, so the entropy alarm will effectively never fire.",
+            cfg.entropy_sigma_ceiling
+        );
+    }
+    if cfg.entropy_min_packets > 10_000 {
+        warn!(
+            "Analysis: --entropy-min-packets is {}, so windows below that size can \
+             never raise an entropy anomaly. Check this is what you meant.",
+            cfg.entropy_min_packets
+        );
+    }
+    if cfg.k > 10.0 {
+        warn!(
+            "Analysis: k is {}, which puts both boundaries far from the mean. \
+             Detection will be very hard to trip.",
+            cfg.k
+        );
+    }
+    if cfg.distributed_dominance >= 1.0 {
+        warn!(
+            "Analysis: --distributed-dominance is {}, so every entropy only window \
+             updates the baseline. That weakens the slow ramp poisoning defence.",
+            cfg.distributed_dominance
+        );
+    }
+}
+
+/// Run the three layer pipeline against `source` indefinitely.
+///
+/// Returns when a channel source closes. The kernel source never closes, so
+/// that arm runs until the process does.
+pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
     info!(
         "Analysis: thread started | targets={:?} | k={} | α={}",
         cfg.victim_targets, cfg.k, cfg.ewma_alpha
@@ -136,7 +290,53 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
         // packet implicates only its own destination; a timeout tick has to
         // consider every victim being tracked, since any of them could be
         // sitting on an open window with no traffic to close it.
-        let victims_to_check: Vec<IpAddr> = match rx.recv_timeout(WINDOW_TICK) {
+        let victims_to_check: Vec<IpAddr> = match source {
+            // The kernel counted everything already. One drain per tick
+            // replaces the per packet loop entirely.
+            PacketSource::Kernel(ref mut capture) => {
+                std::thread::sleep(WINDOW_TICK);
+                capture.log_status_if_due();
+                match capture.drain() {
+                    Ok(samples) => {
+                        for (victim_ip, sample) in samples {
+                            for ((src, dst, port, proto), count) in &sample.flows {
+                                let key = (*src, *dst, *port, *proto);
+                                let at_capacity = flow_counts.len() >= MAX_TRACKED_FLOWS;
+                                match flow_counts.get_mut(&key) {
+                                    Some(existing) => *existing += *count as u32,
+                                    None if !at_capacity => {
+                                        flow_counts.insert(key, *count as u32);
+                                    }
+                                    None => {}
+                                }
+                            }
+
+                            let target_state =
+                                match ensure_target(&mut targets_map, victim_ip, &cfg, &persisted_state) {
+                                    Some(t) => t,
+                                    None => continue,
+                                };
+
+                            for (src_ip, count) in &sample.sources {
+                                target_state.entropy.add_packets(*src_ip, *count as u32);
+                                *target_state.ip_counts.entry(*src_ip).or_insert(0) += *count as u32;
+                            }
+                            target_state.window_packet_count += sample.ingress_packets as usize;
+                            target_state.egress_packet_count += sample.egress_packets;
+                            target_state.tcp_count += sample.tcp as u32;
+                            target_state.udp_count += sample.udp as u32;
+                            target_state.icmp_count += sample.icmp as u32;
+                            target_state.sctp_count += sample.sctp as u32;
+                            target_state.gre_count += sample.gre as u32;
+                            target_state.esp_count += sample.esp as u32;
+                        }
+                    }
+                    Err(e) => warn!("Analysis: could not read the kernel maps: {e}"),
+                }
+                targets_map.keys().copied().collect()
+            }
+
+            PacketSource::Channel(ref rx) => match rx.recv_timeout(WINDOW_TICK) {
             Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => targets_map.keys().copied().collect(),
             Ok(meta) => {
@@ -176,23 +376,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                     continue;
                 }
 
-                // Initialize state for destination IP if not already present
-                if !targets_map.contains_key(&meta.dst_ip) {
-                    if cfg.victim_targets.is_none() && targets_map.len() >= 100 {
-                        // Prevent memory leak by capping dynamic tracking list size
-                        continue;
-                    }
-                    let restored = persistence::lookup(&persisted_state, &meta.dst_ip);
-                    if let Some(ref r) = restored {
-                        info!(
-                            "Analysis [victim={}]: restored baseline from persisted state (rate n={}, entropy n={}/{}).",
-                            meta.dst_ip, r.rate_n, r.entropy_n, crate::welford::WARMUP_WINDOWS
-                        );
-                    }
-                    targets_map.insert(meta.dst_ip, TargetState::new(cfg.ewma_alpha, restored.as_ref()));
-                }
-
-                let target_state = targets_map.get_mut(&meta.dst_ip).unwrap();
+                let target_state =
+                    match ensure_target(&mut targets_map, meta.dst_ip, &cfg, &persisted_state) {
+                        Some(t) => t,
+                        None => continue,
+                    };
 
                 // Egress packets only answer how much got through. Keeping
                 // them out of the statistics stops past mitigation from
@@ -220,6 +408,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
 
                 vec![meta.dst_ip]
             }
+            },
         };
 
         for victim_ip in victims_to_check {
@@ -237,7 +426,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             let window_elapsed = now_instant.duration_since(target_state.last_window_close).as_secs_f64();
             let packet_count = target_state.entropy.packet_count();
 
-            let should_close = (window_elapsed >= 0.5 && packet_count >= MIN_PACKETS_FOR_ENTROPY)
+            let should_close = (window_elapsed >= 0.5 && packet_count >= MIN_PACKETS_TO_CLOSE)
                             || (window_elapsed >= 1.0);
 
             if !should_close {
@@ -409,8 +598,10 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                     dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
                     victim_ip:   victim_ip,
                 };
+                // The IPC layer reports the connection going down and coming
+                // back. Repeating it here would be one line per window.
                 if !ipc.send(&fv) {
-                    warn!("Analysis [victim={}]: IPC send failed during warm-up; Stage 2 may be offline", victim_ip);
+                    log::debug!("Analysis [victim={victim_ip}]: warm-up window not delivered");
                 }
 
                 continue;
@@ -424,110 +615,102 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 target_state.warmup_completed_logged = true;
             }
 
-            // Get raw standard deviations
             let raw_sigma_r = target_state.welford_rate.std_dev();
             let raw_sigma_h = target_state.welford_entropy.std_dev();
 
-            // 1. Sigma Ceiling & Floor: Cap the standard deviation to prevent the boundaries from drifting too wide,
-            // but also enforce a floor to prevent zero-baseline lockout.
-            // Cap rate standard deviation at 10000.0 pps or 20% of the mean (whichever is larger), floor at 50.0.
-            let ceiling_r = (0.2 * target_state.welford_rate.mean).max(10000.0);
-            let sigma_r = raw_sigma_r.max(50.0).min(ceiling_r);
+            // Bounded so the boundary can neither collapse onto the mean nor
+            // drift so wide that nothing ever trips it.
+            let ceiling_r = (cfg.rate_sigma_ceiling_ratio * target_state.welford_rate.mean)
+                .max(cfg.rate_sigma_ceiling_floor);
+            let sigma_r = raw_sigma_r.max(cfg.rate_sigma_floor).min(ceiling_r);
+            let sigma_h = raw_sigma_h.clamp(cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling);
 
-            // Cap entropy standard deviation at 0.15 (normalized scale), floor at 0.02.
-            // (Entropy is now normalized [0, 1], so these are proportionally smaller
-            // than the raw-entropy-era values of 0.5 ceiling / 0.05 floor.)
-            let sigma_h = raw_sigma_h.max(0.02).min(0.15);
-
-            // 2. High-Sensitivity Cooldown Mode & Entropy-Guided Scaling:
-            // - If we are within the cooldown recovery window, reduce the baseline multiplier to increase sensitivity.
-            // - Scale the rate multiplier up if the entropy is high (indicating high diversity/flash crowd)
-            //   to avoid false rate alarms.
+            // Cooldown reduces k, floored at 1.0, so a target stays easier to
+            // re-detect right after a resolved anomaly.
             let base_k = if target_state.cooldown_counter > 0 {
-                (cfg.k * 0.5).max(1.0)
+                (cfg.k * cfg.cooldown_k_factor).max(1.0)
             } else {
                 cfg.k
             };
 
-            // Dynamic k-Scaling: Scale k relative to the running mean of entropy (mean_h)
-            // instead of a hardcoded 4.0 divisor. Use 4.0 as a fallback if mean_h is 0.0 (warmup).
-            // Also enforce an Emergency Volume Cap: if raw rate exceeds 10 standard deviations above the mean,
-            // override entropy scaling to prevent high-entropy botnet floods from evading detection.
             let mean_h = target_state.welford_entropy.mean;
-            let rate_k = if r > (target_state.welford_rate.mean + 10.0 * sigma_r) {
-                base_k
-            } else {
-                let divisor = if mean_h > 0.0 { mean_h } else { 0.8 };
-                base_k * (h / divisor).max(1.0)
-            };
+            let rate_k = scaled_rate_k(&cfg, base_k, r, target_state.welford_rate.mean, sigma_r, h, mean_h);
             let entropy_k = base_k;
 
-            // Evaluate the two anomaly thresholds.
             let rate_boundary    = target_state.welford_rate.mean + rate_k * sigma_r;
             let entropy_boundary = target_state.welford_entropy.mean - entropy_k * sigma_h;
 
-            // Build anomaly flags bitmask.
             let mut anomaly_flags: u8 = 0;
             if r > rate_boundary {
                 anomaly_flags |= FLAG_RATE_ANOMALY;
             }
-            if entropy_anomaly_fires(h, entropy_boundary, packet_count) {
+            if entropy_anomaly_fires(h, entropy_boundary, packet_count, cfg.entropy_min_packets) {
                 anomaly_flags |= FLAG_ENTROPY_ANOMALY;
             }
 
-            // Determine if this window breached the original configuration-level threshold (real anomaly).
-            // This prevents the system from getting trapped in an infinite cooldown loop due to minor
-            // normal fluctuations breaching the tighter active_k.
-            let real_rate_k = if r > (target_state.welford_rate.mean + 10.0 * sigma_r) {
-                cfg.k
-            } else {
-                let divisor = if mean_h > 0.0 { mean_h } else { 0.8 };
-                cfg.k * (h / divisor).max(1.0)
-            };
+            // Recomputed against cfg.k rather than the cooldown-tightened
+            // base_k, so a minor fluctuation cannot keep refilling its own
+            // cooldown window.
+            let real_rate_k = scaled_rate_k(&cfg, cfg.k, r, target_state.welford_rate.mean, sigma_r, h, mean_h);
             let real_rate_boundary = target_state.welford_rate.mean + real_rate_k * sigma_r;
             let real_entropy_boundary = target_state.welford_entropy.mean - cfg.k * sigma_h;
             let is_real_anomaly = r > real_rate_boundary || h < real_entropy_boundary;
 
-            // 3. Conditional Updates: Feed scalars into Welford accumulators ONLY if the window is clean
-            // and we are not in cooldown. This keeps the baseline stable and prevents statistical explosion.
             // Named because the baseline snapshot below reuses the same
             // condition. A save must never capture mid attack state.
-            let is_clean_window = anomaly_flags == 0 && target_state.cooldown_counter == 0;
+            let is_clean_window = window_is_clean(
+                anomaly_flags,
+                target_state.cooldown_counter,
+                dominant_ip_ratio,
+                cfg.distributed_dominance,
+                r,
+                target_state.welford_rate.mean + sigma_r,
+            );
             if is_clean_window {
-                // Outlier Rejection: Reject updates if the sample is > 5 standard deviations away.
-                // Baseline Capping: Impose a hard ceiling of 10000.0 pps on the Welford mean rate.
-                let is_rate_outlier = sigma_r > 0.0 && (r - target_state.welford_rate.mean).abs() > 5.0 * sigma_r;
-                if !is_rate_outlier && target_state.welford_rate.mean < 10000.0 {
+                let is_rate_outlier = sigma_r > 0.0
+                    && (r - target_state.welford_rate.mean).abs() > cfg.outlier_sigma * sigma_r;
+                if !is_rate_outlier && target_state.welford_rate.mean < cfg.rate_mean_cap {
                     target_state.welford_rate.update(r);
                 }
 
-                let is_entropy_outlier = sigma_h > 0.0 && (h - target_state.welford_entropy.mean).abs() > 5.0 * sigma_h;
+                let is_entropy_outlier = sigma_h > 0.0
+                    && (h - target_state.welford_entropy.mean).abs() > cfg.outlier_sigma * sigma_h;
                 if !is_entropy_outlier {
                     target_state.welford_entropy.update(h);
                 }
 
-                // Peacetime Reference (Long-Term Drift Detection):
-                // Update peacetime references with alpha = 0.001
-                let rate_ref = target_state.peacetime_rate_ref.get_or_insert(r);
-                *rate_ref = 0.001 * r + 0.999 * (*rate_ref);
+                // A very slow average, used below to notice the baseline
+                // drifting somewhere it should not. Seeded from the mean it
+                // will be compared against: seeding from one window instead
+                // disagrees with a two hundred sample mean immediately and
+                // reports ordinary variation as drift.
+                let mean_rate_now = target_state.welford_rate.mean;
+                let mean_entropy_now = target_state.welford_entropy.mean;
+                let w = cfg.peacetime_ewma_weight;
 
-                let entropy_ref = target_state.peacetime_entropy_ref.get_or_insert(h);
-                *entropy_ref = 0.001 * h + 0.999 * (*entropy_ref);
-            
-                // Baseline Poisoning Check:
-                // Revert running mean if it drifts > 50% from peacetime reference.
-                if (*rate_ref) > 0.0 && (target_state.welford_rate.mean - *rate_ref).abs() / (*rate_ref) > 0.50 {
+                let rate_ref = target_state.peacetime_rate_ref.get_or_insert(mean_rate_now);
+                *rate_ref = w * r + (1.0 - w) * (*rate_ref);
+
+                let entropy_ref = target_state
+                    .peacetime_entropy_ref
+                    .get_or_insert(mean_entropy_now);
+                *entropy_ref = w * h + (1.0 - w) * (*entropy_ref);
+
+                // Revert the running mean if it has drifted away from the
+                // slow reference, which is what a poisoning attempt looks like.
+                if baseline_has_drifted(target_state.welford_rate.mean, *rate_ref) {
                     warn!(
-                        "[!!!] Baseline Poisoning Detected for victim {}! Welford mean rate ({:.2}) deviated >50% from peacetime reference ({:.2}). Reverting mean.",
-                        victim_ip, target_state.welford_rate.mean, *rate_ref
+                        "Analysis [victim={}]: baseline poisoning suspected, mean rate ({:.2}) deviated >{:.0}% from the peacetime reference ({:.2}); reverting.",
+                        victim_ip, target_state.welford_rate.mean, MAX_BASELINE_DRIFT * 100.0, *rate_ref
                     );
                     target_state.welford_rate.mean = *rate_ref;
                 }
             }
 
-            // Manage cooldown counter: if a real anomaly is detected, set to 10. Otherwise decrement.
+            // A real anomaly (re)starts the cooldown window; otherwise it
+            // counts down.
             if is_real_anomaly {
-                target_state.cooldown_counter = 10;
+                target_state.cooldown_counter = cfg.cooldown_windows as usize;
             } else if target_state.cooldown_counter > 0 {
                 target_state.cooldown_counter -= 1;
             }
@@ -584,7 +767,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
                 if ipc.send(&fv) {
                     target_state.last_sent_time = timestamp;
                 } else {
-                    warn!("Analysis: IPC send failed for window #{}[victim={}]; Stage 2 may be offline", target_state.window_id, victim_ip);
+                    // See the warm-up send above: the IPC layer owns reporting
+                    // that Stage 2 is unreachable.
+                    log::debug!(
+                        "Analysis: window #{} [victim={victim_ip}] not delivered",
+                        target_state.window_id
+                    );
                 }
             } else {
                 // Nothing to report.
@@ -606,8 +794,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, rx: Receiver<PacketMeta>) {
             }
 
             // V4: periodically persist ALL targets' baselines, but only when
-            // triggered from a clean window (is_clean_window, captured above --
-            // the same gate that decides whether to feed Welford live). That
+            // triggered from a clean window (is_clean_window, captured above):
+            // the same gate that decides whether to feed Welford live. That
             // guarantees the file on disk can never be a mid-attack snapshot.
             // Rate-limited to SAVE_INTERVAL_SECS regardless of how many clean
             // windows close in between, to bound both disk I/O and how much
@@ -691,6 +879,12 @@ mod tests {
     use super::*;
     use crate::capture::{Direction, PacketMeta, Protocol};
     use crate::ipc::FEATURE_VECTOR_BYTES;
+    // Production code reads these from AnalysisConfig; only the tests need the
+    // defaults themselves.
+    use crate::state::{
+        DEFAULT_DISTRIBUTED_DOMINANCE, DEFAULT_ENTROPY_MIN_PACKETS,
+        DEFAULT_ENTROPY_SIGMA_CEILING, DEFAULT_ENTROPY_SIGMA_FLOOR,
+    };
     use crossbeam_channel::bounded;
     use std::io::Read;
     use std::net::Ipv4Addr;
@@ -698,13 +892,112 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    #[test]
+    fn a_baseline_matching_its_reference_has_not_drifted() {
+        assert!(!baseline_has_drifted(100.0, 100.0));
+        assert!(!baseline_has_drifted(120.0, 100.0));
+    }
+
+    #[test]
+    fn a_baseline_far_from_its_reference_has_drifted() {
+        assert!(baseline_has_drifted(200.0, 100.0));
+        assert!(baseline_has_drifted(40.0, 100.0));
+    }
+
+    #[test]
+    fn an_unset_reference_never_reports_drift() {
+        // Division by zero would otherwise make this fire on every window.
+        assert!(!baseline_has_drifted(50.0, 0.0));
+    }
+
+    #[test]
+    fn seeding_the_reference_from_the_mean_reports_no_immediate_drift() {
+        // The reference used to be seeded from a single window. A quiet
+        // moment right after warm-up then set it far below a mean built from
+        // two hundred windows, and ordinary variation was reported as
+        // poisoning. Seeding from the mean starts them in agreement.
+        let learned_mean = 18.32;
+        let one_quiet_window = 8.50;
+
+        assert!(baseline_has_drifted(learned_mean, one_quiet_window));
+        assert!(!baseline_has_drifted(learned_mean, learned_mean));
+    }
+
+    #[test]
+    fn a_flagged_window_normally_freezes_the_baseline() {
+        // The poisoning defence: a slow ramp attacker must not be able to
+        // teach the sensor that their flood is normal.
+        assert!(!window_is_clean(FLAG_RATE_ANOMALY, 0, 0.1, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
+        assert!(!window_is_clean(
+            FLAG_RATE_ANOMALY | FLAG_ENTROPY_ANOMALY,
+            0,
+            0.1,
+            DEFAULT_DISTRIBUTED_DOMINANCE,
+            10.0,
+            100.0
+        ));
+    }
+
+    #[test]
+    fn a_cooldown_window_is_never_clean() {
+        assert!(!window_is_clean(0, 3, 0.1, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
+    }
+
+    #[test]
+    fn an_unflagged_window_is_clean() {
+        assert!(window_is_clean(0, 0, 0.9, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
+    }
+
+    #[test]
+    fn a_distributed_entropy_only_flag_still_updates_the_baseline() {
+        // The false positive case. Without this the boundary freezes at its
+        // warm-up value and the false positives sustain themselves.
+        assert!(window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
+    }
+
+    #[test]
+    fn a_concentrated_entropy_flag_still_freezes_the_baseline() {
+        // Concentration is what a real flood looks like, so this one has to
+        // keep freezing.
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.85, DEFAULT_DISTRIBUTED_DOMINANCE, 10.0, 100.0));
+    }
+
+    #[test]
+    fn an_entropy_flag_at_an_elevated_rate_freezes_the_baseline(){
+        assert!(!window_is_clean(FLAG_ENTROPY_ANOMALY, 0, 0.2, DEFAULT_DISTRIBUTED_DOMINANCE, 500.0, 100.0));
+    }
+
+    #[test]
+    fn the_entropy_sigma_floor_keeps_the_boundary_off_the_mean() {
+        // A baseline built on uniform traffic produces a near zero standard
+        // deviation, which would put the boundary on top of the mean and flag
+        // about half of all ordinary windows.
+        let raw_sigma_h = 0.0001_f64;
+        let sigma_h = raw_sigma_h.clamp(DEFAULT_ENTROPY_SIGMA_FLOOR, DEFAULT_ENTROPY_SIGMA_CEILING);
+        let mean_h = 0.98;
+        let boundary = mean_h - 2.0 * sigma_h;
+        // Compared against the floor itself rather than a literal, so this
+        // keeps testing the intent if the floor is retuned.
+        let gap = mean_h - boundary;
+        assert!(
+            gap >= 2.0 * DEFAULT_ENTROPY_SIGMA_FLOOR - f64::EPSILON,
+            "boundary sat {gap:.4} below the mean, too close to be meaningful"
+        );
+    }
+
+    #[test]
+    fn the_entropy_sigma_ceiling_still_applies() {
+        assert_eq!(0.9_f64.clamp(DEFAULT_ENTROPY_SIGMA_FLOOR, DEFAULT_ENTROPY_SIGMA_CEILING),
+            DEFAULT_ENTROPY_SIGMA_CEILING);
+    }
+
     /// A quiet window must not be read as an entropy anomaly.
     ///
     /// Entropy is 0.0 both for an empty window and for any window whose
     /// packets all came from one source, so a lull looks identical to a
     /// maximally concentrated flood. Once windows began closing on a
     /// timeout tick, that would flag every quiet second, mark the window
-    /// dirty, and stop V4 baseline persistence from saving.
+    /// dirty, and stop baseline persistence from saving.
     #[test]
     fn quiet_window_does_not_raise_an_entropy_anomaly() {
         // Derived the same way as production: mean minus k sigma over the
@@ -712,15 +1005,42 @@ mod tests {
         let (mean_h, sigma_h, k) = (0.92_f64, 0.03_f64, 2.0_f64);
         let boundary = mean_h - k * sigma_h;
 
+        let gate = DEFAULT_ENTROPY_MIN_PACKETS;
+
         // Empty window.
-        assert!(!entropy_anomaly_fires(0.0, boundary, 0));
+        assert!(!entropy_anomaly_fires(0.0, boundary, 0, gate));
         // A handful of packets from a single source also scores 0.0.
-        assert!(!entropy_anomaly_fires(0.0, boundary, MIN_PACKETS_FOR_ENTROPY - 1));
+        assert!(!entropy_anomaly_fires(0.0, boundary, gate - 1, gate));
 
         // With a real sample behind it, concentration still fires.
-        assert!(entropy_anomaly_fires(0.10, boundary, MIN_PACKETS_FOR_ENTROPY));
+        assert!(entropy_anomaly_fires(0.10, boundary, gate, gate));
         // And diverse traffic still does not.
-        assert!(!entropy_anomaly_fires(0.95, boundary, MIN_PACKETS_FOR_ENTROPY));
+        assert!(!entropy_anomaly_fires(0.95, boundary, gate, gate));
+    }
+
+    #[test]
+    fn a_quiet_single_client_window_does_not_look_like_a_flood() {
+        // The residual false positive the gate exists for. One client sending
+        // a burst while the others are idle scores total concentration, which
+        // is true and meaningless: there was only one participant.
+        let boundary = 0.9417;
+        let one_busy_client = 31; // packets, seen on the sensor VM
+
+        assert!(!entropy_anomaly_fires(
+            0.0,
+            boundary,
+            one_busy_client,
+            DEFAULT_ENTROPY_MIN_PACKETS
+        ));
+        // The old gate of 20 let exactly this through.
+        assert!(entropy_anomaly_fires(0.0, boundary, one_busy_client, MIN_PACKETS_TO_CLOSE));
+    }
+
+    #[test]
+    fn a_real_flood_still_fires_through_the_gate() {
+        // The flood seen on the VM: six figures of pps, so the packet count
+        // clears any sane gate.
+        assert!(entropy_anomaly_fires(0.0007, 0.9417, 50_000, DEFAULT_ENTROPY_MIN_PACKETS));
     }
 
     /// The flow map must stay bounded under a randomized-source flood, and
@@ -818,9 +1138,9 @@ mod tests {
         };
 
         let (tx, rx) = bounded(1024);
-        let handle = std::thread::spawn(move || run_analysis_thread(cfg, rx));
+        let handle = std::thread::spawn(move || run_analysis_thread(cfg, PacketSource::Channel(rx)));
 
-        // Enough packets to satisfy MIN_PACKETS_FOR_ENTROPY, then stop sending.
+        // Enough packets to satisfy MIN_PACKETS_TO_CLOSE, then stop sending.
         for _ in 0..25 {
             tx.send(packet()).expect("send");
         }

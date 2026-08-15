@@ -1,19 +1,13 @@
 """
 db.py: SQLite audit-log writers (the `logs` and `metrics_history` tables).
 
-Deliberately does NOT depend on enforcement.py: log_incident() used to
-resolve an unset victim_ip itself (via enforcement.resolve_victim_ip),
-which would make this module depend on enforcement.py while enforcement.py
-(block_ip/ratelimit_ip/unblock_ip) depends on this module for log_incident,
-a cycle. Every caller now resolves victim_ip before calling in here
-(block_ip/ratelimit_ip already did; unblock_ip was the one call site that
-didn't and now does too), so this module only needs config + state.
+Deliberately does not depend on enforcement.py: every caller resolves
+victim_ip before calling in here, so this module only needs config + state,
+avoiding a cycle (enforcement.py depends on this module for log_incident).
 
-Writes go through one shared connection guarded by a lock. Opening a new
-connection per write left a handle unclosed on every failure and made
-writers queue behind each other until the busy timeout expired, which
-showed up as "database is locked" losing incident records while the
-enforcement action itself succeeded.
+Writes go through one shared connection guarded by a lock, so a slow writer
+blocks other writers rather than each opening its own connection and queuing
+behind the busy timeout.
 """
 
 import sqlite3
@@ -75,15 +69,23 @@ def close():
         _close()
 
 
+def connect() -> sqlite3.Connection:
+    """A connection for callers that only read.
+
+    Not the shared writer connection or its lock: WAL already lets reads run
+    alongside a write. Matches its busy timeout, though, so a read does not
+    surface as a 5 second default-timeout failure while the periodic purge
+    holds the write lock.
+    """
+    return sqlite3.connect(config.DB_PATH, timeout=30.0)
+
+
 def log_incident(timestamp, src_ip, classification, victim_ip="Unknown", src_rate=None):
     """Record one enforcement action.
 
-    `src_rate` is that source's own packet rate. It used to be filled from
-    state.last_metrics["ewma_rate"], which is the victim's aggregate rate
-    for the window, so every source actioned in the same window was logged
-    with the flood's entire volume. A Tier 4 fallback rate-limiting fifty
-    sources produced fifty identical rows, each claiming the full attack
-    rate.
+    `src_rate` is that source's own packet rate, not the victim's aggregate
+    rate for the window: sources actioned in the same window would otherwise
+    all be logged with the flood's entire volume.
 
     Entropy stays a window-level value on purpose: it describes the source
     distribution the decision was made against, not anything per-source.

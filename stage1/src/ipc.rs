@@ -12,7 +12,7 @@
 //! warm-up.
 
 use byteorder::{LittleEndian, WriteBytesExt};
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::{
     io::Write,
     os::unix::net::UnixStream,
@@ -186,6 +186,12 @@ pub struct IpcSocket {
     stream: Option<UnixStream>,
     /// File-system path of the Unix domain socket.
     path: String,
+    /// Whether the last connection attempt already reported a failure.
+    ///
+    /// Stage 2 being down means every window fails, and a warning per window
+    /// buries everything else in the log. The first failure is reported, then
+    /// nothing until a connection succeeds again.
+    reported_down: bool,
 }
 
 impl IpcSocket {
@@ -194,6 +200,7 @@ impl IpcSocket {
         Self {
             stream: None,
             path: SOCKET_PATH.to_string(),
+            reported_down: false,
         }
     }
 
@@ -203,6 +210,7 @@ impl IpcSocket {
         Self {
             stream: None,
             path: path.as_ref().to_string_lossy().into_owned(),
+            reported_down: false,
         }
     }
 
@@ -222,11 +230,24 @@ impl IpcSocket {
                 // the Stage 1 analysis thread indefinitely.
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
                 self.stream = Some(stream);
-                debug!("IPC: connected to Stage 2 at {}", self.path);
+                if self.reported_down {
+                    info!("IPC: Stage 2 is back, connected at {}", self.path);
+                    self.reported_down = false;
+                } else {
+                    debug!("IPC: connected to Stage 2 at {}", self.path);
+                }
                 true
             }
             Err(e) => {
-                warn!("IPC: cannot connect to Stage 2 at {}: {e}", self.path);
+                if !self.reported_down {
+                    warn!(
+                        "IPC: cannot connect to Stage 2 at {}: {e}. Windows will \
+                         keep being analysed but not classified. Further attempts \
+                         are not logged until it reconnects.",
+                        self.path
+                    );
+                    self.reported_down = true;
+                }
                 false
             }
         }

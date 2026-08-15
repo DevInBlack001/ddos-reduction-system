@@ -34,7 +34,7 @@ def resolve_victim_ip(victim_ip=None):
     if state.last_metrics_by_target:
         return next(iter(state.last_metrics_by_target.keys()))
 
-    return "10.0.0.3"
+    return "Unknown"
 
 
 # Kernel netfilter blocklist control (ipset / iptables)

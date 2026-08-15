@@ -30,12 +30,20 @@ would lock out every deployment without a certificate.
 
 Passwords are hashed with bcrypt, replacing a single unsalted round of SHA-256.
 There is no default credential anywhere in the code. If the setup script was
-never run, startup logs a warning and no login is possible.
+never run, startup logs a warning and no login is possible. The same minimum
+password strength enforced on every other account applies to the first
+administrator account, not only ones created afterward.
 
 Login attempts are throttled per client address, five failures in five minutes
-followed by a lockout, to slow online brute forcing.
+followed by a lockout, to slow online brute forcing. The current password
+re-entry that account management requires is throttled the same way, keyed by
+the caller's own username: an authenticated session must not be able to guess
+its own account's password without bound.
 
-Sessions expire after ten minutes of inactivity.
+Sessions expire after ten minutes of inactivity. The cookie's own expiry
+slides with that activity too, refreshed on every authenticated request, so an
+actively used session is not logged out by a fixed client side timer while the
+server side session is still current.
 
 ## Input Validation and Output Encoding
 
@@ -112,6 +120,12 @@ The alerts endpoint does not echo the configured webhook URL back in the clear.
 It is a bearer credential: anyone holding it can post to that channel. It is
 reduced to a boolean, matching how the stored mail password is handled, and the
 dashboard only sends a new value when the operator types one.
+
+A failed delivery is redacted the same way before it reaches a log line or the
+test-alert response. A network exception does not necessarily contain the
+webhook URL as one contiguous string, so the token is stripped by matching the
+path pattern itself rather than the full URL; the SMTP username and password
+are stripped as literal substrings.
 
 ## Resource Bounds
 

@@ -8,6 +8,7 @@ race), and changing or deleting an account revokes its live sessions (see
 auth.revoke_sessions_for_user).
 """
 
+import time
 import sqlite3
 import logging
 
@@ -15,17 +16,38 @@ import bcrypt
 from fastapi import APIRouter, HTTPException, Request
 
 import config
+import db
+import state
 from auth import get_session_username, revoke_sessions_for_user
 from models import CreateUserPayload, SetPasswordPayload, DeleteUserPayload
 
 router = APIRouter()
 
 
+def _reauth_locked_out(username: str) -> bool:
+    now = time.time()
+    attempts = [t for t in state.failed_reauth_attempts.get(username, []) if now - t <= state.LOGIN_WINDOW_SECS]
+    state.failed_reauth_attempts[username] = attempts
+    return len(attempts) >= state.LOGIN_MAX_ATTEMPTS
+
+
+def _record_reauth_failure(username: str):
+    state.failed_reauth_attempts.setdefault(username, []).append(time.time())
+
+
 def _verify_admin_password(username: str, password: str):
-    """Raise 401/403 unless `password` is the CURRENT password for
+    """Raise 401/403/429 unless `password` is the CURRENT password for
     `username` (the caller re-authenticating themselves, not the target
-    of the action being performed)."""
-    conn = sqlite3.connect(config.DB_PATH)
+    of the action being performed). Throttled the same as login: an
+    authenticated session must not be able to guess its own password
+    unboundedly."""
+    if _reauth_locked_out(username):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in up to {state.LOGIN_LOCKOUT_SECS // 60} minutes."
+        )
+
+    conn = db.connect()
     cursor = conn.cursor()
     cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
     row = cursor.fetchone()
@@ -37,12 +59,14 @@ def _verify_admin_password(username: str, password: str):
     except ValueError:
         ok = False
     if not ok:
+        _record_reauth_failure(username)
         raise HTTPException(status_code=403, detail="Your current password is incorrect.")
+    state.failed_reauth_attempts.pop(username, None)
 
 
 @router.get("/api/users")
 def list_users():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = db.connect()
     cursor = conn.cursor()
     cursor.execute("SELECT username FROM users ORDER BY username")
     usernames = [r[0] for r in cursor.fetchall()]
@@ -56,7 +80,7 @@ def create_user(payload: CreateUserPayload, request: Request):
     _verify_admin_password(caller, payload.admin_password)
 
     password_hash = bcrypt.hashpw(payload.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = db.connect()
     cursor = conn.cursor()
     try:
         # username is the PRIMARY KEY, the IntegrityError on a duplicate
@@ -81,7 +105,7 @@ def delete_user(payload: DeleteUserPayload, request: Request):
     _verify_admin_password(caller, payload.admin_password)
     username = payload.username
 
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = db.connect()
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
     if not cursor.fetchone():
@@ -111,7 +135,7 @@ def set_password(payload: SetPasswordPayload, request: Request):
     caller = get_session_username(request)
     _verify_admin_password(caller, payload.admin_password)
 
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = db.connect()
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM users WHERE username = ?", (payload.username,))
     if not cursor.fetchone():

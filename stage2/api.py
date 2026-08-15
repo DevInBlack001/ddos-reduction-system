@@ -5,7 +5,6 @@ management, and the enforcement-config editor.
 
 import os
 import json
-import sqlite3
 import logging
 from typing import Optional
 
@@ -13,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
 import config
+import db
 import state
 import enforcement
 from storage import load_json_file, save_json_file
@@ -100,7 +100,7 @@ def get_state(target: Optional[str] = None):
     # Read latest logs from db
     latest_logs = []
     try:
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         cursor.execute("SELECT timestamp, src_ip, dst_ip, classification FROM logs WHERE classification IN ('Blocked', 'Rate Limited', 'DDoS') ORDER BY id DESC LIMIT 5")
         latest_logs = [{"timestamp": r[0], "src_ip": r[1], "victim_ip": r[2], "classification": r[3]} for r in cursor.fetchall()]
@@ -165,7 +165,7 @@ def get_state(target: Optional[str] = None):
 @router.get("/api/history")
 def get_history(target: Optional[str] = None):
     try:
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         if target:
             cursor.execute(
@@ -343,7 +343,7 @@ def get_logs(classification: str = "ALL", limit: int = 50, offset: int = 0):
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     try:
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = db.connect()
         cursor = conn.cursor()
         if classification == "ALL":
             where_clause = ""

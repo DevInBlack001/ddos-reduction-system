@@ -23,7 +23,17 @@
 #   --interface  <IFACE>     Default capture interface written into the service unit
 #   --victim-ips <IPs>       Default list of victim IPs (comma-separated, alias: --victim-ip)
 #   --victim-subnet <SUBNET> Default victim subnet CIDR (e.g. 10.0.0.0/24)
+#   --capture-mode <MODE>    pcap (default) or kernel. 'kernel' uses XDP and TC
+#                            and is written into the service unit
 #   --no-service             Skip systemd unit installation
+#
+# Detection tuning, all optional. Anything not given is left out of the unit so
+# the sensor's own default applies, which lets a later release improve it:
+#   --k <FLOAT>                  Sensitivity multiplier
+#   --entropy-sigma-floor <F>    Smallest entropy deviation for the boundary
+#   --rate-sigma-floor <F>       Same floor for the rate, in pps
+#   --entropy-min-packets <N>    Packets needed before entropy may flag
+#   --no-tuning-prompt           Skip the interactive tuning questions
 #
 # Notes:
 #   • Must be run as root (or with sudo) because pcap and systemd require it.
@@ -47,12 +57,30 @@ INTERFACE="br0"
 VICTIM_IP=""
 VICTIM_IPS=""
 VICTIM_SUBNET=""
+# Which backend the generated unit starts with. pcap by default because it
+# works on any interface; the kernel backend additionally needs the compiled
+# object and a driver the verifier will attach to.
+CAPTURE_MODE="pcap"
 INSTALL_SERVICE=true
+# Detection tuning. Empty means "not set", and an unset value is left out of
+# the unit entirely so the sensor's own default applies. Writing every default
+# into ExecStart would freeze today's values, so a later release that improves
+# a default would have no effect on an existing install.
+TUNE_K=""
+TUNE_ENTROPY_SIGMA_FLOOR=""
+TUNE_RATE_SIGMA_FLOOR=""
+TUNE_ENTROPY_MIN_PACKETS=""
+SKIP_TUNING_PROMPT=false
 BINARY_NAME="ddos_stage1"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
+
+# Toolchain discovery, used by both the Rust and eBPF steps below.
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-toolchain.sh"
+load_cargo_env
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -60,6 +88,17 @@ while [[ $# -gt 0 ]]; do
         --interface)               INTERFACE="$2"; shift 2 ;;
         --victim-ip|--victim-ips)  VICTIM_IPS="$2"; shift 2 ;;
         --victim-subnet)           VICTIM_SUBNET="$2"; shift 2 ;;
+        --capture-mode)
+            case "$2" in
+                pcap|kernel) CAPTURE_MODE="$2" ;;
+                *) error "--capture-mode takes 'pcap' or 'kernel', got '$2'." ;;
+            esac
+            shift 2 ;;
+        --k)                       TUNE_K="$2"; shift 2 ;;
+        --entropy-sigma-floor)     TUNE_ENTROPY_SIGMA_FLOOR="$2"; shift 2 ;;
+        --rate-sigma-floor)        TUNE_RATE_SIGMA_FLOOR="$2"; shift 2 ;;
+        --entropy-min-packets)     TUNE_ENTROPY_MIN_PACKETS="$2"; shift 2 ;;
+        --no-tuning-prompt)        SKIP_TUNING_PROMPT=true; shift ;;
         --no-service)              INSTALL_SERVICE=false; shift ;;
         --help|-h)
             grep '^#' "$0" | head -40 | sed 's/^# \?//'
@@ -154,6 +193,8 @@ install_deps_apt() {
         build-essential \
         pkg-config \
         curl \
+        llvm \
+        clang \
         python3 \
         python3-pip \
         python3-venv \
@@ -167,6 +208,9 @@ install_deps_dnf() {
         gcc \
         pkg-config \
         curl \
+        llvm \
+        llvm-devel \
+        clang \
         python3 \
         python3-pip \
         ipset
@@ -178,6 +222,9 @@ install_deps_yum() {
         gcc \
         pkgconfig \
         curl \
+        llvm \
+        llvm-devel \
+        clang \
         python3 \
         python3-pip \
         ipset
@@ -192,6 +239,8 @@ install_deps_apk() {
         pkgconfig \
         curl \
         bash \
+        llvm-dev \
+        clang \
         python3 \
         py3-pip \
         ipset \
@@ -216,23 +265,112 @@ success "System dependencies installed."
 info "Checking for Rust toolchain..."
 
 if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
-    RUST_VER=$(rustc --version)
-    success "Rust already installed: $RUST_VER"
+    success "Rust already installed: $(rustc --version)"
 else
     info "Rust not found. Installing via rustup..."
-    # -y  : non-interactive, accept defaults
-    # --no-modify-path : do not modify PATH in shell profiles (we source manually)
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --no-modify-path --default-toolchain stable
-
-    # Source the Cargo environment for the rest of this script.
-    # shellcheck source=/dev/null
-    source "$HOME/.cargo/env"
+    if ! ensure_rustup; then
+        error "Could not install the Rust toolchain. Install cargo and rustc"
+        error "from your distribution, or rustup from https://rustup.rs, then"
+        error "re-run this script."
+        exit 1
+    fi
     success "Rust toolchain installed: $(rustc --version)"
 fi
 
-# Ensure the stable toolchain is the active one.
-rustup default stable &>/dev/null || true
+# Only meaningful when rustup is managing the toolchain. A distribution
+# install has no notion of a default and the call is a harmless no-op.
+if command -v rustup &>/dev/null; then
+    rustup default stable &>/dev/null || true
+fi
+
+# =============================================================================
+# eBPF build toolchain (optional)
+# =============================================================================
+# The XDP capture backend is compiled separately: it targets BPF bytecode on
+# nightly, while the sensor targets the host on stable. This is best effort.
+# A machine without it still builds and runs Stage 1 on the libpcap backend.
+info "Setting up the eBPF build toolchain..."
+
+EBPF_READY=false
+
+# cargo can come from a distribution package with no rustup alongside it. That
+# builds the sensor fine but cannot add nightly or rust-src, so rustup is
+# installed here rather than assumed.
+if ! command -v rustup &>/dev/null; then
+    info "rustup not found. Installing it so a nightly toolchain can be added..."
+    if ensure_rustup; then
+        success "rustup installed: $(rustup --version 2>/dev/null | head -1)"
+    else
+        warn "Could not install rustup. Skipping the kernel capture backend."
+        warn "Stage 1 will still build and run on the libpcap backend."
+    fi
+fi
+
+if command -v rustup &>/dev/null && ! nightly_ready; then
+    info "Installing the nightly toolchain and rust-src (needed to build core)..."
+    rustup toolchain install nightly --component rust-src --profile minimal &>/dev/null || true
+fi
+
+if nightly_ready; then
+    if command -v bpf-linker &>/dev/null; then
+        success "bpf-linker already present: $(bpf-linker --version 2>/dev/null || echo unknown)"
+        EBPF_READY=true
+    elif detect_llvm; then
+        info "Found LLVM $LLVM_MAJOR at $LLVM_PREFIX. Installing a matching bpf-linker..."
+        # Version is chosen from the LLVM actually installed, not pinned here:
+        # bpf-linker links against LLVM, and which LLVM a machine has is its
+        # distribution's decision. Candidates are tried until one builds.
+        if CHOSEN=$(install_bpf_linker "$LLVM_MAJOR" "$LLVM_PREFIX"); then
+            success "bpf-linker installed ($CHOSEN, built against LLVM $LLVM_MAJOR)."
+            EBPF_READY=true
+        else
+            warn "Could not build bpf-linker against LLVM $LLVM_MAJOR."
+            warn "Stage 1 will still build and run on the libpcap backend."
+        fi
+    else
+        warn "No LLVM installation found, so bpf-linker cannot be built."
+        warn "Install your distribution's llvm and clang packages, then re-run."
+    fi
+else
+    warn "Nightly toolchain unavailable. Skipping the eBPF backend."
+fi
+
+BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+
+if $EBPF_READY; then
+    info "Building the eBPF programs..."
+    EBPF_LOG="$(mktemp)"
+    if bash "$SCRIPT_DIR/build-ebpf.sh" >"$EBPF_LOG" 2>&1; then
+        # The sensor loads this into the kernel as a privileged process, so a
+        # non root account able to replace it would be running its own kernel
+        # code. Root owned directory, not writable by anyone else.
+        install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
+        install -o root -g root -m 644 \
+            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
+            "$BPF_OBJECT_DIR/ddos-stage1.o"
+        success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
+        rm -f "$EBPF_LOG"
+    else
+        EBPF_READY=false
+        warn "eBPF build failed. The reason follows; the installation continues"
+        warn "and Stage 1 will run on the libpcap backend."
+        echo
+        # Showing the reason here saves a second run just to find out what
+        # went wrong.
+        sed 's/^/    /' "$EBPF_LOG" | tail -n 25
+        echo
+        warn "Full output kept at $EBPF_LOG"
+    fi
+fi
+
+# The kernel backend cannot start without the object, so a unit asking for it
+# would fail on every boot. Falling back keeps the install working and says so.
+if [[ "$CAPTURE_MODE" == "kernel" ]] && ! $EBPF_READY; then
+    warn "--capture-mode kernel was requested but the eBPF object is not available."
+    warn "The service will start on the libpcap backend instead. Fix the build,"
+    warn "then edit $SERVICE_DIR/ddos-stage1.service to add --capture-mode kernel."
+    CAPTURE_MODE="pcap"
+fi
 
 # =============================================================================
 # Compile Stage 1 in release mode
@@ -252,6 +390,18 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
 
 success "Build complete: target/release/$BINARY_NAME"
 
+# This script runs as root, so everything it just wrote under target/ is root
+# owned. Building from a working copy would then break every later non root
+# cargo build with a permission error. Hand the tree back to whoever invoked
+# sudo. Only applies when running from a checkout, not from an unpacked copy.
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
+        [[ -d "$tree" ]] || continue
+        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
+    done
+    info "Build artefacts returned to $SUDO_USER."
+fi
+
 # =============================================================================
 # Install the binary
 # =============================================================================
@@ -259,16 +409,75 @@ info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
 install -m 755 "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary installed: $INSTALL_DIR/$BINARY_NAME"
 
-# Grant CAP_NET_RAW so the binary can capture packets without running as root.
+# =============================================================================
+# Detection tuning (optional)
+# =============================================================================
+# Asked after the binary exists so the real defaults can be read from --help
+# rather than duplicated here, where they would drift.
+sensor_default() {
+    "$INSTALL_DIR/$BINARY_NAME" --help 2>&1 \
+        | grep -A 1 -- "  $1 " \
+        | grep -o 'default: [^]]*' \
+        | head -1 | cut -d' ' -f2
+}
+
+# Ask for one value, keeping the sensor's default when the answer is empty.
+prompt_tuning() {
+    local flag="$1" description="$2" current="$3"
+    local shown="${current:-$(sensor_default "$flag")}"
+    echo -ne "${YELLOW}[INPUT]${NC} ${description}\n         ${flag} [default: ${shown:-built in}]: "
+    read -r reply
+    echo "${reply:-$current}"
+}
+
+if [[ -t 0 ]] && ! $SKIP_TUNING_PROMPT; then
+    echo ""
+    info "Detection tuning is optional. The defaults are what the system was"
+    info "tested against, and the sensor relearns your traffic baseline on its"
+    info "own, so most installs should keep them."
+    info "They can be changed later by editing the service unit."
+    echo ""
+    echo -ne "${YELLOW}[INPUT]${NC} Set detection tuning values now? [y/N]: "
+    read -r want_tuning
+
+    if [[ "$want_tuning" =~ ^[Yy] ]]; then
+        echo ""
+        info "Press Enter on any prompt to keep that default."
+        echo ""
+        TUNE_K=$(prompt_tuning "--k" \
+            "Sensitivity. Lower fires more readily, higher demands a bigger deviation." \
+            "$TUNE_K")
+        TUNE_ENTROPY_SIGMA_FLOOR=$(prompt_tuning "--entropy-sigma-floor" \
+            "Smallest entropy deviation used for the boundary. Raise if ordinary traffic gets flagged." \
+            "$TUNE_ENTROPY_SIGMA_FLOOR")
+        TUNE_RATE_SIGMA_FLOOR=$(prompt_tuning "--rate-sigma-floor" \
+            "Same floor for the rate, in packets per second." \
+            "$TUNE_RATE_SIGMA_FLOOR")
+        TUNE_ENTROPY_MIN_PACKETS=$(prompt_tuning "--entropy-min-packets" \
+            "Packets a window needs before its entropy may raise an anomaly." \
+            "$TUNE_ENTROPY_MIN_PACKETS")
+        echo ""
+    fi
+fi
+
+# Grant capabilities so the binary can run without root. CAP_NET_RAW covers
+# libpcap; CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON cover the kernel backend loading
+# and attaching programs. Falls back to CAP_NET_RAW alone on a kernel too old
+# to recognise the others, since pcap capture must still work either way.
 if command -v setcap &>/dev/null; then
-    setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
-    success "CAP_NET_RAW capability granted, binary can run without sudo."
+    if setcap cap_net_raw,cap_bpf,cap_net_admin,cap_perfmon+ep "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null; then
+        success "Capabilities granted (CAP_NET_RAW, CAP_BPF, CAP_NET_ADMIN, CAP_PERFMON), binary can run without sudo."
+    else
+        setcap cap_net_raw+ep "$INSTALL_DIR/$BINARY_NAME"
+        success "CAP_NET_RAW capability granted, binary can run without sudo."
+        warn "Could not grant CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON; the kernel backend needs root or --capture-mode pcap when run by hand."
+    fi
 else
     warn "setcap not found. You will need to run $BINARY_NAME as root."
 fi
 
-# Dedicated, unprivileged service account for Stage 1. It only needs
-# CAP_NET_RAW (granted above via setcap, and again below via the systemd
+# Dedicated, unprivileged service account for Stage 1. It only needs the
+# capabilities granted above via setcap (and again below via the systemd
 # unit's AmbientCapabilities), not full root, running the packet-capture
 # daemon as root means any bug in it has root's blast radius for no reason.
 # ddos-ipc is a shared group so this account can reach the Stage 1 <-> Stage
@@ -365,6 +574,23 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
         EXEC_START+=" --no-filter"
     fi
 
+    if [[ "$CAPTURE_MODE" == "kernel" ]]; then
+        EXEC_START+=" --capture-mode kernel"
+    fi
+
+    # Only values the operator actually chose. Anything left unset stays out,
+    # so the sensor's own default applies and a later release can improve it.
+    [[ -n "$TUNE_K" ]]                    && EXEC_START+=" --k $TUNE_K"
+    [[ -n "$TUNE_ENTROPY_SIGMA_FLOOR" ]]  && EXEC_START+=" --entropy-sigma-floor $TUNE_ENTROPY_SIGMA_FLOOR"
+    [[ -n "$TUNE_RATE_SIGMA_FLOOR" ]]     && EXEC_START+=" --rate-sigma-floor $TUNE_RATE_SIGMA_FLOOR"
+    [[ -n "$TUNE_ENTROPY_MIN_PACKETS" ]]  && EXEC_START+=" --entropy-min-packets $TUNE_ENTROPY_MIN_PACKETS"
+
+    # Measured tuning from scripts/calibrate.py, expanded from the optional
+    # environment file below. Last, because the sensor's parser takes the final
+    # value given for a flag, so a calibration overrides what was chosen here
+    # without this script needing to know what it found.
+    EXEC_START+=" \$FLOD_TUNING"
+
     cat > "$SERVICE_DIR/ddos-stage1.service" << EOF
 # =============================================================================
 # ddos-stage1.service, systemd unit for the DDoS mitigation Stage 1 daemon
@@ -387,9 +613,19 @@ SupplementaryGroups=ddos-ipc
 # root. AmbientCapabilities grants it at exec time regardless of the
 # binary's file capabilities (setcap above still matters for anyone running
 # the binary directly outside systemd).
-AmbientCapabilities=CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_RAW
+# CAP_NET_RAW covers libpcap. The kernel backend also needs CAP_BPF to load
+# programs and create maps, and CAP_NET_ADMIN to attach XDP and TC. Granting
+# them unconditionally keeps one unit working for both backends; without them
+# --capture-mode kernel fails under systemd while working by hand as root,
+# which is a confusing way to find out.
+AmbientCapabilities=CAP_NET_RAW CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+# Loading eBPF programs needs locked memory on kernels before 5.11.
+LimitMEMLOCK=infinity
 NoNewPrivileges=true
+# Optional, written by scripts/calibrate.py. Absent until a calibration runs,
+# and removing it returns the sensor to the values chosen at install time.
+EnvironmentFile=-/etc/ddos_stage1/tuning.env
 ExecStart=$EXEC_START
 Restart=on-failure
 RestartSec=5s
@@ -430,6 +666,11 @@ EOF
 
     systemctl daemon-reload
     success "Systemd services installed: ddos-stage1.service, ddos-stage2.service"
+    if [[ "$CAPTURE_MODE" == "kernel" ]]; then
+        success "Capture backend: kernel (XDP and TC)"
+    else
+        info "Capture backend: pcap. Re-run with --capture-mode kernel to use XDP and TC."
+    fi
     info ""
     info "To enable at boot and start now:"
     info "    systemctl enable --now ddos-stage2"

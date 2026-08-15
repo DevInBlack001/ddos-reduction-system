@@ -1,0 +1,17 @@
+[package]
+name = "ddos-stage1-common"
+version = "0.1.0"
+edition = "2021"
+
+# Built for both sides. The BPF target gets it with no features and no
+# dependencies; the sensor enables `user`, which adds the aya trait impls that
+# let these types move through a map.
+[features]
+default = []
+user = ["aya"]
+
+[dependencies]
+aya = { version = "0.14", optional = true }
+
+[lib]
+path = "src/lib.rs"

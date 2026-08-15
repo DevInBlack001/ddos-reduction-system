@@ -1,0 +1,35 @@
+[package]
+name = "ddos-stage1-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-ebpf = "0.1"
+network-types = "0.0.7"
+ddos-stage1-common = { path = "../stage1-common" }
+
+# Two programs, one object file: XDP on the ingress side, TC on the egress
+# side. XDP cannot see egress at all, which is why the second hook exists.
+[[bin]]
+name = "ddos-stage1"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = "abort"
+incremental = false
+codegen-units = 1
+rpath = false
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+
+# Kept out of the workspace above it: this crate builds for bpfel-unknown-none
+# on nightly, the user space crate builds for the host on stable.
+[workspace]
