@@ -130,6 +130,15 @@
         const MARGIN_X = 160;
         const MARGIN_Y = 40;
 
+        // Both of these are cost ceilings, not cosmetic limits. Every edge is
+        // a bezier stroke and every distinct source is an arc, a label and a
+        // canvas row, redrawn on each animation frame. The sensor tracks up
+        // to 8192 flows and a flood fills that, which asks for a canvas tens
+        // of thousands of pixels tall and enough draw calls per frame to lock
+        // the tab. Only the busiest flows are drawn; the rest are counted.
+        const MAX_RENDERED_FLOWS = 150;
+        const MAX_CANVAS_HEIGHT = 6000;
+
         function resizeCanvasWidth() {
             // .graph-wrap's own clientWidth, not getBoundingClientRect --
             // clientWidth already excludes the scrollbar, so the canvas
@@ -145,10 +154,14 @@
             // Grows past that only when the busier column (source or
             // victim, whichever has more entries) actually needs more
             // room at a comfortable ROW_HEIGHT per entry.
+            // Capped at MAX_CANVAS_HEIGHT: past that, rows share the height
+            // they have (layoutPositions already derives spacing from the
+            // count) rather than growing a canvas the browser has to
+            // allocate and clear in full on every frame.
             const visible = canvas.parentElement.clientHeight;
             const rows = Math.max(1, sourceRow.size, victimRow.size);
             const contentHeight = MARGIN_Y * 2 + rows * ROW_HEIGHT;
-            canvas.height = Math.max(visible, contentHeight);
+            canvas.height = Math.min(MAX_CANVAS_HEIGHT, Math.max(visible, contentHeight));
         }
 
         function assignRow(map, ip) {
@@ -190,14 +203,10 @@
                 const blocked = new Set(data.blocked_ips || []);
                 const ratelimited = new Set(data.ratelimited_ips || []);
 
-                const presentSources = new Set();
-                const presentVictims = new Set();
                 const edgeMap = new Map();
 
                 flows.forEach(f => {
                     if (!f.ip || !f.dst) return;
-                    presentSources.add(f.ip);
-                    presentVictims.add(f.dst);
                     const key = `${f.ip}|${f.dst}`;
                     const existing = edgeMap.get(key);
                     if (existing) {
@@ -208,6 +217,23 @@
                         else if (ratelimited.has(f.ip)) status = 'ratelimited';
                         edgeMap.set(key, { src: f.ip, dst: f.dst, rate: f.rate || 0, proto: f.proto, status });
                     }
+                });
+
+                // Ranked after aggregation, so a source split across several
+                // ports is judged on its combined rate rather than on
+                // whichever single flow happened to be largest.
+                const totalFlows = edgeMap.size;
+                edges = Array.from(edgeMap.values())
+                    .sort((a, b) => b.rate - a.rate)
+                    .slice(0, MAX_RENDERED_FLOWS);
+
+                // Derived from what is actually drawn, so the row maps (and
+                // through them the canvas height) stay bounded during a flood.
+                const presentSources = new Set();
+                const presentVictims = new Set();
+                edges.forEach(e => {
+                    presentSources.add(e.src);
+                    presentVictims.add(e.dst);
                 });
                 victims.forEach(ip => presentVictims.add(ip));
 
@@ -222,8 +248,10 @@
                 compactRows(victimRow, presentVictims);
                 updateCanvasHeight();
 
-                edges = Array.from(edgeMap.values());
-                document.getElementById('flowCountPill').innerText = `${edges.length} flows`;
+                document.getElementById('flowCountPill').innerText =
+                    totalFlows > edges.length
+                        ? `busiest ${edges.length} of ${totalFlows} flows`
+                        : `${edges.length} flows`;
             } catch (err) {
                 console.error("Failed to load traffic data:", err);
             }

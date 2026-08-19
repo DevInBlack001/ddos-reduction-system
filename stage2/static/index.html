@@ -674,9 +674,16 @@
             unavailable.style.display = 'none';
             content.style.display = '';
 
-            const ingress = data.ewma_rate || 0;
             const egress = data.egress_rate || 0;
             const pct = data.drop_ratio * 100;
+
+            // Derived from egress and the drop ratio, not ewma_rate: both of
+            // those come from the same raw per-window rate Stage 1 measured,
+            // while ewma_rate is smoothed and can lag behind a rate spike,
+            // making egress look larger than ingress on the bars.
+            const ingress = data.drop_ratio < 1
+                ? egress / (1 - data.drop_ratio)
+                : (data.ewma_rate || 0);
 
             const dropEl = document.getElementById('egressDropPct');
             dropEl.innerText = `${pct.toFixed(1)}%`;
