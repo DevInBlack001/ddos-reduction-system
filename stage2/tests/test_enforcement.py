@@ -46,6 +46,7 @@ class EnforcementTestCase(unittest.TestCase):
 
         reset_db_module()
         state.recently_blocked.clear()
+        state.ddos_sources.clear()
         self._targets = dict(state.last_metrics_by_target)
         state.last_metrics_by_target.clear()
 
@@ -55,6 +56,7 @@ class EnforcementTestCase(unittest.TestCase):
         for name, value in self._saved.items():
             setattr(config, name, value)
         state.recently_blocked.clear()
+        state.ddos_sources.clear()
         state.last_metrics_by_target.clear()
         state.last_metrics_by_target.update(self._targets)
         unlink(self.db_path, self.whitelist, self.shared, self.victims)
@@ -259,6 +261,100 @@ class IpsetReadbackTests(EnforcementTestCase):
         enforcement.subprocess.run = RecordingRun(stdout="Members:\n198.51.100.9 timeout 10\n")
         enforcement.get_ratelimited_ips()
         self.assertTrue(enforcement.subprocess.run.ran("ipset list ddos_ratelimit"))
+
+
+class DdosSourceRecordTests(EnforcementTestCase):
+    """Only a block names an address as an attacker.
+
+    Rate-limiting is applied to whole groups at once by the aggregate
+    fallback, and as a precaution during a flash crowd, so its membership is
+    not evidence that any one address attacked anything.
+    """
+
+    def test_a_blocked_source_is_recorded_as_an_attacker(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=900.0)
+        self.assertIn("198.51.100.9", state.ddos_sources)
+        self.assertEqual(state.ddos_sources["198.51.100.9"]["action"], "Blocked")
+        self.assertEqual(state.ddos_sources["198.51.100.9"]["victim_ip"], "192.0.2.3")
+        self.assertEqual(state.ddos_sources["198.51.100.9"]["rate"], 900.0)
+
+    def test_a_rate_limited_source_is_not_recorded_as_an_attacker(self):
+        enforcement.ratelimit_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=120.0)
+        self.assertEqual(state.ddos_sources, {})
+
+    def test_a_flash_crowd_cap_is_not_recorded_as_an_attacker(self):
+        enforcement.ratelimit_ip(
+            "198.51.100.9", victim_ip="192.0.2.3", src_rate=120.0,
+            classification=enforcement.CLASS_RATELIMITED_FLASH)
+        self.assertEqual(state.ddos_sources, {})
+
+    def test_a_later_rate_limit_clears_an_earlier_block_record(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=900.0)
+        self.assertIn("198.51.100.9", state.ddos_sources)
+        state.recently_blocked.clear()
+        enforcement.ratelimit_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=12.0)
+        self.assertEqual(state.ddos_sources, {})
+
+    def test_a_flash_crowd_cap_is_recorded_under_its_own_label(self):
+        enforcement.ratelimit_ip(
+            "198.51.100.9", victim_ip="192.0.2.3", src_rate=120.0,
+            classification=enforcement.CLASS_RATELIMITED_FLASH)
+        self.assertEqual(
+            self.logged(),
+            [("198.51.100.9", "192.0.2.3", 120.0, "Rate Limited (Flash Crowd)")])
+
+    def test_a_later_flash_crowd_verdict_clears_an_earlier_attack_record(self):
+        enforcement.record_ddos_source(
+            "198.51.100.9", enforcement.CLASS_BLOCKED, "192.0.2.3", 900.0, 1.0)
+        enforcement.record_ddos_source(
+            "198.51.100.9", enforcement.CLASS_RATELIMITED_FLASH, "192.0.2.3", 12.0, 2.0)
+        self.assertEqual(state.ddos_sources, {})
+
+    def test_the_record_is_capped_keeping_the_most_recent_sources(self):
+        saved = state.DDOS_SOURCES_MAX
+        state.DDOS_SOURCES_MAX = 10
+        try:
+            for index in range(60):
+                enforcement.record_ddos_source(
+                    "198.51.100.%d" % index, enforcement.CLASS_BLOCKED,
+                    "192.0.2.3", float(index), float(index))
+            self.assertLessEqual(len(state.ddos_sources), 10)
+            self.assertIn("198.51.100.59", state.ddos_sources)
+            self.assertNotIn("198.51.100.0", state.ddos_sources)
+        finally:
+            state.DDOS_SOURCES_MAX = saved
+
+    def test_the_record_is_restored_from_the_incident_log(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=900.0)
+        state.ddos_sources.clear()
+        enforcement.load_ddos_sources()
+        self.assertIn("198.51.100.9", state.ddos_sources)
+
+    def test_the_restore_honours_the_most_recent_verdict(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=900.0)
+        state.recently_blocked.clear()
+        enforcement.ratelimit_ip(
+            "198.51.100.9", victim_ip="192.0.2.3", src_rate=12.0,
+            classification=enforcement.CLASS_RATELIMITED_FLASH)
+        state.ddos_sources.clear()
+        enforcement.load_ddos_sources()
+        self.assertEqual(state.ddos_sources, {})
+
+    def test_a_released_address_is_dropped_from_the_dashboard(self):
+        """The record survives the process, so the API filters on the live set."""
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3", src_rate=900.0)
+        import api
+        # api.enforcement is the same module object, so the originals have to
+        # be captured before they are replaced.
+        real_blocked = enforcement.get_blocked_ips
+        real_ratelimited = enforcement.get_ratelimited_ips
+        enforcement.get_blocked_ips = lambda: []
+        enforcement.get_ratelimited_ips = lambda: []
+        try:
+            self.assertEqual(api.get_state()["ddos_sources"], [])
+        finally:
+            enforcement.get_blocked_ips = real_blocked
+            enforcement.get_ratelimited_ips = real_ratelimited
 
 
 if __name__ == "__main__":

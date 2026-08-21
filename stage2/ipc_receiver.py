@@ -392,7 +392,16 @@ def run_ipc_receiver():
                             f"[!] Legitimate flash crowd dominant IP {ip_str} rate highly elevated "
                             f"({dominant_rate:.2f} pps). Applying rate-limit ({cfg['ratelimit_hashlimit_pps']}pps cap) as precaution."
                         )
-                        enforcement.ratelimit_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=dominant_rate)
+                        # Recorded as a flash crowd cap, not as a DDoS action:
+                        # the verdict here was class 1, and the dashboard
+                        # separates confirmed attack sources from precautions.
+                        enforcement.ratelimit_ip(
+                            ip_str,
+                            victim_ip=victim_ip_str,
+                            duration=cfg["ratelimit_duration_seconds"],
+                            src_rate=dominant_rate,
+                            classification=enforcement.CLASS_RATELIMITED_FLASH,
+                        )
                 elif pred_class == 0:
                     # Log normal traffic
                     db.log_incident(timestamp, ip_str, "Normal", victim_ip_str)

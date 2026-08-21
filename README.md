@@ -24,6 +24,11 @@ legitimate surge, without anyone adjusting a threshold by hand.
 It sits inline on a gateway between the traffic source and the hosts being
 protected, and drops or throttles offending sources in the kernel.
 
+The dashboard names the addresses it blocked as attackers, so someone who does
+not already know the network layout can tell which senders were hostile.
+Throttled addresses are listed separately, because throttling is also used as a
+precaution and is applied to whole groups at once.
+
 
 ## How It Is Built
 

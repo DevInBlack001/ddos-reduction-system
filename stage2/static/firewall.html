@@ -138,7 +138,8 @@
                 <!-- Rate-Limited IPs -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
-                        <div class="hud-panel-title" id="ratelimitPanelTitle">Active Rate Limits (ipset: ddos_ratelimit, 50pps cap)</div>
+                        <!-- The cap is appended once the configured value arrives. -->
+                        <div class="hud-panel-title" id="ratelimitPanelTitle">Active Rate Limits (ipset: ddos_ratelimit)</div>
                     </div>
 
                     <table>
@@ -285,7 +286,7 @@
 
                 // Render rate limits, distinct state from a hard block: same
                 // ipset-backed mechanism, accent color instead of danger so it's
-                // visually clear these IPs are throttled (50pps cap), not dropped.
+                // visually clear these IPs are throttled, not dropped.
                 const rlBody = document.getElementById('ratelimitedTableBody');
                 const ratelimited = data.ratelimited_ips_detail || []; // {ip, remaining_seconds}
                 if (ratelimited.length === 0) {

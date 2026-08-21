@@ -14,6 +14,96 @@ import state
 import db
 from storage import load_json_file
 
+# What gets written to logs.classification by an enforcement action.
+# The two rate-limit labels record why the cap was applied, which the cap
+# itself does not distinguish: the same ipset holds sources of an
+# unattributable DDoS and the dominant source of a legitimate flash crowd.
+CLASS_BLOCKED = "Blocked"
+CLASS_RATELIMITED = "Rate Limited"
+CLASS_RATELIMITED_FLASH = "Rate Limited (Flash Crowd)"
+CLASS_RELEASED = "Released"
+
+# Only a block names an address as an attacker. Blocking requires a DDoS
+# verdict sustained across block_hysteresis_windows and a source the window
+# actually attributes the traffic to. Rate-limiting requires neither: the
+# aggregate fallback caps every active flow to the victim when no individual
+# source is attributable, so its members are whoever was talking to the host
+# at the time, not confirmed attackers.
+DDOS_CLASSIFICATIONS = (CLASS_BLOCKED,)
+
+
+def record_ddos_source(ip, classification, victim_ip, src_rate, when):
+    """Note an address named as an attacker by a block.
+
+    Any lesser action clears an earlier entry instead of adding one: the most
+    recent verdict for an address is the one that stands.
+    """
+    if classification not in DDOS_CLASSIFICATIONS:
+        state.ddos_sources.pop(ip, None)
+        return
+
+    state.ddos_sources[ip] = {
+        "ip": ip,
+        "victim_ip": victim_ip,
+        "rate": src_rate,
+        "timestamp": when,
+        "action": classification,
+    }
+    _prune_ddos_sources()
+
+
+def _prune_ddos_sources():
+    """Keep the newest entries once the cap is passed.
+
+    How many sources appear is attacker controlled, so the bound is on count
+    rather than on age. Trimmed well below the cap rather than to it, so a
+    flood does not pay for a sort on every source it adds.
+    """
+    if len(state.ddos_sources) <= state.DDOS_SOURCES_MAX:
+        return
+    keep = int(state.DDOS_SOURCES_MAX * 0.9)
+    newest = sorted(
+        state.ddos_sources.items(),
+        key=lambda item: item[1]["timestamp"],
+        reverse=True,
+    )[:keep]
+    state.ddos_sources.clear()
+    state.ddos_sources.update(newest)
+
+
+def load_ddos_sources():
+    """Rebuild the DDoS source list from the incident log at startup.
+
+    ipset entries outlive the Stage 2 process, so without this a restart
+    during an attack leaves enforcement active but the dashboard unable to
+    say which addresses it is enforcing against.
+    """
+    try:
+        conn = db.connect()
+        rows = conn.execute(
+            "SELECT src_ip, dst_ip, rate, timestamp, classification FROM logs"
+            " WHERE classification IN (?, ?, ?)"
+            " ORDER BY id DESC LIMIT ?",
+            (CLASS_BLOCKED, CLASS_RATELIMITED, CLASS_RATELIMITED_FLASH,
+             state.DDOS_SOURCES_MAX * 4),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        logging.error(f"[-] Could not restore the DDoS source list: {e}")
+        return
+
+    seen = set()
+    for src_ip, dst_ip, rate, when, classification in rows:
+        # Rows arrive newest first, so a later row for the same address is
+        # an older action and must not overwrite the current verdict.
+        if src_ip in seen:
+            continue
+        seen.add(src_ip)
+        record_ddos_source(src_ip, classification, dst_ip, rate, when)
+
+    if state.ddos_sources:
+        logging.info(f"[+] Restored {len(state.ddos_sources)} DDoS source records from the incident log")
+
 
 def resolve_victim_ip(victim_ip=None):
     if victim_ip and victim_ip not in ("Unknown", "0.0.0.0", "::"):
@@ -171,7 +261,8 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
         )
         if res.returncode == 0:
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Blocked offending IP {ip} (duration: {duration}s)")
-            db.log_incident(now, ip, "Blocked", victim_ip, src_rate)
+            db.log_incident(now, ip, CLASS_BLOCKED, victim_ip, src_rate)
+            record_ddos_source(ip, CLASS_BLOCKED, victim_ip, src_rate, now)
         else:
             logging.error(f"[-] Failed to block IP {ip}: {res.stderr.strip()}")
     except Exception as e:
@@ -179,9 +270,17 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
     finally:
         state.recently_blocked[ip] = now
 
-def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
+def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None,
+                 classification=CLASS_RATELIMITED):
     """Add offending IP to ddos_ratelimit set (enforces the configured
-    ratelimit_hashlimit_pps cap, default 50pps)."""
+    ratelimit_hashlimit_pps cap, default 50pps).
+
+    `classification` is what gets recorded, and it is not always the same
+    verdict. The same cap is applied both to sources of a DDoS the classifier
+    could not attribute to any single address, and, precautionarily, to the
+    dominant source of a window judged a legitimate flash crowd. Recording
+    both as the same thing makes the two indistinguishable afterwards, so the
+    flash crowd path passes CLASS_RATELIMITED_FLASH instead."""
     now = time.time()
 
     if ip in state.recently_blocked and now - state.recently_blocked[ip] < 10.0:
@@ -203,7 +302,8 @@ def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
         if res.returncode == 0:
             rl_cap = config.get_enforcement_config()["ratelimit_hashlimit_pps"]
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Rate-limited offending IP {ip} (duration: {duration}s, {rl_cap}pps cap)")
-            db.log_incident(now, ip, "Rate Limited", victim_ip, src_rate)
+            db.log_incident(now, ip, classification, victim_ip, src_rate)
+            record_ddos_source(ip, classification, victim_ip, src_rate, now)
         else:
             logging.error(f"[-] Failed to rate-limit IP {ip}: {res.stderr.strip()}")
     except Exception as e:
@@ -227,7 +327,7 @@ def unblock_ip(ip, victim_ip="Unknown"):
         )
         if res1.returncode == 0 or res2.returncode == 0:
             logging.info(f"[+] Released firewall block/rate-limit for IP {ip}")
-            db.log_incident(time.time(), ip, "Released", victim_ip)
+            db.log_incident(time.time(), ip, CLASS_RELEASED, victim_ip)
             return True
         else:
             logging.error(f"[-] Failed to release IP {ip}: {res1.stderr.strip()} / {res2.stderr.strip()}")

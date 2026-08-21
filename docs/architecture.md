@@ -260,6 +260,26 @@ the model to predict its own past behaviour.
 Egress capture is optional. Without it the egress fields report as unavailable
 rather than as a zero drop rate, since a genuine zero is a meaningful reading.
 
+## Dashboard Rendering
+
+The flow and network views draw from the same active flow list the sensor
+writes, and the sensor tracks up to 8192 flows. A flood fills that, and every
+entry costs a stroke, a label and a row on each animation frame, with the
+network view additionally simulating repulsion across every pair of nodes. The
+views were unbounded and a large enough flood froze the browser tab.
+
+What gets drawn is now bounded, and the bound is derived from the panel's own
+measured size rather than fixed, so a wall display shows proportionally more
+than a laptop does. The network view carries an absolute node ceiling as well,
+because its simulation is quadratic in node count and is limited by processor
+rather than by screen. Flows are aggregated per source and destination pair
+before being ranked, so a source spread across many ports is judged on its
+combined rate. Whenever anything is left out the count says so rather than
+silently truncating.
+
+The same bound applies to the attack source table, which is rebuilt on every
+poll and whose length an attacker controls.
+
 ## File Layout
 
 ```

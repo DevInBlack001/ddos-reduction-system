@@ -27,6 +27,7 @@ import reports
 import users
 import alerts
 from ipc_receiver import run_ipc_receiver
+import enforcement
 from enforcement import run_ipset_monitor
 from storage import load_json_file
 
@@ -111,6 +112,10 @@ def main():
     # Ensure configs initialized
     load_json_file(config.WHITELIST_PATH, [])
     load_json_file(config.VICTIMS_PATH, [])
+
+    # Firewall entries survive a restart of this process, so the record of
+    # which of them are attack sources is restored to match.
+    enforcement.load_ddos_sources()
 
     # Start IPC socket listener thread
     ipc_thread = threading.Thread(target=run_ipc_receiver, daemon=True)

@@ -215,6 +215,13 @@ continuously, which also freezes its baseline. The first is recoverable and
 the second is not. The script warns when the per host values differ by more
 than a factor of four, because one global value then fits neither.
 
+That warning marks a real limit rather than a tuning inconvenience. The
+baselines are per victim but the floors are global, so a set of protected
+hosts carrying very different volumes cannot be fitted by one number. The
+rate sigma *ceiling* already avoids this by scaling against each target's own
+mean; the floor does not. See
+[roadmap.md](roadmap.md#relative-sigma-floors).
+
 ```bash
 sudo python3 scripts/calibrate.py --auto-debug              # measure, report
 sudo python3 scripts/calibrate.py --auto-debug --apply      # measure and save
@@ -223,7 +230,12 @@ sudo python3 scripts/calibrate.py --reset                   # back to defaults
 ```
 
 The per window samples are logged at debug level only, so `--auto-debug`
-raises `RUST_LOG` for the run and lowers it again afterwards. `--apply` writes
+raises `RUST_LOG` for the run and lowers it again afterwards. It raises only
+the analysis module, not every module, and checks after the restart that the
+setting actually reached the service rather than waiting out the collection
+timeout to find out. While no usable sample has arrived the script says which
+of the two reasons applies: a host still in warm-up, named with its progress,
+or nothing at debug level in the journal at all. `--apply` writes
 `/etc/ddos_stage1/tuning.env`, which the unit reads through an optional
 `EnvironmentFile` and expands at the end of `ExecStart`. Later flags win, so
 a calibration overrides whatever the installer chose without the script

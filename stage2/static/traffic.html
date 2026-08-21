@@ -130,14 +130,28 @@
         const MARGIN_X = 160;
         const MARGIN_Y = 40;
 
-        // Both of these are cost ceilings, not cosmetic limits. Every edge is
-        // a bezier stroke and every distinct source is an arc, a label and a
-        // canvas row, redrawn on each animation frame. The sensor tracks up
-        // to 8192 flows and a flood fills that, which asks for a canvas tens
-        // of thousands of pixels tall and enough draw calls per frame to lock
-        // the tab. Only the busiest flows are drawn; the rest are counted.
-        const MAX_RENDERED_FLOWS = 150;
-        const MAX_CANVAS_HEIGHT = 6000;
+        // How much gets drawn is derived from the panel's own size, not fixed,
+        // so a wall display shows proportionally more than a laptop does.
+        // Every edge is a bezier stroke and every distinct source is an arc,
+        // a label and a row, redrawn on each animation frame; the sensor
+        // tracks up to 8192 flows and a flood fills that, which is enough to
+        // lock the tab. Two limits, for two different reasons:
+        //   MIN_ROW_PX      below this spacing labels overlap, so extra rows
+        //                   buy nothing a reader can actually use.
+        //   CANVAS_SCREENS  the canvas may grow to this many viewport heights
+        //                   and then scroll. Past that the browser allocates
+        //                   and clears pixels nobody can see, every frame.
+        const MIN_ROW_PX = 14;
+        const CANVAS_SCREENS = 4;
+        // Backstop for an implausible wrapper height before layout settles.
+        const HARD_MAX_CANVAS_HEIGHT = 16000;
+
+        function renderBudget() {
+            const visible = Math.max(240, canvas.parentElement.clientHeight || 0);
+            const maxHeight = Math.min(HARD_MAX_CANVAS_HEIGHT, visible * CANVAS_SCREENS);
+            const maxRows = Math.max(20, Math.floor((maxHeight - MARGIN_Y * 2) / MIN_ROW_PX));
+            return { maxHeight, maxRows };
+        }
 
         function resizeCanvasWidth() {
             // .graph-wrap's own clientWidth, not getBoundingClientRect --
@@ -154,14 +168,14 @@
             // Grows past that only when the busier column (source or
             // victim, whichever has more entries) actually needs more
             // room at a comfortable ROW_HEIGHT per entry.
-            // Capped at MAX_CANVAS_HEIGHT: past that, rows share the height
+            // Capped at the render budget: past that, rows share the height
             // they have (layoutPositions already derives spacing from the
             // count) rather than growing a canvas the browser has to
             // allocate and clear in full on every frame.
             const visible = canvas.parentElement.clientHeight;
             const rows = Math.max(1, sourceRow.size, victimRow.size);
             const contentHeight = MARGIN_Y * 2 + rows * ROW_HEIGHT;
-            canvas.height = Math.min(MAX_CANVAS_HEIGHT, Math.max(visible, contentHeight));
+            canvas.height = Math.min(renderBudget().maxHeight, Math.max(visible, contentHeight));
         }
 
         function assignRow(map, ip) {
@@ -225,7 +239,7 @@
                 const totalFlows = edgeMap.size;
                 edges = Array.from(edgeMap.values())
                     .sort((a, b) => b.rate - a.rate)
-                    .slice(0, MAX_RENDERED_FLOWS);
+                    .slice(0, renderBudget().maxRows);
 
                 // Derived from what is actually drawn, so the row maps (and
                 // through them the canvas height) stay bounded during a flood.

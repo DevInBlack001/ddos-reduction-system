@@ -212,10 +212,20 @@
                         <span id="globalStatRatelimited" class="stat-value">0</span>
                         <span class="stat-meta">Global firewall entries</span>
                     </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Attack Sources</span>
+                        <span id="globalStatDdosSources" class="stat-value">0</span>
+                        <span class="stat-meta">Confirmed attacking senders</span>
+                    </div>
                 </div>
 
+                <!-- Paired with the target table. auto-fit gives one column
+                     on a narrow screen and two once there is room, so a wall
+                     display shows both without either table being squeezed. -->
+                <div style="display: grid; gap: 25px; margin-bottom: 25px; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); align-items: start;">
+
                 <!-- Global Target IP Matrix Table -->
-                <div class="hud-panel" style="margin-bottom: 25px;">
+                <div class="hud-panel">
                     <div class="hud-panel-header">
                         <div class="hud-panel-title">Monitored Targets</div>
                         <span class="metric-badge">Live</span>
@@ -239,6 +249,39 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+
+                <!-- Attack Sources -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Attack Sources</div>
+                        <span class="metric-badge" id="ddosSourcePill">0 senders</span>
+                    </div>
+                    <div style="padding: 12px 15px 0; font-size: 0.8rem; color: var(--text-secondary);">
+                        Senders blocked outright for attacking a monitored target, and
+                        still blocked. Rate-limited hosts are not listed: that response
+                        is also used as a precaution and applied to whole groups at once,
+                        so it does not identify a sender as an attacker.
+                    </div>
+                    <div style="overflow-x: auto; padding: 15px;">
+                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--border-strong);">
+                                    <th style="padding: 10px 15px;">Source IP</th>
+                                    <th style="padding: 10px 15px;">Target</th>
+                                    <th style="padding: 10px 15px;">Rate (pps)</th>
+                                    <th style="padding: 10px 15px;">Blocked At</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ddosSourcesTableBody">
+                                <tr>
+                                    <td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 </div>
             </div>
 
@@ -701,6 +744,47 @@
             document.getElementById('egressValOut').innerText = `${egress.toFixed(1)} pps`;
         }
 
+        // A flood produces as many senders as the attacker has hosts, and this
+        // table is rebuilt on every poll. Rows are capped and the count says
+        // how many were left out, so nothing is hidden without saying so.
+        const MAX_DDOS_ROWS = 100;
+
+        function renderDdosSources(sources) {
+            document.getElementById('globalStatDdosSources').innerText = sources.length;
+            const sourcesCard = document.getElementById('globalStatDdosSources');
+            sourcesCard.style.color = sources.length > 0
+                ? 'var(--status-danger)' : 'var(--text-primary)';
+
+            const shown = sources.slice(0, MAX_DDOS_ROWS);
+            document.getElementById('ddosSourcePill').innerText =
+                sources.length > shown.length
+                    ? `top ${shown.length} of ${sources.length} senders`
+                    : `${sources.length} sender${sources.length === 1 ? '' : 's'}`;
+
+            let html = '';
+            if (shown.length === 0) {
+                html = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td></tr>`;
+            } else {
+                shown.forEach(s => {
+                    // Rate is absent for an address an operator actioned by
+                    // hand, which is not the same as a measured zero.
+                    const rate = (s.rate === null || s.rate === undefined)
+                        ? 'not measured' : Number(s.rate).toFixed(1);
+                    const when = s.timestamp
+                        ? new Date(s.timestamp * 1000).toLocaleTimeString() : '--';
+                    html += `
+                        <tr>
+                            <td style="padding: 12px 15px; font-weight: 600; color: var(--status-danger);">${FlodSafe.escapeHtml(s.ip)}</td>
+                            <td style="padding: 12px 15px;">${FlodSafe.escapeHtml(s.victim_ip || 'Unknown')}</td>
+                            <td style="padding: 12px 15px;">${rate}</td>
+                            <td style="padding: 12px 15px; color: var(--text-secondary);">${FlodSafe.escapeHtml(when)}</td>
+                        </tr>
+                    `;
+                });
+            }
+            document.getElementById('ddosSourcesTableBody').innerHTML = html;
+        }
+
         async function fetchState() {
             try {
                 let url = '/api/state';
@@ -796,6 +880,8 @@
                     });
                 }
                 document.getElementById('globalTargetsTableBody').innerHTML = tableHtml;
+
+                renderDdosSources(data.ddos_sources || []);
 
                 // 3. Target View Updates
                 updateEgressPanel(data);

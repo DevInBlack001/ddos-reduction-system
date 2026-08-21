@@ -122,6 +122,25 @@
         const nodes = new Map();
         let edges = []; // {src, dst, rate}
 
+        // How much gets simulated is derived from the panel's own size, not
+        // fixed, so a wall display shows proportionally more than a laptop.
+        // Unlike the Traffic view this also needs an absolute ceiling:
+        // repulsion in step() is O(n^2) over every node pair per animation
+        // frame, so node count is bounded by CPU no matter how much screen
+        // exists. The sensor tracks up to 8192 flows and a flood fills that.
+        const AREA_PER_NODE = 9000;      // breathing room one node needs
+        const CANVAS_SCREENS = 4;        // canvas may grow this tall, then scrolls
+        const MAX_SIMULATED_NODES = 600; // ~180k pairs/frame, the O(n^2) limit
+        // Backstop for an implausible wrapper height before layout settles.
+        const HARD_MAX_CANVAS_HEIGHT = 16000;
+
+        function renderBudget() {
+            const visible = Math.max(240, canvas.parentElement.clientHeight || 0);
+            const maxHeight = Math.min(HARD_MAX_CANVAS_HEIGHT, visible * CANVAS_SCREENS);
+            const byArea = Math.floor((Math.max(canvas.width, 1) * maxHeight) / AREA_PER_NODE);
+            return { maxHeight, maxNodes: Math.max(20, Math.min(MAX_SIMULATED_NODES, byArea)) };
+        }
+
         let dragTarget = null;
         let dragOffset = { x: 0, y: 0 };
 
@@ -139,9 +158,12 @@
             // viewport was. Grows past that (triggering the scrollbar)
             // only once node count needs more 2D area than fits.
             const visible = canvas.parentElement.clientHeight;
-            const area = Math.max(canvas.width * visible, nodes.size * 9000);
+            // Capped at the render budget: past that, nodes share the area
+            // they have rather than growing a canvas the browser has to
+            // allocate and clear in full on every frame.
+            const area = Math.max(canvas.width * visible, nodes.size * AREA_PER_NODE);
             const height = Math.round(area / Math.max(canvas.width, 1));
-            canvas.height = Math.max(visible, height);
+            canvas.height = Math.min(renderBudget().maxHeight, Math.max(visible, height));
         }
 
         function roleColor(role) {
@@ -200,17 +222,33 @@
                 const edgeMap = new Map(); // "src|dst" -> aggregated rate
                 flows.forEach(f => {
                     if (!f.ip || !f.dst) return;
-                    let role = 'source';
-                    if (blocked.has(f.ip)) role = 'blocked';
-                    else if (ratelimited.has(f.ip)) role = 'ratelimited';
-                    else if (whitelisted.has(f.ip)) role = 'whitelisted';
-                    ensureNode(f.ip, role);
-                    ensureNode(f.dst, 'victim');
-                    seen.add(f.ip);
-                    seen.add(f.dst);
-
                     const key = `${f.ip}|${f.dst}`;
                     edgeMap.set(key, (edgeMap.get(key) || 0) + (f.rate || 0));
+                });
+
+                // Ranked after aggregation, so a source split across several
+                // ports is judged on its combined rate rather than on
+                // whichever single flow happened to be largest.
+                const totalFlows = edgeMap.size;
+                edges = Array.from(edgeMap.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, renderBudget().maxNodes)
+                    .map(([key, rate]) => {
+                        const [src, dst] = key.split('|');
+                        return { src, dst, rate };
+                    });
+
+                // Nodes exist only for the edges actually drawn, which is
+                // what bounds the O(n^2) simulation and the canvas height.
+                edges.forEach(e => {
+                    let role = 'source';
+                    if (blocked.has(e.src)) role = 'blocked';
+                    else if (ratelimited.has(e.src)) role = 'ratelimited';
+                    else if (whitelisted.has(e.src)) role = 'whitelisted';
+                    ensureNode(e.src, role);
+                    ensureNode(e.dst, 'victim');
+                    seen.add(e.src);
+                    seen.add(e.dst);
                 });
 
                 // Drop nodes no longer present in either victims or flows --
@@ -218,11 +256,6 @@
                 for (const ip of Array.from(nodes.keys())) {
                     if (!seen.has(ip)) nodes.delete(ip);
                 }
-
-                edges = Array.from(edgeMap.entries()).map(([key, rate]) => {
-                    const [src, dst] = key.split('|');
-                    return { src, dst, rate };
-                });
 
                 const degree = new Map();
                 edges.forEach(e => {
@@ -232,7 +265,10 @@
                 nodes.forEach((n, ip) => { n.degree = degree.get(ip) || 0; });
                 updateCanvasHeight();
 
-                document.getElementById('nodeCountPill').innerText = `${nodes.size} hosts`;
+                document.getElementById('nodeCountPill').innerText =
+                    totalFlows > edges.length
+                        ? `${nodes.size} hosts, busiest ${edges.length} of ${totalFlows} flows`
+                        : `${nodes.size} hosts`;
             } catch (err) {
                 console.error("Failed to load network map data:", err);
             }

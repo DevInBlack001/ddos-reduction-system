@@ -47,6 +47,13 @@ TABLES = {
 
 LOGS_COLUMNS = "timestamp, src_ip, dst_ip, proto, rate, entropy, classification"
 
+# Every window logs a row per target, so most of the table is "Normal" and a
+# scan for enforcement actions walks past all of it. The dashboard reads the
+# most recent ones on every poll.
+INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_logs_classification_id ON logs (classification, id)",
+)
+
 
 def apply(conn):
     """Create anything missing, then bring an existing database up to date."""
@@ -54,6 +61,10 @@ def apply(conn):
         conn.execute(statement)
     _add_victim_ip(conn)
     _relax_logs_rate(conn)
+    # After the migrations: _relax_logs_rate rebuilds logs, which drops any
+    # index that was on it.
+    for statement in INDEXES:
+        conn.execute(statement)
     conn.commit()
 
 

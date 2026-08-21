@@ -97,6 +97,17 @@ def get_state(target: Optional[str] = None):
     except Exception:
         pass
 
+    # Addresses named as attackers by a block, and still blocked. Rate-limited
+    # addresses are deliberately excluded: that tier also carries flash crowd
+    # precautions and the aggregate fallback's cap on every active flow, so its
+    # membership is not evidence that a given address attacked anything.
+    still_blocked = set(blocked_ips_only)
+    ddos_sources = sorted(
+        (dict(record) for ip, record in state.ddos_sources.items() if ip in still_blocked),
+        key=lambda record: (record.get("rate") or 0.0, record["timestamp"]),
+        reverse=True,
+    )
+
     # Read latest logs from db
     latest_logs = []
     try:
@@ -153,6 +164,8 @@ def get_state(target: Optional[str] = None):
         "ratelimited_ips": ratelimited_ips_only,
         "ratelimited_ips_detail": ratelimited_detail,
         "ratelimited_count": len(ratelimited_ips_only),
+        "ddos_sources": ddos_sources,
+        "ddos_source_count": len(ddos_sources),
         "victim_targets": victims,
         "interfaces": interfaces,
         "active_interface": active_interface,

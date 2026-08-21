@@ -37,8 +37,10 @@ DEBUG_DROPIN_DIR = "/etc/systemd/system/ddos-stage1.service.d"
 DEBUG_DROPIN = os.path.join(DEBUG_DROPIN_DIR, "10-calibration-debug.conf")
 BASELINE_PATH = "/var/lib/ddos_stage1/baselines.json"
 
-# Mirrors the sensor's own default. Only emitted when the derived floor would
-# otherwise exceed it.
+# Mirrors the sensor's own default. A ceiling is only emitted when this one
+# would leave less than twice the derived floor above it: clamping sigma into
+# a band that narrow makes it near constant, which is the condition the floor
+# exists to prevent in the first place.
 SENSOR_ENTROPY_SIGMA_CEILING = 0.15
 
 # env_logger is configured with WriteStyle::Always, so journal lines carry
@@ -57,6 +59,16 @@ WINDOW_RE = re.compile(
 
 # The startup banner carries the k actually in force.
 K_RE = re.compile(r"Analysis: thread started \|.*\| k=(?P<k>[-\d.]+)")
+
+# Logged at info level while a host's baseline is still filling. A window is
+# only usable once its host is past this, so it explains an empty sample.
+WARMUP_RE = re.compile(
+    r"Analysis \[victim=(?P<ip>[^\]]+)\]: warm-up window (?P<n>\d+)/(?P<total>\d+)"
+)
+
+# Raising every module to debug buries the journal in dependency output, and
+# only the analysis module emits what is parsed here.
+DEBUG_LOG_FILTER = "info,ddos_stage1::analysis=debug"
 
 
 class Window:
@@ -133,6 +145,29 @@ def journal_since(spec):
 def read_journal(since):
     res = run(["journalctl", "-u", SERVICE, "--no-pager", "-o", "cat", "--since", since])
     return ANSI_RE.sub("", res.stdout)
+
+
+def parse_warmup(text):
+    """Latest warm-up progress per protected host, from the info level lines."""
+    progress = {}
+    for line in text.splitlines():
+        m = WARMUP_RE.search(line)
+        if m:
+            progress[m.group("ip")] = (int(m.group("n")), int(m.group("total")))
+    return progress
+
+
+def _warmup_summary(progress):
+    """Least advanced hosts first, since they decide when collection can start."""
+    ordered = sorted(progress.items(), key=lambda item: item[1][0])
+    return ", ".join("%s %d/%d" % (ip, n, total) for ip, (n, total) in ordered[:4])
+
+
+def _status(note, previous):
+    """Overwrite the previous status line, leaving no fragment of it behind."""
+    padding = " " * max(0, len(previous) - len(note))
+    print("\r%s%s" % (note, padding), end="", flush=True)
+    return note
 
 
 def parse_windows(text):
@@ -338,7 +373,7 @@ def set_debug_logging(enabled):
                 "# Temporary, written by scripts/calibrate.py. The per window\n"
                 "# samples it reads are only logged at debug level.\n"
                 "[Service]\n"
-                'Environment="RUST_LOG=debug"\n'
+                'Environment="RUST_LOG=%s"\n' % DEBUG_LOG_FILTER
             )
         print("enabled debug logging via %s" % DEBUG_DROPIN)
     else:
@@ -348,7 +383,26 @@ def set_debug_logging(enabled):
         print("removed %s" % DEBUG_DROPIN)
     run(["systemctl", "daemon-reload"])
     run(["systemctl", "restart", SERVICE])
+    if enabled:
+        _warn_if_debug_not_live()
     return True
+
+
+def _warn_if_debug_not_live():
+    """Check the drop-in actually reached the service.
+
+    The unit sets RUST_LOG itself, so this depends on a drop-in overriding
+    it. Failing here silently costs the whole collection timeout before
+    anything says why nothing arrived.
+    """
+    res = run(["systemctl", "show", SERVICE, "-p", "Environment"], check=False)
+    env = (res.stdout or "").strip()
+    if "RUST_LOG=%s" % DEBUG_LOG_FILTER in env:
+        return
+    print("warning: the service environment still reads %s" % (env or "<empty>"))
+    print("warning: per window samples are logged at debug level and will not "
+          "appear. Check for another drop-in in %s that sets RUST_LOG."
+          % DEBUG_DROPIN_DIR)
 
 
 def do_reset(args):
@@ -373,14 +427,28 @@ def collect(args):
     last_line = ""
 
     while True:
-        by_ip, k = parse_windows(read_journal(since))
+        text = read_journal(since)
+        by_ip, k = parse_windows(text)
 
         if not by_ip:
+            warm = parse_warmup(text)
             if time.monotonic() >= deadline:
+                if warm:
+                    die("no usable window since %s: every protected host is still "
+                        "warming up (%s). A host emits nothing to calibrate from "
+                        "until its baseline is full."
+                        % (since, _warmup_summary(warm)))
                 die("no per window samples in the journal since %s. The sensor logs "
                     "them at debug level only. Re-run with --auto-debug, or set "
-                    "RUST_LOG=debug on the unit yourself." % since)
-            print("\rwaiting for the first window...", end="", flush=True)
+                    "RUST_LOG=%s on the unit yourself."
+                    % (since, DEBUG_LOG_FILTER))
+            if warm:
+                note = "warming up, no usable window yet: %s" % _warmup_summary(warm)
+            else:
+                note = ("waiting: no debug samples in the journal. Re-run with "
+                        "--auto-debug if the sensor is still at the default "
+                        "log level")
+            last_line = _status(note, last_line)
             time.sleep(args.poll)
             continue
 
@@ -403,9 +471,10 @@ def collect(args):
                 % (args.timeout, args.windows,
                    ", ".join("%s=%d" % (ip, n) for ip, n in sorted(short.items()))))
 
-        last_line = "collecting: " + "  ".join(
-            "%s %d/%d" % (ip, n, args.windows) for ip, n in sorted(counts.items()))
-        print("\r" + last_line, end="", flush=True)
+        last_line = _status(
+            "collecting: " + "  ".join(
+                "%s %d/%d" % (ip, n, args.windows) for ip, n in sorted(counts.items())),
+            last_line)
         time.sleep(args.poll)
 
 

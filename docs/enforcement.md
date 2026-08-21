@@ -155,6 +155,37 @@ identical rows, each claiming the entire attack volume.
 Entropy is stored as a window level value on purpose, since it describes the
 distribution the decision was made against rather than anything per source.
 
+It is currently taken from the most recent window across all protected hosts
+rather than from the host being actioned, and an unknown value is written as
+zero rather than null. Both are wrong, and zero is actively misleading here
+because it reads as maximally concentrated traffic, the signature of a single
+source flood. See [roadmap.md](roadmap.md#known-gaps).
+
 An unknown rate is stored as null rather than zero. An operator blocking an
 address by hand has no measured rate, and zero would read as an observation
 that the source sent nothing.
+
+The two rate limit labels record why the cap was applied, which the cap itself
+does not distinguish. `Rate Limited` is a source capped under a DDoS verdict.
+`Rate Limited (Flash Crowd)` is the dominant source of a window judged a
+legitimate flash crowd, capped as a precaution. Both land in the same set, so
+without the distinction a precaution is indistinguishable from enforcement
+afterwards, and the log filter counted one as the other.
+
+### Naming an Attacker
+
+Only a block names an address as an attacker, and the dashboard's attack
+source panel lists nothing else. Blocking requires a DDoS verdict sustained
+across `block_hysteresis_windows` and a source the window attributes the
+traffic to. Rate limiting requires neither: the aggregate fallback caps every
+active flow to the protected host when no individual source is attributable,
+so its members are whoever was talking to that host at the time. Presenting
+them as confirmed attackers would name bystanders.
+
+The record is held in memory, capped, and restored from the incident log at
+startup, because set entries outlive the service. It is intersected with
+current set membership on read, so a released address stops being reported.
+
+Every window writes a row per protected host, so most of the table is ordinary
+traffic and a scan for enforcement actions would walk past all of it. The
+classification is indexed for that reason.

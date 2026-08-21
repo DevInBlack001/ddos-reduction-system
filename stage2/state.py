@@ -71,3 +71,12 @@ last_classification_by_target = {}
 # ip -> timestamp of the last block alert sent, suppressed for
 # cfg["block_duration_seconds"] (see alerts.py).
 last_block_alert = {}
+
+# ip -> {"victim_ip", "rate", "timestamp", "action"} for addresses a block
+# named as attackers, which is a stricter set than either ipset: the
+# rate-limit set also holds flash crowd precautions and the aggregate
+# fallback's indiscriminate cap on every active flow.
+# Seeded from the incident log at startup, because ipset entries outlive the
+# process. Capped, since an attacker controls how many sources appear.
+ddos_sources = {}
+DDOS_SOURCES_MAX = 4096

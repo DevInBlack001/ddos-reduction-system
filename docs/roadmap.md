@@ -72,6 +72,46 @@ Deferred behind everything above because the current topology uses its two
 interfaces as the ingress and egress of a single path, not as parallel uplinks.
 There is nothing to aggregate yet.
 
+## Relative Sigma Floors
+
+The sigma floors are global while the baselines they bound are per victim, so
+a set of protected hosts carrying different volumes cannot be fitted by one
+value. Measured on four hosts spanning roughly seven times in mean rate, the
+per host rate floors spanned 8.9 times. Expressed as a fraction of each
+host's own mean they spanned 1.2 times, and all four sat near 0.30.
+
+The busiest host is the one that suffers. Its boundary lands inside its own
+normal range, so ordinary traffic flags on rate at around 1.15 times the
+boundary while entropy stays near maximum and dominance stays low, which is
+the signature of distributed legitimate traffic rather than an attack. Every
+one of those windows then freezes the baseline, because the
+`window_is_clean()` exception covers an entropy only flag and this is a rate
+flag, so the standard deviation cannot grow to reflect the variation that
+caused it. That is the same failure the entropy floor once had, on the other
+axis.
+
+The intended fix mirrors what the rate sigma *ceiling* already does, one line
+below in the same expression: scale against the target's own mean, keeping
+the absolute flag as a backstop for a target still near zero during warm-up.
+
+```
+floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
+```
+
+Explicit per target overrides were considered and deferred. Targets are
+created on first sight, so a table calibrated today has no entry for a host
+that appears tomorrow and a global fallback is needed regardless. A ratio
+already yields a different floor per target, derived from that target's own
+traffic, and follows it as the traffic changes. An override belongs on top of
+that later if some host proves the ratio wrong for it specifically.
+
+One invariant needs asserting at startup as part of this work: the floor must
+stay below the ceiling. A floor ratio near 0.30 exceeds the default ceiling
+ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that silently in the
+ceiling's favour, producing a smaller sigma than either setting intends. It is
+currently masked because `rate_sigma_ceiling_floor` holds the ceiling at a
+flat value at ordinary volumes.
+
 ## Known Gaps
 
 Not roadmap items, but currently true and worth stating plainly.
@@ -85,6 +125,14 @@ address and it holds a bounded number of entries. A randomized source flood
 fills it, after which entropy is computed from a truncated histogram. Memory
 stays bounded, which is the part that matters, but the measurement degrades
 under exactly the attack class above.
+
+**Incident entropy is recorded from the wrong window, and zero means unknown.**
+`log_incident` reads the most recent window across all protected hosts, so an
+action taken for one host can be stamped with another's entropy. There is also
+no null sentinel, so an unrecorded value is stored as zero, which reads as
+maximally concentrated traffic rather than as an absent measurement. The rate
+column already solved this by being nullable. The fix is to pass the acting
+window's own entropy through and to relax the column the same way.
 
 **The kernel backend has not been measured under load.** It has been seen
 working on ordinary traffic. How the maps behave during a real flood is
