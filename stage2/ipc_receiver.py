@@ -173,6 +173,13 @@ def run_ipc_receiver():
                 # of each recomputing it independently.
                 dominant_rate = ewma_rate * dominant_ip_ratio
 
+                # That rate only describes something when a source was
+                # actually identified. 0.0.0.0 is the sentinel for a window
+                # with no attributable dominant sender, and a figure on such
+                # a row would name a rate for a source that does not exist.
+                dominant_ip_known = ip_str not in ("Unknown", "0.0.0.0", "::")
+                dominant_rate_logged = dominant_rate if dominant_ip_known else None
+
                 # Load once per packet, operator-tunable thresholds for
                 # everything below (see config.DEFAULT_ENFORCEMENT_CONFIG for
                 # what each key means and why it's configurable, not
@@ -386,11 +393,11 @@ def run_ipc_receiver():
                     # The row names the dominant source, so its rate is the
                     # one that belongs on it.
                     db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
-                                    dominant_rate, entropy)
+                                    dominant_rate_logged, entropy)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
                     # (dominant_rate computed once above, alongside the classifier features.)
                     dominant_rate_threshold = mean_r + k_multiplier * sigma_r
-                    if ip_str not in ("Unknown", "0.0.0.0", "::") and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
+                    if dominant_ip_known and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
                         logging.warning(
                             f"[!] Legitimate flash crowd dominant IP {ip_str} rate highly elevated "
                             f"({dominant_rate:.2f} pps). Applying rate-limit ({cfg['ratelimit_hashlimit_pps']}pps cap) as precaution."
@@ -409,7 +416,7 @@ def run_ipc_receiver():
                 elif pred_class == 0:
                     # Log normal traffic
                     db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
-                                    dominant_rate, entropy)
+                                    dominant_rate_logged, entropy)
 
             conn.close()
         except Exception as e:
