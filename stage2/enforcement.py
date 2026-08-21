@@ -226,7 +226,7 @@ def setup_ipset():
         logging.warning(f"[-] Could not setup/verify ipset or iptables: {e}")
 
 
-def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
+def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None, entropy=None):
     """Add offending IP to ddos_blocklist."""
     now = time.time()
 
@@ -251,7 +251,8 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
                 f"[NAT-Safe] {ip} is marked as a shared/NAT egress point, "
                 f"rate-limiting instead of hard-blocking."
             )
-            ratelimit_ip(ip, duration=duration, victim_ip=victim_ip, src_rate=src_rate)
+            ratelimit_ip(ip, duration=duration, victim_ip=victim_ip, src_rate=src_rate,
+                         entropy=entropy)
             return
 
         res = subprocess.run(
@@ -261,7 +262,7 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
         )
         if res.returncode == 0:
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Blocked offending IP {ip} (duration: {duration}s)")
-            db.log_incident(now, ip, CLASS_BLOCKED, victim_ip, src_rate)
+            db.log_incident(now, ip, CLASS_BLOCKED, victim_ip, src_rate, entropy)
             record_ddos_source(ip, CLASS_BLOCKED, victim_ip, src_rate, now)
         else:
             logging.error(f"[-] Failed to block IP {ip}: {res.stderr.strip()}")
@@ -271,7 +272,7 @@ def block_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None):
         state.recently_blocked[ip] = now
 
 def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None,
-                 classification=CLASS_RATELIMITED):
+                 classification=CLASS_RATELIMITED, entropy=None):
     """Add offending IP to ddos_ratelimit set (enforces the configured
     ratelimit_hashlimit_pps cap, default 50pps).
 
@@ -302,7 +303,7 @@ def ratelimit_ip(ip, duration=3600, victim_ip="Unknown", src_rate=None,
         if res.returncode == 0:
             rl_cap = config.get_enforcement_config()["ratelimit_hashlimit_pps"]
             logging.warning(f"[!!!] MITIGATION TRIGGERED: Rate-limited offending IP {ip} (duration: {duration}s, {rl_cap}pps cap)")
-            db.log_incident(now, ip, classification, victim_ip, src_rate)
+            db.log_incident(now, ip, classification, victim_ip, src_rate, entropy)
             record_ddos_source(ip, classification, victim_ip, src_rate, now)
         else:
             logging.error(f"[-] Failed to rate-limit IP {ip}: {res.stderr.strip()}")

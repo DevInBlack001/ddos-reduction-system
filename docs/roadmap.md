@@ -126,13 +126,12 @@ fills it, after which entropy is computed from a truncated histogram. Memory
 stays bounded, which is the part that matters, but the measurement degrades
 under exactly the attack class above.
 
-**Incident entropy is recorded from the wrong window, and zero means unknown.**
-`log_incident` reads the most recent window across all protected hosts, so an
-action taken for one host can be stamped with another's entropy. There is also
-no null sentinel, so an unrecorded value is stored as zero, which reads as
-maximally concentrated traffic rather than as an absent measurement. The rate
-column already solved this by being nullable. The fix is to pass the acting
-window's own entropy through and to relax the column the same way.
+**Rows written before this release carry the wrong entropy.** `log_incident`
+used to read the most recent window across all protected hosts, so an action
+taken for one host could be stamped with another's measurement, and an
+unrecorded value was stored as zero rather than null. Both are fixed, but
+existing rows were not rewritten, because the correct value for them is not
+recoverable. Zero entropy on a row older than this release means unknown.
 
 **The kernel backend has not been measured under load.** It has been seen
 working on ordinary traffic. How the maps behave during a real flood is

@@ -504,7 +504,7 @@ def export_pdf(payload: PdfReportPayload, request: Request):
                 r[1],
                 r[2],
                 f"{r[3]:.1f} pps" if r[3] is not None else "n/a",
-                f"{r[4]:.4f}",
+                f"{r[4]:.4f}" if r[4] is not None else "n/a",
                 r[5].upper()
             ])
 

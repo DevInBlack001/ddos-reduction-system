@@ -2,8 +2,8 @@
 db.py: SQLite audit-log writers (the `logs` and `metrics_history` tables).
 
 Deliberately does not depend on enforcement.py: every caller resolves
-victim_ip before calling in here, so this module only needs config + state,
-avoiding a cycle (enforcement.py depends on this module for log_incident).
+victim_ip before calling in here, so this module only needs config, avoiding
+a cycle (enforcement.py depends on this module for log_incident).
 
 Writes go through one shared connection guarded by a lock, so a slow writer
 blocks other writers rather than each opening its own connection and queuing
@@ -16,7 +16,6 @@ import threading
 import time
 
 import config
-import state
 
 
 # Keep the newest N rows of metrics_history, and check no more often than
@@ -80,25 +79,32 @@ def connect() -> sqlite3.Connection:
     return sqlite3.connect(config.DB_PATH, timeout=30.0)
 
 
-def log_incident(timestamp, src_ip, classification, victim_ip="Unknown", src_rate=None):
+def log_incident(timestamp, src_ip, classification, victim_ip="Unknown", src_rate=None,
+                 entropy=None):
     """Record one enforcement action.
 
     `src_rate` is that source's own packet rate, not the victim's aggregate
     rate for the window: sources actioned in the same window would otherwise
     all be logged with the flood's entire volume.
 
-    Entropy stays a window-level value on purpose: it describes the source
-    distribution the decision was made against, not anything per-source.
+    `entropy` stays a window-level value on purpose: it describes the source
+    distribution the decision was made against, not anything per-source. It
+    must come from the window that drove this action. It used to be read from
+    the most recent window across every protected host, which stamped an
+    action for one host with another host's measurement.
 
-    None means the rate is genuinely unknown, e.g. an operator blocking an
-    address by hand, and is stored as NULL rather than a misleading number.
+    None means the value is genuinely unknown, e.g. an operator blocking an
+    address by hand, and is stored as NULL. Zero is not a substitute for
+    either column: a zero rate reads as a source that sent nothing, and zero
+    entropy reads as maximally concentrated traffic, which is the signature
+    of the single-source flood that is least likely to be unmeasured.
     """
     with _lock:
         try:
             conn = _open()
             conn.execute(
                 "INSERT INTO logs (timestamp, src_ip, dst_ip, proto, rate, entropy, classification) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (timestamp, src_ip, victim_ip, "MIXED", src_rate, state.last_metrics.get("entropy", 0.0), classification)
+                (timestamp, src_ip, victim_ip, "MIXED", src_rate, entropy, classification)
             )
             conn.commit()
         except Exception as e:

@@ -81,14 +81,22 @@ class LogIncidentTests(unittest.TestCase):
 
     def test_entropy_stays_the_window_level_value(self):
         # Entropy describes the source distribution the decision was made
-        # against, so it is not per-source and is read from shared state.
-        db.log_incident(100.0, "198.51.100.9", "Blocked", src_rate=1.0)
+        # against, so it is not per-source. It comes from the caller, which
+        # holds the window that drove the action; reading it from shared
+        # state stamped one host's action with another host's measurement.
+        db.log_incident(100.0, "198.51.100.9", "Blocked", src_rate=1.0, entropy=0.42)
         self.assertEqual(self.rows()[0][5], 0.42)
 
-    def test_entropy_defaults_to_zero_when_absent(self):
-        state.last_metrics.pop("entropy", None)
+    def test_an_absent_entropy_is_null_rather_than_zero(self):
+        # Zero entropy means maximally concentrated traffic, so it cannot
+        # stand in for a measurement that was never taken.
         db.log_incident(100.0, "198.51.100.9", "Blocked")
-        self.assertEqual(self.rows()[0][5], 0.0)
+        self.assertIsNone(self.rows()[0][5])
+
+    def test_shared_state_no_longer_decides_the_recorded_entropy(self):
+        state.last_metrics["entropy"] = 0.42
+        db.log_incident(100.0, "198.51.100.9", "Blocked", entropy=0.99)
+        self.assertEqual(self.rows()[0][5], 0.99)
 
     def test_victim_defaults_to_unknown(self):
         db.log_incident(100.0, "198.51.100.9", "Blocked")

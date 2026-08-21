@@ -316,7 +316,7 @@ def run_ipc_receiver():
                         # clearly drives the attack (both concentrated AND
                         # fast). Gated by hysteresis like every block action.
                         if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
-                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate)
+                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate, entropy=entropy)
                             _maybe_alert_block(ip_str, victim_ip_str, dominant_rate, cfg)
                             acted_on.add(ip_str)
 
@@ -337,7 +337,7 @@ def run_ipc_receiver():
                                         f"[!] Per-source block: {f_ip} sustaining {agg_rate:.2f} pps "
                                         f"(threshold {block_threshold:.2f}) across its active flows."
                                     )
-                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate)
+                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                     _maybe_alert_block(f_ip, victim_ip_str, agg_rate, cfg)
                                     acted_on.add(f_ip)
 
@@ -356,7 +356,7 @@ def run_ipc_receiver():
                             if f_ip in acted_on:
                                 continue
                             if agg_rate >= flow_threshold:
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate)
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                 acted_on.add(f_ip)
 
                         # Tier 4, aggregate cap fallback. Class-2 verdict but
@@ -378,12 +378,15 @@ def run_ipc_receiver():
                                 f"rate-limited {len(per_source_rate)} active flows as a fallback."
                             )
                             for f_ip, f_rate in per_source_rate.items():
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate)
+                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate, entropy=entropy)
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
                     # Log flash crowd incident
-                    db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str)
+                    # The row names the dominant source, so its rate is the
+                    # one that belongs on it.
+                    db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
+                                    dominant_rate, entropy)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
                     # (dominant_rate computed once above, alongside the classifier features.)
                     dominant_rate_threshold = mean_r + k_multiplier * sigma_r
@@ -401,10 +404,12 @@ def run_ipc_receiver():
                             duration=cfg["ratelimit_duration_seconds"],
                             src_rate=dominant_rate,
                             classification=enforcement.CLASS_RATELIMITED_FLASH,
+                            entropy=entropy,
                         )
                 elif pred_class == 0:
                     # Log normal traffic
-                    db.log_incident(timestamp, ip_str, "Normal", victim_ip_str)
+                    db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
+                                    dominant_rate, entropy)
 
             conn.close()
         except Exception as e:

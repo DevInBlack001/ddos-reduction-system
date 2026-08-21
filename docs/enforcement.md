@@ -155,11 +155,18 @@ identical rows, each claiming the entire attack volume.
 Entropy is stored as a window level value on purpose, since it describes the
 distribution the decision was made against rather than anything per source.
 
-It is currently taken from the most recent window across all protected hosts
-rather than from the host being actioned, and an unknown value is written as
-zero rather than null. Both are wrong, and zero is actively misleading here
-because it reads as maximally concentrated traffic, the signature of a single
-source flood. See [roadmap.md](roadmap.md#known-gaps).
+It comes from the window that drove the action. It was previously read from
+the most recent window across all protected hosts, which stamped an action for
+one host with another host's measurement.
+
+An unknown entropy is stored as null for the same reason an unknown rate is.
+Zero is not a neutral placeholder here: it reads as maximally concentrated
+traffic, which is the signature of a single source flood, so an unrecorded
+value would assert the opposite of a distributed one.
+
+The rows that record a window verdict rather than an enforcement action,
+`Normal` and `Flash Crowd`, name the window's dominant source, so that
+source's rate is what they carry.
 
 An unknown rate is stored as null rather than zero. An operator blocking an
 address by hand has no measured rate, and zero would read as an observation

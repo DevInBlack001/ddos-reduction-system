@@ -263,6 +263,47 @@ class IpsetReadbackTests(EnforcementTestCase):
         self.assertTrue(enforcement.subprocess.run.ran("ipset list ddos_ratelimit"))
 
 
+class IncidentEntropyTests(EnforcementTestCase):
+    """Entropy must come from the acting window, and zero must not mean unknown.
+
+    Zero entropy reads as maximally concentrated traffic, the signature of a
+    single source flood, so it cannot stand in for an absent measurement.
+    """
+
+    def logged_entropy(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute("SELECT entropy FROM logs ORDER BY id").fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+    def test_a_block_records_the_entropy_it_was_given(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3",
+                             src_rate=900.0, entropy=0.4213)
+        self.assertEqual(self.logged_entropy(), [0.4213])
+
+    def test_a_rate_limit_records_the_entropy_it_was_given(self):
+        enforcement.ratelimit_ip("198.51.100.9", victim_ip="192.0.2.3",
+                                 src_rate=12.0, entropy=0.9912)
+        self.assertEqual(self.logged_entropy(), [0.9912])
+
+    def test_an_unmeasured_entropy_is_stored_as_null_not_zero(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3")
+        self.assertEqual(self.logged_entropy(), [None])
+
+    def test_the_downgrade_to_a_rate_limit_carries_the_entropy_across(self):
+        self.write_json(self.shared, ["198.51.100.9"])
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3",
+                             src_rate=900.0, entropy=0.7654)
+        self.assertEqual(self.logged_entropy(), [0.7654])
+
+    def test_a_release_has_no_entropy_to_record(self):
+        enforcement.block_ip("198.51.100.9", victim_ip="192.0.2.3",
+                             src_rate=900.0, entropy=0.5)
+        enforcement.unblock_ip("198.51.100.9", victim_ip="192.0.2.3")
+        self.assertEqual(self.logged_entropy(), [0.5, None])
+
+
 class DdosSourceRecordTests(EnforcementTestCase):
     """Only a block names an address as an attacker.
 
