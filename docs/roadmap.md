@@ -76,19 +76,26 @@ There is nothing to aggregate yet.
 
 The sigma floors are global while the baselines they bound are per victim, so
 a set of protected hosts carrying different volumes cannot be fitted by one
-value. Measured on four hosts spanning roughly seven times in mean rate, the
-per host rate floors spanned 8.9 times. Expressed as a fraction of each
-host's own mean they spanned 1.2 times, and all four sat near 0.30.
+value. Measured across three hosts spanning 3.7 times in mean rate, the per
+host rate floors spanned 4.4 times. Expressed as a fraction of each host's own
+mean they spanned 1.2 times, sitting between 0.22 and 0.26.
 
-The busiest host is the one that suffers. Its boundary lands inside its own
-normal range, so ordinary traffic flags on rate at around 1.15 times the
-boundary while entropy stays near maximum and dominance stays low, which is
-the signature of distributed legitimate traffic rather than an attack. Every
-one of those windows then freezes the baseline, because the
-`window_is_clean()` exception covers an entropy only flag and this is a rate
-flag, so the standard deviation cannot grow to reflect the variation that
-caused it. That is the same failure the entropy floor once had, on the other
-axis.
+The consequence is uneven sensitivity. One global floor sized for the busiest
+host leaves the quietest needing several times its own normal volume before
+anything trips, while sizing it for the quietest flags the busiest
+continuously. A flagged window then freezes the baseline, because the
+`window_is_clean()` exception covers an entropy only flag and a busy host
+trips on rate, so the standard deviation cannot grow to reflect the variation
+that caused it. That is the same failure the entropy floor once had, on the
+other axis.
+
+The effect is much worse when a host that is not a protected service ends up
+in the target set. A gateway carrying its own management traffic measured
+seven times the volume of the services behind it, pushing the floor span to
+8.9 times and flagging a third of its own windows as attacks. Excluding it
+took every remaining host to zero flagged windows. A relative floor reduces
+the sensitivity spread, but it does not make it correct to protect
+infrastructure alongside the services it fronts.
 
 The intended fix mirrors what the rate sigma *ceiling* already does, one line
 below in the same expression: scale against the target's own mean, keeping

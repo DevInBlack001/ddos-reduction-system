@@ -186,6 +186,28 @@ The defaults are starting points, not values proven optimal. The right floor
 depends on how much a given network's traffic naturally varies, which is why
 it is a flag rather than a constant.
 
+### Choosing Targets
+
+Protect the services, not the machine in front of them. A gateway carries its
+own management traffic, from many sources, at a volume and variability that
+has nothing in common with the hosts behind it, and its address usually sits
+in the same range. `--victim-subnet` sweeps it in; `--victim-ips` does not.
+
+Including one is expensive twice over. Its spread sets the global floors, so
+every real target is measured against a number derived from infrastructure.
+And because those floors then fit it badly, it flags continuously, which means
+the enforcement tiers throttle the sources talking to it. On a gateway those
+sources are the operators and the management plane.
+
+The symptom is a host that flags a large fraction of its windows on rate while
+entropy stays near maximum and dominance stays low. That combination is
+distributed legitimate traffic, not an attack. Removing one such host from a
+four target set took the remaining three from roughly a fifth of their windows
+flagged to none.
+
+If a gateway genuinely needs protecting, it needs its own baseline, which
+means its own sensor.
+
 ### Measuring the Floors
 
 `scripts/calibrate.py` derives both floors from the sensor's own log rather
