@@ -140,9 +140,41 @@ unrecorded value was stored as zero rather than null. Both are fixed, but
 existing rows were not rewritten, because the correct value for them is not
 recoverable. Zero entropy on a row older than this release means unknown.
 
-**The kernel backend has not been measured under load.** It has been seen
-working on ordinary traffic. How the maps behave during a real flood is
-untested, and no throughput comparison against libpcap has been made.
+**The two backends have not been compared numerically.** Both have now been
+exercised across the same scenario set: ordinary traffic, a flash crowd, a
+flood, and the mixed cases where a flood or a flash crowd runs alongside
+ordinary traffic. Both handled all of them, so the kernel backend is no longer
+untried under attack load and its maps hold up while a flood fills them.
+
+**Entropy is preserved across the two backends.** Measured on 2026-08-22, over
+200 warm-up windows per protected host on each backend, with no persisted
+baseline available so each learned its own: the mean entropy differed by 1.1%,
+0.9%, and 0.2% across the three hosts. Warm-up windows report the raw rate and
+entropy before any boundary is computed, so the figures are unaffected by the
+two runs carrying different tuning.
+
+**The two see the same packets.** Over the steady phase of the same runs,
+before the load generator ramped, ingress counts agreed within 4 to 6%. Both
+runs carried the same sequence of ordinary traffic, a ramp, and a flood, and
+their profiles track each other throughout.
+
+**One rate figure is unexplained but not concerning.** The two quiet hosts
+agreed within 7%; the busiest differed by 18%. With packet counts agreeing
+within 6% at the capture layer and entropy within 1%, that reads as traffic
+variation on the most variable host across runs 14 minutes apart, not a
+measurement difference. Pinning it needs a generator producing a repeatable
+load, run once per backend.
+
+Two traps when repeating this. The capture counters are not directly
+comparable: libpcap's `raw_captured` is cumulative per interface, while the
+kernel's `ingress` is per drain interval, so the first must be read as a final
+value and the second as a sum. And the comparison must be restricted to
+equivalent phases. Totalling a whole run makes the backends look 49% apart,
+which is entirely the flood phase differing in peak and duration between two
+runs of a generator that does not repeat exactly.
+
+No throughput comparison has been made. That is a separate question from
+whether detection is preserved, and less important.
 
 ## References
 

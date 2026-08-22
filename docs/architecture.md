@@ -97,6 +97,13 @@ user space. User space wakes once per window to drain the maps.
 The two differ only in how per window accumulators are filled. Everything from
 the window close onward is the same code, so detection cannot tell them apart.
 
+Both have been exercised on the same scenarios: ordinary traffic, a flash
+crowd, a flood, and the mixed cases. Measured on 2026-08-22 with independently
+learned baselines, their entropy figures agree to within about 1% and their
+ingress packet counts to within 6% over the comparable steady phase. One rate
+figure, on the busiest and most variable host, differs by more than that, which
+is tracked in [roadmap.md](roadmap.md#known-gaps).
+
 The kernel backend needs a compiled object and the capabilities to load it, so
 it is opt in. Without it the sensor behaves exactly as it always has.
 

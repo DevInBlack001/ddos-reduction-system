@@ -150,7 +150,7 @@ hosts
 *.conf.bak
 
 # Miscellaneous
-
+.result
 # Compressed archives (usually generated artefacts, not source)
 *.tar.gz
 *.zip
