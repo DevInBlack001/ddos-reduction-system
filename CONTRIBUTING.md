@@ -222,8 +222,17 @@ stage2/              Python classifier, enforcement, and dashboard
   static/            dashboard pages
   tests/             test suite
 
-scripts/             install, update, uninstall
+scripts/             install, update, uninstall, run, calibrate
 ```
+
+To run the system out of a working copy without installing it, use
+`scripts/run.sh`. It prompts for the interface, the protected hosts, the
+capture backend and the rest, offering a default for each, and asks whether to
+start Stage 2 as well. `--defaults` accepts everything without asking.
+
+Stage 1 on its own is a supported mode. It retries the IPC socket and keeps
+analysing without Stage 2, so windows are still logged while nothing is
+classified or enforced.
 
 The wire format between the two stages is defined in `stage1/src/ipc.rs` and
 `stage2/config.py`. Field order matters as much as field size. Changing it

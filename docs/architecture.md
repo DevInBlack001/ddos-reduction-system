@@ -358,10 +358,19 @@ scripts/
   install.sh       installer
   update.sh        rebuild and restart
   uninstall.sh     teardown
-  run.sh           development runner for both stages
+  run.sh           run both stages from a working copy, prompting for values
+  calibrate.py     derive the sigma floors from observed traffic
   build-ebpf.sh    compile the eBPF programs
   test.sh          run every suite
+  lib-toolchain.sh LLVM and bpf-linker detection, sourced by the others
 ```
+
+`scripts/run.sh` is for development and demonstrations, not deployment. It
+starts Stage 1 out of the build directory, optionally alongside Stage 2, and
+asks for every value it needs rather than requiring a command line. Stage 2 is
+optional because Stage 1 retries the IPC socket and keeps analysing without it,
+which is what a run for calibration or a backend comparison wants. Deployment
+is `install.sh` and systemd.
 
 ## Dependencies
 

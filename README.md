@@ -90,6 +90,16 @@ Detection tuning is measured rather than guessed. `scripts/calibrate.py` reads
 the sensor's own log, samples ordinary traffic, and works out where the anomaly
 boundaries belong on your network.
 
+To try it without installing anything, run it out of the working copy:
+
+```bash
+sudo bash scripts/run.sh
+```
+
+It asks for each value it needs, offers a default for every one, and asks
+whether to start Stage 2 as well. Add `--defaults` to accept everything without
+being asked.
+
 To run the test suites:
 
 ```bash

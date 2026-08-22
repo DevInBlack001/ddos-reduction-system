@@ -148,6 +148,33 @@ Interfaces are `eth0`, `eth1`, and `br0`.
 **Name tests as sentences** describing the behaviour, not the function under
 test. `test_a_whitelisted_ip_is_never_blocked`, not `test_block_ip_2`.
 
+## Running It By Hand
+
+Some things only show up on a live interface: the verifier accepting the eBPF
+programs, XDP attaching in driver mode rather than the generic fallback,
+whether the maps fill under a flood, and how the two backends compare on the
+same traffic. None of that is reachable from a test suite.
+
+```bash
+sudo bash scripts/run.sh
+```
+
+It prompts for the interface, the protected hosts, the capture backend, `k`,
+the log level, and whether to start Stage 2, offering a default for each.
+`--defaults` accepts all of them without asking, and every prompt has a
+matching flag if you would rather pass it.
+
+Stage 2 is optional because Stage 1 retries the IPC socket and keeps analysing
+without it. A sensor only run is what you want when comparing backends or
+collecting calibration samples, since nothing is classified or enforced and
+the windows are still logged.
+
+Two things to set up for a backend comparison. Raise the log level to
+`info,ddos_stage1::analysis=debug` so the per window lines are recorded, and
+give each run its own `--baseline-path` so neither inherits the other's
+baseline. Without the second, both backends restore the same figures and agree
+for a reason that has nothing to do with either.
+
 ## What Tests Cannot Cover
 
 Some things need a real deployment. A change touching any of them should say in
