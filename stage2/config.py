@@ -20,6 +20,11 @@ from storage import load_json_file
 # socket path before this process does, or plant a fake active-flows file.
 RUNTIME_DIR = "/run/ddos_stage1"
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
+# Kept in step with the Rust crates in stage1/Cargo.toml and with the release
+# tag. Reported at startup and by /api/version so a deployed gateway can be
+# identified without inspecting files.
+VERSION = "1.0.2"
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
 FEATURE_VECTOR_FORMAT = "<19d16s16s"  # 19 x f64 (152 bytes) + 16-byte dominant IP + 16-byte victim IP = 184 bytes

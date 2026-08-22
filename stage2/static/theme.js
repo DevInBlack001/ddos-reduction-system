@@ -116,10 +116,23 @@
         });
     }
 
+    // Every page carries the same footer, so the version is filled in here
+    // rather than duplicated into each one. Silent on failure: an unlabelled
+    // footer is better than an error on a page that is otherwise working.
+    function showVersion() {
+        var el = document.getElementById('flodVersion');
+        if (!el) return;
+        fetch('/api/version')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) { if (d && d.version) el.textContent = 'v' + d.version; })
+            .catch(function () {});
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         updateToggleButton();
         var btn = document.getElementById('themeToggle');
         if (btn) btn.addEventListener('click', toggleTheme);
         initSidebarDrawer();
+        showVersion();
     });
 })();

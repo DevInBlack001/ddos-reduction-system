@@ -336,6 +336,10 @@ impl CliArgs {
                     print_usage(&args[0]);
                     process::exit(0);
                 }
+                "--version" | "-V" => {
+                    println!("ddos_stage1 {}", env!("CARGO_PKG_VERSION"));
+                    process::exit(0);
+                }
                 other => {
                     eprintln!("Unknown argument: {other}");
                     print_usage(&args[0]);
@@ -487,6 +491,7 @@ fn print_usage(bin: &str) {
     eprintln!("  --baseline-path <PATH> Persisted baseline file [default: /var/lib/ddos_stage1/baselines.json]");
     eprintln!("  --baseline-ttl-secs <N> Reject a persisted baseline older than N seconds [default: 3600]");
     eprintln!("  --help, -h             Show this message");
+    eprintln!("  --version, -V          Print the version and exit");
     eprintln!();
     eprintln!("Environment:");
     eprintln!("  RUST_LOG=info|debug|warn   Log verbosity (default: info)");
@@ -621,7 +626,10 @@ fn main() {
     builder.target(env_logger::Target::Pipe(Box::new(LogSplitter { file: log_file })));
     builder.init();
 
-    info!("FLOD System: Stage 1 sensor starting");
+    info!(
+        "FLOD System: Stage 1 sensor starting | version {}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Build the capture and analysis configurations.
 

@@ -84,6 +84,8 @@ def start_api_server():
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", **ssl_kwargs)
 
 def main():
+    logging.info(f"[+] FLOD System: Stage 2 starting | version {config.VERSION}")
+
     # Ensure SQLite initialized and migrated
     os.makedirs(os.path.dirname(os.path.abspath(config.DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH)

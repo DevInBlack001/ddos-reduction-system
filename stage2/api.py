@@ -49,6 +49,12 @@ def is_interface_promisc(ifname):
         return False
 
 
+@router.get("/api/version")
+def get_version():
+    """What is actually deployed, so a gateway can be identified remotely."""
+    return {"version": config.VERSION}
+
+
 @router.get("/api/state")
 def get_state(target: Optional[str] = None):
     # Load flows
@@ -163,6 +169,7 @@ def get_state(target: Optional[str] = None):
         "blocked_count": len(blocked_ips_only),
         "ratelimited_ips": ratelimited_ips_only,
         "ratelimited_ips_detail": ratelimited_detail,
+        "version": config.VERSION,
         "ratelimited_count": len(ratelimited_ips_only),
         "ddos_sources": ddos_sources,
         "ddos_source_count": len(ddos_sources),
