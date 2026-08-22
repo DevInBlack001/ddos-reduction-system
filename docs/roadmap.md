@@ -140,11 +140,21 @@ unrecorded value was stored as zero rather than null. Both are fixed, but
 existing rows were not rewritten, because the correct value for them is not
 recoverable. Zero entropy on a row older than this release means unknown.
 
-**The two backends have not been compared numerically.** Both have now been
-exercised across the same scenario set: ordinary traffic, a flash crowd, a
-flood, and the mixed cases where a flood or a flash crowd runs alongside
-ordinary traffic. Both handled all of them, so the kernel backend is no longer
-untried under attack load and its maps hold up while a flood fills them.
+**The kernel maps hold under a flood.** Measured on 2026-08-22 at a peak of
+17,962 packets per second sustained across the flood phase: `SOURCES` reached
+2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192, with the error
+counter at zero across all 116 drain intervals and the drain count steady
+throughout.
+
+That flood came from roughly 2,200 distinct addresses, which is the shape being
+claimed here. `FLOWS` is the tighter of the two at 27% occupancy, so a flood
+from four times as many sources would fill it. A randomized source flood at the
+same packet rate would fill `SOURCES` in under four seconds, which is the
+attacker fillable case described below rather than a contradiction of this
+result.
+
+Both backends have also been exercised across the same scenario set: ordinary
+traffic, a flash crowd, a flood, and the mixed cases. Both handled all of them.
 
 **Entropy is preserved across the two backends.** Measured on 2026-08-22, over
 200 warm-up windows per protected host on each backend, with no persisted
