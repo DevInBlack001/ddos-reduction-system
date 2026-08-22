@@ -133,6 +133,13 @@ fills it, after which entropy is computed from a truncated histogram. Memory
 stays bounded, which is the part that matters, but the measurement degrades
 under exactly the attack class above.
 
+`--max-sources` raises the bound without rebuilding the object, which buys
+accuracy under a wider flood. It does not close the exposure: at the rate
+measured above, a flood forging a source per packet fills 65,536 entries in
+under four seconds and a million in under a minute. Whether V7's features are
+derived from this structure or from something not attacker keyed is a decision
+for the start of that milestone.
+
 **Rows written before this release carry the wrong entropy.** `log_incident`
 used to read the most recent window across all protected hosts, so an action
 taken for one host could be stamped with another's measurement, and an

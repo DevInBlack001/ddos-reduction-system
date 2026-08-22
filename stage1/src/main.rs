@@ -133,6 +133,10 @@ struct CliArgs {
     cooldown_windows:         u64,
     cooldown_k_factor:        f64,
     peacetime_ewma_weight:    f64,
+    /// Kernel map capacities. See `kernel::MapSizes`.
+    max_sources:          u32,
+    max_flows:            u32,
+    max_protected_hosts:  u32,
 }
 
 /// How packets are observed.
@@ -157,6 +161,9 @@ impl CliArgs {
         let mut rate_sigma_floor = state::DEFAULT_RATE_SIGMA_FLOOR;
         let mut distributed_dominance = state::DEFAULT_DISTRIBUTED_DOMINANCE;
         let mut entropy_min_packets = state::DEFAULT_ENTROPY_MIN_PACKETS;
+        let mut max_sources = crate::kernel::DEFAULT_MAX_SOURCES;
+        let mut max_flows = crate::kernel::DEFAULT_MAX_FLOWS;
+        let mut max_protected_hosts = crate::kernel::DEFAULT_MAX_PROTECTED_HOSTS;
         let mut emergency_volume_sigma = state::DEFAULT_EMERGENCY_VOLUME_SIGMA;
         let mut entropy_k_fallback = state::DEFAULT_ENTROPY_K_FALLBACK;
         let mut rate_sigma_ceiling_ratio = state::DEFAULT_RATE_SIGMA_CEILING_RATIO;
@@ -225,6 +232,18 @@ impl CliArgs {
                 "--entropy-min-packets" => {
                     i += 1;
                     entropy_min_packets = parse_positive(args.get(i), "--entropy-min-packets") as usize;
+                }
+                "--max-sources" => {
+                    i += 1;
+                    max_sources = parse_positive_u64(args.get(i), "--max-sources") as u32;
+                }
+                "--max-flows" => {
+                    i += 1;
+                    max_flows = parse_positive_u64(args.get(i), "--max-flows") as u32;
+                }
+                "--max-protected-hosts" => {
+                    i += 1;
+                    max_protected_hosts = parse_positive_u64(args.get(i), "--max-protected-hosts") as u32;
                 }
                 "--emergency-volume-sigma" => {
                     i += 1;
@@ -379,7 +398,7 @@ impl CliArgs {
 
         Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
                entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
-               entropy_min_packets,
+               entropy_min_packets, max_sources, max_flows, max_protected_hosts,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
                outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight }
     }
@@ -418,6 +437,12 @@ fn print_usage(bin: &str) {
     eprintln!("                         instead of libpcap, and needs the compiled object");
     eprintln!("  --bpf-object <PATH>    eBPF object for the kernel backend");
     eprintln!("                         [default: {}]", crate::kernel::DEFAULT_OBJECT_PATH);
+    eprintln!("  --max-sources <N>      Source addresses tracked per window, kernel backend");
+    eprintln!("                         [default: {}]", crate::kernel::DEFAULT_MAX_SOURCES);
+    eprintln!("  --max-flows <N>        Flows tracked per window, both backends");
+    eprintln!("                         [default: {}]", crate::kernel::DEFAULT_MAX_FLOWS);
+    eprintln!("  --max-protected-hosts <N>  Protected hosts, kernel backend");
+    eprintln!("                         [default: {}]", crate::kernel::DEFAULT_MAX_PROTECTED_HOSTS);
     eprintln!("  --egress-interface <IFACE>  Egress interface. Enables drop-rate measurement");
     eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
@@ -639,6 +664,8 @@ fn main() {
         rate_sigma_floor:      args.rate_sigma_floor,
         distributed_dominance: args.distributed_dominance,
         entropy_min_packets:   args.entropy_min_packets,
+        // One flag sizes both backends, so the two stay comparable.
+        max_tracked_flows:     args.max_flows as usize,
         emergency_volume_sigma:   args.emergency_volume_sigma,
         entropy_k_fallback:       args.entropy_k_fallback,
         rate_sigma_ceiling_ratio: args.rate_sigma_ceiling_ratio,
@@ -673,6 +700,11 @@ fn main() {
             &args.interface,
             args.egress_interface.as_deref(),
             targets,
+            kernel::MapSizes {
+                sources: args.max_sources,
+                flows: args.max_flows,
+                protected_hosts: args.max_protected_hosts,
+            },
         ) {
             Ok(c) => c,
             Err(e) => {

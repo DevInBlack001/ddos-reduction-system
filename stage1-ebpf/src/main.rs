@@ -51,26 +51,44 @@ const VLAN_HDR_LEN: usize = 4;
 /// bound is what lets the verifier accept this at all.
 const MAX_VLAN_DEPTH: usize = 2;
 
+// The sizes below are compiled in defaults, not fixed limits. User space
+// overrides each one at load time from a CLI flag (see kernel.rs), so a
+// deployment with more hosts, more sources, or more memory does not need a
+// rebuilt object. The values here are what a modest gateway needs.
+
 /// Protected hosts, as a prefix trie so a single lookup serves both an
 /// explicit address list and a subnet. An address list is stored as full
 /// length prefixes.
+///
+/// Sized by `--max-protected-hosts`.
 #[map]
 static PROTECTED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
 
 /// Per host counters for the current window.
 /// Per CPU so concurrent receive queues cannot lose an increment. Each CPU
 /// updates only its own slot, and user space sums them when draining.
+///
+/// Sized by `--max-protected-hosts`. This is the map that binds first when
+/// protecting many hosts, since the trie above stores a subnet as one entry.
 #[map]
 static COUNTERS: PerCpuHashMap<Addr, Counters> = PerCpuHashMap::with_max_entries(256, 0);
 
 /// Per host, per source packet counts. User space computes entropy from this.
 ///
 /// Bounded because the key is attacker controlled: a randomized source flood
-/// would otherwise try to allocate an entry per packet.
+/// would otherwise try to allocate an entry per packet. Raising the bound
+/// buys accuracy under a wider flood, it does not remove the exposure.
+///
+/// Sized by `--max-sources`.
 #[map]
 static SOURCES: PerCpuHashMap<SourceKey, u64> = PerCpuHashMap::with_max_entries(65_536, 0);
 
 /// Flow table behind the dashboard's network map.
+///
+/// Fills before SOURCES does, because a source with several destination ports
+/// occupies one entry per port here and one entry in total there.
+///
+/// Sized by `--max-flows`.
 #[map]
 static FLOWS: PerCpuHashMap<FlowKey, u64> = PerCpuHashMap::with_max_entries(8192, 0);
 

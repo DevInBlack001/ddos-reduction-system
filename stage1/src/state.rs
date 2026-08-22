@@ -28,6 +28,10 @@ pub const DEFAULT_DISTRIBUTED_DOMINANCE: f64 = 0.40;
 /// window that happened to be quiet. Not a measured value: raise it if quiet
 /// single client windows are being flagged on your network.
 pub const DEFAULT_ENTROPY_MIN_PACKETS: usize = 100;
+
+/// Matches the kernel backend's FLOWS map, so both backends bound the flow
+/// table the same way and stay comparable.
+pub const DEFAULT_MAX_TRACKED_FLOWS: usize = 8192;
 pub const DEFAULT_EMERGENCY_VOLUME_SIGMA: f64 = 10.0;
 pub const DEFAULT_ENTROPY_K_FALLBACK: f64 = 0.8;
 pub const DEFAULT_RATE_SIGMA_CEILING_RATIO: f64 = 0.2;
@@ -96,6 +100,11 @@ pub struct AnalysisConfig {
     /// Separate from the window close threshold on purpose: raising this must
     /// not change when windows close.
     pub entropy_min_packets: usize,
+    /// Cap on distinct flows tracked per window. The key is attacker
+    /// controlled, so a randomized source flood would otherwise allocate an
+    /// entry per packet. Raise it on a gateway that legitimately carries more
+    /// concurrent flows than the default allows.
+    pub max_tracked_flows: usize,
     /// Rate deviation, in standard deviations above the mean, past which
     /// entropy-based k scaling is bypassed and the plain multiplier applies.
     /// Stops a high-entropy botnet flood from raising its own threshold
@@ -142,6 +151,7 @@ impl Default for AnalysisConfig {
             rate_sigma_floor:      DEFAULT_RATE_SIGMA_FLOOR,
             distributed_dominance: DEFAULT_DISTRIBUTED_DOMINANCE,
             entropy_min_packets:   DEFAULT_ENTROPY_MIN_PACKETS,
+            max_tracked_flows:     DEFAULT_MAX_TRACKED_FLOWS,
             emergency_volume_sigma: DEFAULT_EMERGENCY_VOLUME_SIGMA,
             entropy_k_fallback:     DEFAULT_ENTROPY_K_FALLBACK,
             rate_sigma_ceiling_ratio: DEFAULT_RATE_SIGMA_CEILING_RATIO,

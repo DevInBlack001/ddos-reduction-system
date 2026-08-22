@@ -12,7 +12,7 @@
 use aya::{
     maps::{LpmTrie, MapData, PerCpuHashMap},
     programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpMode},
-    Ebpf,
+    Ebpf, EbpfLoader,
 };
 use ddos_stage1_common::{Addr, Counters, FlowKey, SourceKey};
 use log::{info, warn};
@@ -24,6 +24,58 @@ use crate::VictimTargets;
 /// Where the object is installed by default. Overridable so a development
 /// build can point at the one in the build directory.
 pub const DEFAULT_OBJECT_PATH: &str = "/usr/local/lib/ddos_stage1/ddos-stage1.o";
+
+/// Defaults matching the compiled object, sized for a modest gateway.
+pub const DEFAULT_MAX_SOURCES: u32 = 65_536;
+pub const DEFAULT_MAX_FLOWS: u32 = 8_192;
+pub const DEFAULT_MAX_PROTECTED_HOSTS: u32 = 256;
+
+/// How large the kernel maps are made at load time.
+///
+/// The object carries defaults, but a deployment with more hosts, more
+/// concurrent sources, or simply more memory should not need a rebuilt object
+/// to use them, so user space sets the sizes before loading.
+#[derive(Debug, Clone, Copy)]
+pub struct MapSizes {
+    /// Distinct source addresses tracked per window, across all hosts.
+    pub sources: u32,
+    /// Distinct flows tracked per window. Fills before `sources` does.
+    pub flows: u32,
+    /// Protected hosts. Sizes the counter map and the prefix trie together.
+    pub protected_hosts: u32,
+}
+
+impl Default for MapSizes {
+    fn default() -> Self {
+        Self {
+            sources: DEFAULT_MAX_SOURCES,
+            flows: DEFAULT_MAX_FLOWS,
+            protected_hosts: DEFAULT_MAX_PROTECTED_HOSTS,
+        }
+    }
+}
+
+impl MapSizes {
+    /// Rough locked memory, for the log line.
+    ///
+    /// Per CPU maps hold one value per possible CPU, so the value side scales
+    /// with core count while the key side does not. Close enough to tell an
+    /// operator whether a chosen size is megabytes or gigabytes.
+    fn approx_bytes(&self) -> u64 {
+        let cpus = num_cpus() as u64;
+        let sources = self.sources as u64 * (32 + 8 * cpus);
+        let flows = self.flows as u64 * (40 + 8 * cpus);
+        let counters = self.protected_hosts as u64 * (16 + 64 * cpus);
+        let trie = self.protected_hosts as u64 * 24;
+        sources + flows + counters + trie
+    }
+}
+
+fn num_cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
 
 /// One window's worth of observations for a single protected host, drained
 /// from the maps.
@@ -99,6 +151,7 @@ impl KernelCapture {
         ingress: &str,
         egress: Option<&str>,
         targets: &VictimTargets,
+        sizes: MapSizes,
     ) -> Result<Self, String> {
         // Checked before loading, because aya reports a missing file the same
         // way it reports a malformed one and the two need different fixes.
@@ -116,7 +169,23 @@ impl KernelCapture {
             Ok(_) => {}
         }
 
-        let mut ebpf = Ebpf::load_file(object_path)
+        info!(
+            "Kernel: map sizes | sources={} | flows={} | protected hosts={} | locked memory ~{} MiB",
+            sizes.sources,
+            sizes.flows,
+            sizes.protected_hosts,
+            sizes.approx_bytes() / (1024 * 1024)
+        );
+
+        // Sizes are applied before the load, because a BPF map's capacity is
+        // fixed when the kernel creates it. Overriding here rather than in the
+        // object means a larger deployment needs a flag, not a rebuild.
+        let mut ebpf = EbpfLoader::new()
+            .map_max_entries("SOURCES", sizes.sources)
+            .map_max_entries("FLOWS", sizes.flows)
+            .map_max_entries("COUNTERS", sizes.protected_hosts)
+            .map_max_entries("PROTECTED", sizes.protected_hosts)
+            .load_file(object_path)
             .map_err(|e| format!("failed to load '{object_path}': {}", error_chain(&e)))?;
 
         Self::populate_targets(&mut ebpf, targets)?;

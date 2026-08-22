@@ -104,6 +104,33 @@ ingress packet counts to within 6% over the comparable steady phase. One rate
 figure, on the busiest and most variable host, differs by more than that, which
 is tracked in [roadmap.md](roadmap.md#known-gaps).
 
+### Map Sizing
+
+The kernel side holds four maps: protected hosts as a prefix trie, per host
+counters, a per host per source histogram, and a flow table. Their capacities
+are compiled into the object as defaults, but a BPF map's size is fixed when
+the kernel creates it rather than when the object is built, so user space
+overrides them before loading. `--max-sources`, `--max-flows`, and
+`--max-protected-hosts` therefore change them without a rebuild, which matters
+because an object without the eBPF toolchain cannot be rebuilt at all.
+
+`--max-protected-hosts` sizes the counter map and the trie together. The
+counter map binds first, since the trie stores a whole subnet as a single
+entry.
+
+`--max-flows` sizes the flow table on **both** backends. The two are only
+comparable if they bound it the same way, and their agreement is a measured
+claim rather than a design intention.
+
+The flow table fills before the source histogram does, because a source
+reaching several destination ports occupies one entry per port there and one
+entry in total in the histogram. The kernel status line reports the occupancy
+of both while running.
+
+Per CPU maps hold one value per possible CPU, so the value side of the memory
+cost scales with core count and the key side does not. The load line reports an
+approximation, and the unit already grants `LimitMEMLOCK=infinity`.
+
 The kernel backend needs a compiled object and the capabilities to load it, so
 it is opt in. Without it the sensor behaves exactly as it always has.
 
@@ -126,12 +153,12 @@ Nothing is decided in the kernel. There is no floating point and no `log2` in
 BPF, so entropy, the rate, and every boundary stay in user space exactly as
 described in [detection.md](detection.md). The programs only accumulate:
 
-| Map | Holds |
-|-|-|
-| `PROTECTED` | Protected hosts, as a prefix trie |
-| `COUNTERS` | Per host packet and protocol counts |
-| `SOURCES` | Per host, per source counts, which entropy is computed from |
-| `FLOWS` | The flow table behind the network map |
+| Map | Holds | Default | Sized by |
+|-|-|-|-|
+| `PROTECTED` | Protected hosts, as a prefix trie | 1024 | `--max-protected-hosts` |
+| `COUNTERS` | Per host packet and protocol counts | 256 | `--max-protected-hosts` |
+| `SOURCES` | Per host, per source counts, which entropy is computed from | 65536 | `--max-sources` |
+| `FLOWS` | The flow table behind the network map | 8192 | `--max-flows` |
 
 `PROTECTED` is a prefix trie so one lookup serves both an address list and a
 subnet, with a list stored as full length prefixes. Addresses are 16 bytes
@@ -140,7 +167,10 @@ on the wire.
 
 `SOURCES` and `FLOWS` are bounded for the same reason the user space flow map
 is: their keys come from packet headers, so a randomized source flood would
-otherwise try to allocate an entry per packet.
+otherwise try to allocate an entry per packet. The bound is a defence against
+unbounded allocation, not a claim about how much traffic is normal, which is
+why raising it is a flag rather than a rebuild. Raising it buys accuracy under
+a wider flood; it does not remove the exposure.
 
 Build it with `scripts/build-ebpf.sh`. It needs a nightly toolchain and
 bpf-linker, both of which `scripts/install.sh` sets up by detecting the LLVM

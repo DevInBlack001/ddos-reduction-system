@@ -39,12 +39,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
 /// drops to near zero by design.
 const WINDOW_TICK: Duration = Duration::from_millis(250);
 
-/// Cap on distinct flows tracked between flushes. The key is
-/// attacker-controlled, so a randomized-source flood would otherwise
-/// allocate one entry per packet. Sized well above normal traffic; the
-/// whole map is still reported, so the dashboard shows every tracked flow.
-const MAX_TRACKED_FLOWS: usize = 8192;
-
 /// How often a target reports even when nothing is wrong.
 ///
 /// The dashboard's per target panels read whatever this last delivered, so
@@ -170,7 +164,7 @@ pub fn log_effective_tuning(cfg: &AnalysisConfig) {
     info!(
         "Analysis: tuning | entropy sigma {}..{} | rate sigma floor {} | \
          entropy min packets {} | distributed dominance {} | emergency {}σ | \
-         cooldown {} windows",
+         cooldown {} windows | max tracked flows {}",
         cfg.entropy_sigma_floor,
         cfg.entropy_sigma_ceiling,
         cfg.rate_sigma_floor,
@@ -178,6 +172,7 @@ pub fn log_effective_tuning(cfg: &AnalysisConfig) {
         cfg.distributed_dominance,
         cfg.emergency_volume_sigma,
         cfg.cooldown_windows,
+        cfg.max_tracked_flows,
     );
 
     // Bounds are advisory. An operator who means it can still pass anything;
@@ -301,7 +296,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                         for (victim_ip, sample) in samples {
                             for ((src, dst, port, proto), count) in &sample.flows {
                                 let key = (*src, *dst, *port, *proto);
-                                let at_capacity = flow_counts.len() >= MAX_TRACKED_FLOWS;
+                                let at_capacity = flow_counts.len() >= cfg.max_tracked_flows;
                                 match flow_counts.get_mut(&key) {
                                     Some(existing) => *existing += *count as u32,
                                     None if !at_capacity => {
@@ -354,7 +349,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 // same conversation would double every flow's rate.
                 if meta.direction == Direction::Ingress {
                     let key = (meta.src_ip, meta.dst_ip, meta.dst_port, proto_num);
-                    let at_capacity = flow_counts.len() >= MAX_TRACKED_FLOWS;
+                    let at_capacity = flow_counts.len() >= cfg.max_tracked_flows;
                     match flow_counts.get_mut(&key) {
                         Some(count) => *count += 1,
                         None if !at_capacity => {
@@ -827,7 +822,7 @@ fn write_active_flows(flow_counts: &HashMap<(IpAddr, IpAddr, u16, u8), u32>, tim
     flows.sort_by(|a, b| b.1.cmp(a.1));
 
     // Every tracked flow is reported; the map is already bounded by
-    // MAX_TRACKED_FLOWS. Sorted busiest-first so the dashboard leads with
+    // cfg.max_tracked_flows. Sorted busiest-first so the dashboard leads with
     // the flows that matter.
     let all_flows = flows.into_iter();
 
@@ -1043,6 +1038,33 @@ mod tests {
         assert!(entropy_anomaly_fires(0.0007, 0.9417, 50_000, DEFAULT_ENTROPY_MIN_PACKETS));
     }
 
+    #[test]
+    fn the_flow_cap_is_configurable_rather_than_compiled_in() {
+        let mut cfg = AnalysisConfig::default();
+        assert_eq!(cfg.max_tracked_flows, crate::state::DEFAULT_MAX_TRACKED_FLOWS);
+        cfg.max_tracked_flows = 1_048_576;
+        assert_eq!(cfg.max_tracked_flows, 1_048_576);
+    }
+
+    #[test]
+    fn the_kernel_map_sizes_default_to_the_compiled_object() {
+        let sizes = crate::kernel::MapSizes::default();
+        assert_eq!(sizes.sources, crate::kernel::DEFAULT_MAX_SOURCES);
+        assert_eq!(sizes.flows, crate::kernel::DEFAULT_MAX_FLOWS);
+        assert_eq!(sizes.protected_hosts, crate::kernel::DEFAULT_MAX_PROTECTED_HOSTS);
+    }
+
+    #[test]
+    fn the_pcap_flow_cap_matches_the_kernel_flow_map_by_default() {
+        // The two backends are only comparable if they bound the flow table
+        // the same way. A change to one default must move the other.
+        assert_eq!(
+            crate::state::DEFAULT_MAX_TRACKED_FLOWS as u32,
+            crate::kernel::DEFAULT_MAX_FLOWS,
+            "the pcap and kernel flow caps have drifted apart"
+        );
+    }
+
     /// The flow map must stay bounded under a randomized-source flood, and
     /// flows already being tracked must keep counting once it is full.
     #[test]
@@ -1052,7 +1074,7 @@ mod tests {
         let established = (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), dst, 80u16, 6u8);
 
         fn insert(map: &mut HashMap<(IpAddr, IpAddr, u16, u8), u32>, key: (IpAddr, IpAddr, u16, u8)) {
-            let at_capacity = map.len() >= MAX_TRACKED_FLOWS;
+            let at_capacity = map.len() >= crate::state::DEFAULT_MAX_TRACKED_FLOWS;
             match map.get_mut(&key) {
                 Some(c) => *c += 1,
                 None if !at_capacity => {
@@ -1065,14 +1087,14 @@ mod tests {
         insert(&mut flow_counts, established);
 
         // Far more unique spoofed sources than the cap allows.
-        for i in 0..(MAX_TRACKED_FLOWS as u32 + 5_000) {
+        for i in 0..(crate::state::DEFAULT_MAX_TRACKED_FLOWS as u32 + 5_000) {
             let src = IpAddr::V4(Ipv4Addr::from(0x0b00_0000 + i));
             insert(&mut flow_counts, (src, dst, (i % 65535) as u16, 6u8));
         }
 
         assert_eq!(
             flow_counts.len(),
-            MAX_TRACKED_FLOWS,
+            crate::state::DEFAULT_MAX_TRACKED_FLOWS,
             "flow map grew past its cap"
         );
 
