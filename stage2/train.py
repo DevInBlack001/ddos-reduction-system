@@ -51,15 +51,24 @@ def balance_classes(X, y):
 def main():
     print("=== DDoS Reduction Project: Stage 2 Training ===")
     
-    # 1. Load Dataset
-    csv_file = CSV_PATH
-    if not os.path.exists(csv_file):
-        csv_file = "training_data.csv"
+    # 1. Load Dataset. Optional args: <csv_path> [<model_out_path>], so a
+    # capture from a different environment can be trained and saved
+    # separately without overwriting the canonical file or model.
+    if len(sys.argv) > 1:
+        csv_file = sys.argv[1]
         if not os.path.exists(csv_file):
-            print(f"[-] Error: Training data not found at '{CSV_PATH}' or './training_data.csv'")
-            print("    Please copy the collected CSV file to this directory and run again.")
+            print(f"[-] Error: '{csv_file}' not found.")
             sys.exit(1)
-            
+    else:
+        csv_file = CSV_PATH
+        if not os.path.exists(csv_file):
+            csv_file = "training_data.csv"
+            if not os.path.exists(csv_file):
+                print(f"[-] Error: Training data not found at '{CSV_PATH}' or './training_data.csv'")
+                print("    Please copy the collected CSV file to this directory and run again.")
+                sys.exit(1)
+    model_out = sys.argv[2] if len(sys.argv) > 2 else MODEL_PATH
+
     print(f"[+] Loading dataset from: {csv_file}")
     df = pd.read_csv(csv_file)
     print(f"[+] Loaded {len(df)} raw rows.")
@@ -77,9 +86,44 @@ def main():
         print(f"[!] Dropping {dup_count} exact-duplicate rows found in the dataset.")
         df = df.drop_duplicates().reset_index(drop=True)
 
+    # 2. Session detection, on the RAW rows, before any label-based filter
+    # below removes any of them. A filter that deletes rows from the middle
+    # of one real capture run opens up a >30s gap between whatever survives
+    # on either side, which would otherwise register as two sessions instead
+    # of one, understating how few independent draws a class actually has
+    # and leaking one run's baseline into what LOSO thinks is a held-out,
+    # independent fold.
+    print("\n[+] Analysing capture sessions and features...")
+    df = df.sort_values(by="timestamp").reset_index(drop=True)
+    df["time_diff"] = df["timestamp"].diff()
+    df["label_changed"] = df[LABEL_COL] != df[LABEL_COL].shift()
+    df["new_session"] = (df["time_diff"] > 30.0) | (df["time_diff"].isna()) | df["label_changed"]
+    df["session_id"] = df["new_session"].cumsum()
+
+    # Flag sessions too short to be the deliberate capture docs/training.md
+    # asks for (~4 minutes of peacetime, similarly sustained for the other
+    # phases), rather than silently drop them: a thin session might still be
+    # fine, but it's worth a human looking at before it's trusted.
+    for sess_id, sess_df in df.groupby("session_id"):
+        duration = sess_df["timestamp"].max() - sess_df["timestamp"].min()
+        if duration < 60.0:
+            print(f"[!] Session {sess_id} (label {sess_df[LABEL_COL].iloc[0]}) is only "
+                  f"{duration:.1f}s / {len(sess_df)} rows, short enough to be a restart that "
+                  f"barely got going rather than a deliberate capture. Worth checking by hand.")
+
     # Filter out flash-crowd warm-up rows (rate < 100) that blur the boundary with Normal traffic
     df = df[~((df[LABEL_COL] == 1) & (df["ewma_rate"] < 100))].reset_index(drop=True)
-    
+
+    # Filter out DDoS rows with essentially no traffic (rate < 1 pps): the
+    # tail end of a capture after the flood stopped but the label had not yet
+    # been reset to 0. A genuine low-rate concentrated DDoS still runs to
+    # tens of pps at minimum, so this floor is well below any real archetype
+    # and only removes empty windows.
+    dropped_idle_ddos = ((df[LABEL_COL] == 2) & (df["ewma_rate"] < 1.0)).sum()
+    if dropped_idle_ddos > 0:
+        print(f"[!] Dropping {dropped_idle_ddos} idle rows mislabeled as DDoS (rate < 1 pps).")
+    df = df[~((df[LABEL_COL] == 2) & (df["ewma_rate"] < 1.0))].reset_index(drop=True)
+
     # Calculate delta features
     df["delta_rate"] = df["ewma_rate"] - df["mean_r"]
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
@@ -92,18 +136,6 @@ def main():
 
     print("\n== Raw Class Distribution ==")
     print(df[LABEL_COL].value_counts().to_string())
-
-    # 2. Session Detection and Validation Snippet
-    print("\n[+] Analysing capture sessions and features...")
-    
-    # Ensure chronological order
-    df = df.sort_values(by="timestamp").reset_index(drop=True)
-    
-    # Session detection: timestamp gap > 30 seconds or label changes starts a new session
-    df["time_diff"] = df["timestamp"].diff()
-    df["label_changed"] = df[LABEL_COL] != df[LABEL_COL].shift()
-    df["new_session"] = (df["time_diff"] > 30.0) | (df["time_diff"].isna()) | df["label_changed"]
-    df["session_id"] = df["new_session"].cumsum()
 
     # Print Session Info & Validation ranges
     sessions_info = []
@@ -127,28 +159,21 @@ def main():
     print("\n== Detected Capture Sessions ==")
     print(pd.DataFrame(sessions_info).to_string(index=False))
 
-    # Print overall feature ranges per class to evaluate overlap
-    print("\n== Feature Ranges Per Class (Overlap Check) ==")
-    overlap_info = []
+    # Print per-class feature distribution to evaluate overlap. Percentiles
+    # rather than min/max: a single outlier row makes two classes' ranges
+    # overlap almost every time, and says nothing about whether the bulk of
+    # their traffic actually looks alike.
+    print("\n== Feature Distribution Per Class, p05/p25/p50/p75/p95 (Overlap Check) ==")
+    overlap_cols = ["ewma_rate", "entropy", "dominant_ip_ratio", "dominant_rate", "proto_ratio"]
     for label in [0, 1, 2]:
         lbl_df = df[df[LABEL_COL] == label]
-        if len(lbl_df) > 0:
-            overlap_info.append({
-                "Label": label,
-                "Min Rate": lbl_df["ewma_rate"].min(),
-                "Max Rate": lbl_df["ewma_rate"].max(),
-                "Mean Rate": lbl_df["ewma_rate"].mean(),
-                "Min Entropy": lbl_df["entropy"].min(),
-                "Max Entropy": lbl_df["entropy"].max(),
-                "Mean Entropy": lbl_df["entropy"].mean(),
-                "Min Dominant IP Ratio": lbl_df["dominant_ip_ratio"].min(),
-                "Max Dominant IP Ratio": lbl_df["dominant_ip_ratio"].max(),
-                "Mean Dominant IP Ratio": lbl_df["dominant_ip_ratio"].mean(),
-                "Min Dominant Rate": lbl_df["dominant_rate"].min(),
-                "Max Dominant Rate": lbl_df["dominant_rate"].max(),
-                "Mean Dominant Rate": lbl_df["dominant_rate"].mean()
-            })
-    print(pd.DataFrame(overlap_info).to_string(index=False))
+        if len(lbl_df) == 0:
+            continue
+        print(f"\n  Label {label} (n={len(lbl_df)}):")
+        for col in overlap_cols:
+            q = lbl_df[col].quantile([.05, .25, .5, .75, .95])
+            print(f"    {col:<18} p05={q[.05]:>10.3f}  p25={q[.25]:>10.3f}  "
+                  f"p50={q[.5]:>10.3f}  p75={q[.75]:>10.3f}  p95={q[.95]:>10.3f}")
 
     # 3. Leave-One-Session-Out (LOSO) evaluation, sweeping tree depth.
     # For each session, hold it out entirely, train on every OTHER session
@@ -260,8 +285,8 @@ def main():
         print(f"  {col:<20} : {imp:.4f}")
 
     # 5. Save Model
-    print(f"\n[+] Saving trained model to: {MODEL_PATH}")
-    joblib.dump(clf, MODEL_PATH)
+    print(f"\n[+] Saving trained model to: {model_out}")
+    joblib.dump(clf, model_out)
     print("[+] Done!")
 
 if __name__ == "__main__":
