@@ -167,7 +167,18 @@ if [[ -d "$STAGE2_DIR" ]]; then
         
         "$STAGE2_DIR/venv/bin/pip" install --upgrade pip
         "$STAGE2_DIR/venv/bin/pip" install -r "$STAGE2_DIR/requirements.txt"
-        
+
+        # WeasyPrint has no Python-level dependency for this, it dlopen()s
+        # Pango at runtime, so pip install succeeding is not enough: an
+        # existing install upgrading past the version that introduced the
+        # PDF report needs this system package once, by hand. Caught here
+        # rather than left to surface as a crash loop after this script exits.
+        if ! "$STAGE2_DIR/venv/bin/python" -c "from weasyprint import HTML" &>/dev/null; then
+            warn "WeasyPrint cannot load Pango. Install your distribution's"
+            warn "'pango' (dnf/yum/apk) or 'libpango-1.0-0' (apt) package,"
+            warn "then re-run this script or restart ddos-stage2 by hand."
+        fi
+
         info "Updating/migrating administrative database..."
         "$STAGE2_DIR/venv/bin/python" "$STAGE2_DIR/setup_admin.py"
         

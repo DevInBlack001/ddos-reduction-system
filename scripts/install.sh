@@ -188,6 +188,8 @@ install_deps_apt() {
     # build-essential : gcc, make, linker
     # pkg-config   : lets Cargo find libpcap via pkg-config
     # python3, python3-pip, python3-venv, ipset : for Stage 2
+    # libpango-1.0-0 : WeasyPrint has no Python-level rendering dependency,
+    # but it dlopen()s Pango at runtime for text shaping in the PDF report
     apt-get install -y --no-install-recommends \
         libpcap-dev \
         build-essential \
@@ -198,11 +200,14 @@ install_deps_apt() {
         python3 \
         python3-pip \
         python3-venv \
-        ipset
+        ipset \
+        libpango-1.0-0
 }
 
 install_deps_dnf() {
     # libpcap-devel provides the headers and .so needed to compile the pcap crate
+    # pango : WeasyPrint dlopen()s it at runtime for PDF report text shaping,
+    # it is not something pip install can provide
     dnf install -y \
         libpcap-devel \
         gcc \
@@ -213,7 +218,8 @@ install_deps_dnf() {
         clang \
         python3 \
         python3-pip \
-        ipset
+        ipset \
+        pango
 }
 
 install_deps_yum() {
@@ -227,7 +233,8 @@ install_deps_yum() {
         clang \
         python3 \
         python3-pip \
-        ipset
+        ipset \
+        pango
 }
 
 install_deps_apk() {
@@ -247,7 +254,8 @@ install_deps_apk() {
         py3-pandas \
         py3-numpy \
         py3-scikit-learn \
-        py3-joblib
+        py3-joblib \
+        pango
 }
 
 case "$PKG_MANAGER" in
