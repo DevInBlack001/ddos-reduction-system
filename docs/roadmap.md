@@ -53,6 +53,14 @@ makes them the answer to both randomized source spoofing and large NAT crowds
 reading as single source floods. See [detection.md](detection.md) for why the
 current feature set cannot see either.
 
+Computed from new per window histograms keyed by the field value itself, port
+number, TTL, fingerprint bucket, not by source address. `SOURCES` is capped
+because address space is effectively unbounded for an attacker to spread
+across; port and TTL space are not (16 and 8 bit fields), so a value keyed
+histogram has a fixed ceiling regardless of how many addresses or packets a
+flood uses. Extending `SOURCES` itself instead would inherit its fillability
+problem at exactly the moment a randomized source flood makes it matter most.
+
 **V8, automated playbooks.** Granular incident reports and multi stage response
 playbooks executed during severe events.
 

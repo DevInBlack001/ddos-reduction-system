@@ -141,6 +141,18 @@ cd "$PROJECT_DIR"
 RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
 success "Build complete."
 
+# This script runs as root, so everything it just wrote under target/ is root
+# owned. Building from a working copy would then break every later non root
+# cargo build with a permission error. Hand the tree back to whoever invoked
+# sudo. Only applies when running from a checkout, not from an unpacked copy.
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
+        [[ -d "$tree" ]] || continue
+        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
+    done
+    info "Build artefacts returned to $SUDO_USER."
+fi
+
 # =============================================================================
 # Update Stage 2 Python dependencies
 # =============================================================================
