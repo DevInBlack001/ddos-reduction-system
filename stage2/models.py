@@ -76,13 +76,6 @@ class EnforcementConfigPayload(BaseModel):
     ratelimit_hashlimit_pps: Optional[int] = None
 
 
-class PdfReportPayload(BaseModel):
-    rate_chart_base64: str
-    entropy_chart_base64: str
-    # Network/traffic diagrams are drawn server-side now (see reports.py),
-    # not accepted as a client-supplied image.
-
-
 def _check_username(v: str) -> str:
     if not (1 <= len(v) <= 64):
         raise ValueError("Username must be 1-64 characters.")

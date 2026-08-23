@@ -85,13 +85,10 @@ those files hold recently written pages including user rows.
 A request body cap is checked from the declared length before the body is read,
 and applies to every endpoint rather than only the export that motivated it.
 
-PDF export writes chart images to unique per request temporary files, cleaned
-up in a `finally` block, instead of fixed shared filenames that let concurrent
-exports mix each other's charts. The incoming payload is size capped before
-decoding.
-
-Report diagrams are drawn server side as vector graphics rather than accepted
-as uploaded images, so the server never renders content it was handed.
+PDF export is built entirely from server side state: the logs table, the
+metrics history, and the live enforcement lists. It takes no request body and
+accepts no client supplied image or chart data, so there is nothing to size
+cap or clean up on the way in.
 
 ## Account Management
 

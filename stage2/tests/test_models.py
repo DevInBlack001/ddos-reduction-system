@@ -16,7 +16,6 @@ from models import (
     DeleteUserPayload,
     EnforcementConfigPayload,
     IpPayload,
-    PdfReportPayload,
     SetPasswordPayload,
     VictimPayload,
 )
@@ -136,19 +135,6 @@ class OtherPayloadTests(unittest.TestCase):
 
     def test_enforcement_config_accepts_a_partial_update(self):
         self.assertEqual(EnforcementConfigPayload(block_rate_floor_pps=42.0).block_rate_floor_pps, 42.0)
-
-    def test_pdf_report_requires_both_charts(self):
-        with self.assertRaises(ValidationError):
-            PdfReportPayload(rate_chart_base64="data:image/png;base64,AAA")
-
-    def test_pdf_report_no_longer_accepts_client_drawn_diagrams(self):
-        # Topology diagrams are rendered server side; an uploaded image is
-        # ignored rather than trusted.
-        payload = PdfReportPayload(
-            rate_chart_base64="data:image/png;base64,AAA",
-            entropy_chart_base64="data:image/png;base64,BBB",
-        )
-        self.assertFalse(hasattr(payload, "network_map_base64"))
 
 
 if __name__ == "__main__":
