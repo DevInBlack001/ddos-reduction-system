@@ -113,8 +113,8 @@ _TEMPLATE_SOURCE = r"""
 
   <div class="header block">
     <div class="header-left">
-      <div class="conf-tag"><span class="conf-dot"></span><span>CONFIDENTIAL &mdash; INTERNAL USE ONLY</span></div>
-      <div class="title">FLOD System &mdash; Incident Report</div>
+      <div class="conf-tag"><span class="conf-dot"></span><span>CONFIDENTIAL: INTERNAL USE ONLY</span></div>
+      <div class="title">FLOD System: Incident Report</div>
       <p class="subtitle">Adaptive two-stage Layer-4 volumetric DDoS mitigation gateway.
         {% if ctx.cols %}Covers {{ ctx.window_label }}, {{ ctx.total_records }} classified records.{% else %}No traffic was classified in the selected time window.{% endif %}</p>
     </div>
