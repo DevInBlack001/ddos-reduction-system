@@ -23,7 +23,7 @@ SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
 # Kept in step with the Rust crates in stage1/Cargo.toml and with the release
 # tag. Reported at startup and by /api/version so a deployed gateway can be
 # identified without inspecting files.
-VERSION = "1.0.3"
+VERSION = "1.1.1"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
