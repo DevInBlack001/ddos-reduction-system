@@ -1,6 +1,6 @@
 [package]
 name    = "ddos_stage1"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 authors = ["Abdullah Armiyao"]
 description = "FLOD System Stage 1: packet capture, statistical analysis, and anomaly detection"

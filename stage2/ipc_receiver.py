@@ -173,12 +173,10 @@ def run_ipc_receiver():
                 # of each recomputing it independently.
                 dominant_rate = ewma_rate * dominant_ip_ratio
 
-                # That rate only describes something when a source was
-                # actually identified. 0.0.0.0 is the sentinel for a window
-                # with no attributable dominant sender, and a figure on such
-                # a row would name a rate for a source that does not exist.
+                # 0.0.0.0 is the sentinel for a window with no attributable
+                # dominant sender; whether a source was actually identified
+                # gates both enforcement below and the incident log rows.
                 dominant_ip_known = ip_str not in ("Unknown", "0.0.0.0", "::")
-                dominant_rate_logged = dominant_rate if dominant_ip_known else None
 
                 # Load once per packet, operator-tunable thresholds for
                 # everything below (see config.DEFAULT_ENFORCEMENT_CONFIG for
@@ -389,11 +387,13 @@ def run_ipc_receiver():
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
-                    # Log flash crowd incident
-                    # The row names the dominant source, so its rate is the
-                    # one that belongs on it.
-                    db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
-                                    dominant_rate_logged, entropy)
+                    # Log flash crowd incident. The row names the dominant
+                    # source, so a window with none isn't a source-attributed
+                    # event to log; the window itself is already captured,
+                    # source-independent, in metrics_history above.
+                    if dominant_ip_known:
+                        db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
+                                        dominant_rate, entropy)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
                     # (dominant_rate computed once above, alongside the classifier features.)
                     dominant_rate_threshold = mean_r + k_multiplier * sigma_r
@@ -414,9 +414,12 @@ def run_ipc_receiver():
                             entropy=entropy,
                         )
                 elif pred_class == 0:
-                    # Log normal traffic
-                    db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
-                                    dominant_rate_logged, entropy)
+                    # Log normal traffic. Same reasoning as Flash Crowd above:
+                    # no dominant source means nothing source-attributed to
+                    # log, not an unnamed one.
+                    if dominant_ip_known:
+                        db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
+                                        dominant_rate, entropy)
 
             conn.close()
         except Exception as e:

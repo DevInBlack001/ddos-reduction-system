@@ -24,8 +24,9 @@ _TEMPLATE_SOURCE = r"""
 <meta charset="utf-8">
 <style>
   @page {
-    size: letter landscape;
+    size: letter portrait;
     margin: 20mm 12mm 16mm 12mm;
+    background: #191c22;
     @bottom-left { content: "FLOD System · CONFIDENTIAL · {{ ctx.report_id }}"; font-family: mono; font-size: 7.5pt; color: #7d838f; }
     @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: mono; font-size: 7.5pt; color: #7d838f; }
   }

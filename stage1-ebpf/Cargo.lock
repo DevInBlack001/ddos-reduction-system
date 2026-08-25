@@ -96,11 +96,11 @@ dependencies = [
 
 [[package]]
 name = "ddos-stage1-common"
-version = "1.0.2"
+version = "1.0.3"
 
 [[package]]
 name = "ddos-stage1-ebpf"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "aya-ebpf",
  "ddos-stage1-common",
