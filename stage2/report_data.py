@@ -17,14 +17,19 @@ import enforcement
 # classification, so it is excluded from the mix, the per-window chart, and
 # the timeline. "Rate Limited (Flash Crowd)" is its own row in the mix but
 # folds into "Rate Limited" for the stacked per-window chart, since giving it
-# a fifth sliver there is unreadable at typical volumes.
-TRAFFIC_CLASSES = ["Normal", "Flash Crowd", "Rate Limited (Flash Crowd)", "Rate Limited", "Blocked"]
-STACK_CLASSES = ["Normal", "Flash Crowd", "Rate Limited", "Blocked"]
-SEVERITY_ORDER = ["Blocked", "Rate Limited", "Rate Limited (Flash Crowd)", "Flash Crowd", "Normal"]
+# a fifth sliver there is unreadable at typical volumes. "Anomalous" (V7) is
+# the Isolation Forest flagging a window the RandomForest called Normal or
+# Flash Crowd as unlike anything either model has seen, kept as its own
+# slice rather than folded in, since it is a distinct signal, not a variant
+# of an existing one, see stage2/ipc_receiver.py.
+TRAFFIC_CLASSES = ["Normal", "Flash Crowd", "Anomalous", "Rate Limited (Flash Crowd)", "Rate Limited", "Blocked"]
+STACK_CLASSES = ["Normal", "Flash Crowd", "Anomalous", "Rate Limited", "Blocked"]
+SEVERITY_ORDER = ["Blocked", "Rate Limited", "Rate Limited (Flash Crowd)", "Flash Crowd", "Anomalous", "Normal"]
 
 COLORS = {
     "Normal": "#5b93a8",
     "Flash Crowd": "#dcc257",
+    "Anomalous": "#a78bfa",
     "Rate Limited": "#d99a4a",
     "Rate Limited (Flash Crowd)": "#e3d67e",
     "Blocked": "#c8493c",
@@ -191,6 +196,7 @@ def build_context(hours: float) -> dict:
         c["tick"] = _fmt_time(c["start"]) if i % label_every == 0 else ""
         c["h_normal"] = f"{c['stacked']['Normal'] / axis_total_max * 100:.2f}%"
         c["h_flash"] = f"{c['stacked']['Flash Crowd'] / axis_total_max * 100:.2f}%"
+        c["h_anomalous"] = f"{c['stacked']['Anomalous'] / axis_total_max * 100:.2f}%"
         c["h_rl"] = f"{c['stacked']['Rate Limited'] / axis_total_max * 100:.2f}%"
         c["h_blocked"] = f"{c['stacked']['Blocked'] / axis_total_max * 100:.2f}%"
         pr = c["peak_rate"]

@@ -862,6 +862,7 @@
                         let statusBadgeClass = 'badge badge-normal';
                         if (metric.latest_classification === 'DDoS') statusBadgeClass = 'badge badge-ddos';
                         else if (metric.latest_classification === 'Flash Crowd') statusBadgeClass = 'badge badge-flash';
+                        else if (metric.latest_classification === 'Anomalous') statusBadgeClass = 'badge badge-anomalous';
 
                         const safeIp = FlodSafe.escapeHtml(ip);
                         const jsIp = FlodSafe.jsAttr(ip);
@@ -910,6 +911,9 @@
                 } else if (data.latest_classification === 'Flash Crowd') {
                     threatBadge.className = 'badge badge-flash';
                     threatBadge.innerText = 'Flash Crowd Detected';
+                } else if (data.latest_classification === 'Anomalous') {
+                    threatBadge.className = 'badge badge-anomalous';
+                    threatBadge.innerText = 'Anomalous Traffic';
                 } else {
                     threatBadge.className = 'badge badge-normal';
                     threatBadge.innerText = 'Normal';
@@ -957,6 +961,9 @@
                         } else if (l.classification === 'DDoS') {
                             style = 'color: var(--status-danger);';
                             actionText = 'flagged';
+                        } else if (l.classification === 'Anomalous') {
+                            style = 'color: var(--status-anomaly);';
+                            actionText = 'flagged as anomalous';
                         }
                         const targetStr = l.victim_ip ? ` targeting ${FlodSafe.escapeHtml(l.victim_ip)}` : '';
                         html += `<div style="margin-bottom: 8px; ${style}">

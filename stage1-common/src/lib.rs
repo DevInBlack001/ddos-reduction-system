@@ -81,7 +81,41 @@ pub struct FlowKey {
     pub _pad: u8,
 }
 
-// Safety: both key types are plain data with no padding and no invalid bit
+/// Key for the per source port histogram, V7's port entropy feature.
+///
+/// Keyed by the port value itself, not by source address: port space is 16
+/// bit and fixed regardless of how many addresses or packets a flood uses,
+/// unlike `SourceKey`, which an attacker can fill by spreading across
+/// addresses.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PortKey {
+    pub victim: Addr,
+    pub port: u16,
+}
+
+/// Key for the per TTL histogram, V7's TTL variance feature. Same value
+/// keyed reasoning as `PortKey`: TTL is an 8 bit field, fixed regardless of
+/// attacker address or packet volume.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TtlKey {
+    pub victim: Addr,
+    pub ttl: u8,
+}
+
+/// Key for the per TCP fingerprint bucket histogram, V7's fingerprint
+/// diversity feature. The bucket is a small fixed table index (option
+/// ordering, p0f style), not a hash of arbitrary option bytes, so it needs
+/// no larger a key space than `TtlKey`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FingerprintKey {
+    pub victim: Addr,
+    pub bucket: u8,
+}
+
+// Safety: all key types are plain data with no padding and no invalid bit
 // patterns, which is what aya requires to move them through a map.
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for Counters {}
@@ -89,3 +123,9 @@ unsafe impl aya::Pod for Counters {}
 unsafe impl aya::Pod for SourceKey {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for FlowKey {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for PortKey {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for TtlKey {}
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for FingerprintKey {}

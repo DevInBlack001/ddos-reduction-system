@@ -154,7 +154,10 @@ def get_state(target: Optional[str] = None):
             "proto_icmp": 0.0,
             "proto_sctp": 0.0,
             "proto_gre": 0.0,
-            "proto_esp": 0.0
+            "proto_esp": 0.0,
+            "source_port_entropy": 0.0,
+            "ttl_variance": 0.0,
+            "fingerprint_diversity": 0.0
         })
     # else: no target requested, state.last_metrics is already the most
     # recent window across all targets, correct for the overview view.

@@ -79,12 +79,18 @@ legitimate label on it, which teaches the model the opposite of what you want.
 ## Training
 
 ```bash
-cd stage2
-python3 train.py
+scripts/train.sh
 ```
 
-The script drops rows containing NaN or infinity, computes the three derived
-features, and detects capture sessions.
+Prompts for the training CSV and which model, or models, to train, then
+dispatches to `train.py` for the RandomForest, `train_isolation_forest.py`
+for the Isolation Forest, or both. Both models are always trained on the
+same cleaned CSV, so they see the same shape of data. Either script can
+still be run directly, `cd stage2 && python3 train.py`, when only one model
+needs retraining.
+
+The RandomForest script drops rows containing NaN or infinity, computes the
+three derived features, and detects capture sessions.
 
 It prints a per class feature range overlap check so you can see whether your
 captured classes genuinely overlap in rate, entropy, and concentration space.
@@ -117,3 +123,65 @@ Read the confusion matrix, not the headline accuracy. The numbers that matter
 for this project's central claim are attack recall and precision, and the cell
 counting true flash crowds predicted as attacks. That cell is the one that
 represents blocking real users.
+
+## The Isolation Forest
+
+**File:** `stage2/train_isolation_forest.py`
+
+A second, independent model, trained on the same cleaned CSV `train.py`
+uses. Unlike the RandomForest, it is unsupervised: it fits on the full
+pooled dataset, all three labels together, and never reads the label
+column. The question it answers is not what class a window looks like, but
+whether it looks like anything in the training set at all, which is what
+lets it flag an attack shaped differently from anything captured, one the
+RandomForest has no guaranteed reason to recognise regardless of what
+features it is given. Trained on the full dataset rather than only the
+`Normal` rows, on purpose: a model fit only on normal traffic would answer
+"is this normal looking," a narrower question than "is this like anything
+either model has learned."
+
+**No manual `contamination` value.** `IsolationForest`'s `contamination`
+parameter sets what fraction of the training set it treats as outliers,
+and it is swept automatically the same way `train.py` sweeps `max_depth`:
+across a fixed candidate list, refitting for each one and keeping whichever
+value scores best. It does not have a genuine peak the way `max_depth`'s
+LOSO accuracy does, though. The raw score, the DDoS outlier rate minus the
+benign outlier rate, climbs the entire way through the candidate range
+instead of turning over inside it, because a larger `contamination` simply
+flags more of everything and DDoS rows carry a heavier tailed anomaly score
+than benign ones. Picking the candidate with the largest raw score would
+always land on the edge of whatever range is given, `contamination=0.25` on
+a real 34,727 row capture, which flags 6.3% of ordinary traffic, roughly one
+window in sixteen, as `Anomalous`. That defeats the point of a state meant
+to be a rare signal, and it is the same failure shape this project already
+fixed once for the entropy floor: a criterion that looks like an optimum
+but is really just the boundary of the search range.
+
+The fix caps the benign outlier rate (`BENIGN_OUTLIER_RATE_CAP`, default
+0.05, a starting point rather than a proven value, the same convention as
+every other tuning default in this project) and selects the
+highest-separating candidate that stays under it, falling back to the
+least noisy candidate if every one exceeds the cap. On the same 34,727 row
+capture this selects `contamination=0.1`: a 28.8% DDoS outlier rate against
+a 4.7% benign one.
+
+### Reading the Result
+
+The script prints an outlier rate by label after fitting, explicitly marked
+as a sanity check rather than a validation metric: there is no held out
+set and no ground truth for "was this an evasive attack," since the label
+column was never used for fitting. A DDoS outlier rate meaningfully above
+the benign rate is the useful signal; both near zero means `contamination`
+is too small to be useful, and both near 100% means it is too large to be
+selective. A DDoS outlier rate near 100% on its own is not the goal either:
+that would mean the Isolation Forest has re-derived the RandomForest's job
+on training data it already saw, not that it will catch an attack shaped
+differently from anything in this capture, which is the only case Part B
+exists for and the one this in-sample check cannot exercise.
+
+## Both Models in Production
+
+Both `.joblib` files load at startup and run every window, independently,
+not in sequence or as a fallback chain. See
+[enforcement.md](enforcement.md#classification) for how the two verdicts
+combine into the `Anomalous` state.

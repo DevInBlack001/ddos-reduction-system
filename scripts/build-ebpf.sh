@@ -74,7 +74,7 @@ fi
 # Compiling is not the same as being loadable. Confirm both programs and every
 # map actually made it into the object before installing it.
 MISSING=""
-for sym in ingress egress PROTECTED COUNTERS SOURCES FLOWS; do
+for sym in ingress egress PROTECTED COUNTERS SOURCES FLOWS PORT_HIST TTL_HIST FINGERPRINT_HIST; do
     if ! readelf -s "$OBJ" 2>/dev/null | grep -qw "$sym"; then
         MISSING="$MISSING $sym"
     fi

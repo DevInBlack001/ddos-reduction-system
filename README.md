@@ -39,7 +39,10 @@ arithmetic, so it stays out of the way of traffic.
 
 **Stage 2** is a Python service. It receives a summary from Stage 1 once per
 window, classifies it with a Random Forest, and issues kernel level enforcement
-through ipset and iptables. It also serves the web dashboard.
+through ipset and iptables. An Isolation Forest runs alongside it on every
+window, flagging traffic unlike anything either model has learned, surfaced as
+a separate `Anomalous` state rather than driving enforcement. Stage 2 also
+serves the web dashboard.
 
 The two are connected by a Unix domain socket.
 

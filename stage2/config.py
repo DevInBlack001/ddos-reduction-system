@@ -23,11 +23,14 @@ SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
 # Kept in step with the Rust crates in stage1/Cargo.toml and with the release
 # tag. Reported at startup and by /api/version so a deployed gateway can be
 # identified without inspecting files.
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
-FEATURE_VECTOR_FORMAT = "<19d16s16s"  # 19 x f64 (152 bytes) + 16-byte dominant IP + 16-byte victim IP = 184 bytes
+# V7: the Isolation Forest, trained separately (train_isolation_forest.py)
+# from the RandomForest above (train.py). Both load and run every window.
+IF_MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_if_model.joblib")
+FEATURE_VECTOR_FORMAT = "<22d16s16s"  # 22 x f64 (176 bytes) + 16-byte dominant IP + 16-byte victim IP = 208 bytes
 PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))

@@ -14,6 +14,22 @@ transmitted fields plus the three derived ones.
 Statistical overrides then run on top of the prediction, so an extreme spike is
 never missed because the classifier was unsure.
 
+**A second model, an Isolation Forest, runs every window alongside the
+RandomForest.** It is unsupervised, trained on the full feature set with the
+label column unused, and answers a different question: not what class this
+window looks like, but whether it looks like anything the training data
+contained at all. When the RandomForest calls a window normal or flash crowd
+and the Isolation Forest scores it a strong outlier, the window is logged and
+surfaced as `Anomalous` instead. This never changes `pred_class`, the value
+every tier and override below reads: `Anomalous` overrides only the label
+shown to an operator, not the enforcement path. When the RandomForest already
+calls a window an attack, the Isolation Forest's opinion is redundant for
+enforcement, since the window is already escalated. See
+[detection.md](detection.md) for why a second, unsupervised model closes a
+gap the RandomForest structurally cannot: an attack shaped differently from
+anything in the training set has no guaranteed reason to trip a supervised
+classifier, whatever features it is given.
+
 **Volumetric suspect**, which reopens the verdict:
 
 ```
@@ -165,8 +181,10 @@ traffic, which is the signature of a single source flood, so an unrecorded
 value would assert the opposite of a distributed one.
 
 The rows that record a window verdict rather than an enforcement action,
-`Normal` and `Flash Crowd`, name the window's dominant source, so that
-source's rate is what they carry.
+`Normal`, `Flash Crowd`, and `Anomalous`, name the window's dominant source,
+so that source's rate is what they carry. `Anomalous` replaces `Normal` or
+`Flash Crowd` as the logged classification for the same row when the
+Isolation Forest flags it, rather than adding a separate row.
 
 An unknown rate is stored as null rather than zero. An operator blocking an
 address by hand has no measured rate, and zero would read as an observation

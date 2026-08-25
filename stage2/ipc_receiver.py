@@ -71,6 +71,26 @@ def run_ipc_receiver():
             logging.error(f"[-] Failed to load classifier: {e}")
             clf = None
 
+    # V7: the Isolation Forest, trained separately
+    # (train_isolation_forest.py) from the RandomForest above, runs
+    # alongside it every window rather than as a fallback. The RF says
+    # what class a window looks like; the IF says whether it looks like
+    # anything either model has seen at all, catching evasive traffic the
+    # RF was never trained to recognise. Missing is not fatal, the same as
+    # a missing RF model: this just means no Anomalous state gets raised.
+    if not os.path.exists(config.IF_MODEL_PATH):
+        logging.warning(f"[!] Isolation Forest not found at '{config.IF_MODEL_PATH}'. "
+                         "Running without it: Anomalous will never be raised until one is trained.")
+        if_clf = None
+    else:
+        try:
+            if_clf = joblib.load(config.IF_MODEL_PATH)
+            if_clf.n_jobs = 1
+            logging.info("[+] Isolation Forest loaded successfully.")
+        except Exception as e:
+            logging.error(f"[-] Failed to load Isolation Forest: {e}")
+            if_clf = None
+
     # /run is tmpfs and cleared on every boot, so this can't be assumed to
     # already exist, create it fresh each startup. If the ddos-ipc group
     # exists (install.sh creates it so the de-rooted Stage 1 service
@@ -158,8 +178,14 @@ def run_ipc_receiver():
                 # dropped".
                 egress_rate = unpacked[17] if unpacked[17] >= 0 else None
                 drop_ratio = unpacked[18] if unpacked[18] >= 0 else None
-                ip_str = decode_ip(unpacked[19])
-                victim_ip_str = decode_ip(unpacked[20])
+                # V7: invariant under source address forgery, unlike entropy
+                # above. See docs/detection.md for why that matters against
+                # a randomized source flood.
+                source_port_entropy = unpacked[19]
+                ttl_variance = unpacked[20]
+                fingerprint_diversity = unpacked[21]
+                ip_str = decode_ip(unpacked[22])
+                victim_ip_str = decode_ip(unpacked[23])
                 victim_ip_str = enforcement.resolve_victim_ip(victim_ip_str)
 
                 # Calculate delta features
@@ -185,17 +211,21 @@ def run_ipc_receiver():
                 cfg = config.get_enforcement_config()
 
                 pred_class = 0
-                if clf:
+                features_df = None
+                if clf or if_clf:
                     import pandas as pd
                     features_df = pd.DataFrame([[
                         entropy, ewma_rate, mean_h, mean_r, sigma_h, sigma_r,
                         proto_ratio, dominant_ip_ratio, delta_rate, delta_entropy,
-                        dominant_rate
+                        dominant_rate, source_port_entropy, ttl_variance,
+                        fingerprint_diversity
                     ]], columns=[
                         "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
                         "proto_ratio", "dominant_ip_ratio", "delta_rate", "delta_entropy",
-                        "dominant_rate"
+                        "dominant_rate", "source_port_entropy", "ttl_variance",
+                        "fingerprint_diversity"
                     ])
+                if clf:
                     pred_class = int(clf.predict(features_df)[0])
 
                 # Adaptive Safety overrides
@@ -227,6 +257,24 @@ def run_ipc_receiver():
 
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")
+
+                # V7: the Isolation Forest's opinion, independent of the
+                # RandomForest's class. Only checked when the RF already
+                # waved the window through (Normal or Flash Crowd): a DDoS
+                # verdict is already escalated, so the IF's opinion would be
+                # redundant for enforcement purposes, though it still rides
+                # along in features_df/pred_class untouched, both continue
+                # to drive every enforcement branch below exactly as before.
+                # Anomalous is reporting only in this pass, matching this
+                # project's enforcement philosophy of a deterministic,
+                # auditable, operator tunable rule rather than an action
+                # baked into a classifier: see docs/detection.md.
+                is_anomalous = False
+                if if_clf and pred_class in (0, 1):
+                    # -1 = outlier, 1 = inlier, IsolationForest's own convention.
+                    is_anomalous = int(if_clf.predict(features_df)[0]) == -1
+                    if is_anomalous:
+                        pred_name = "Anomalous"
 
                 # Alert on DDoS classification transitions only (not every
                 # window a victim stays classified DDoS, and not on
@@ -266,7 +314,10 @@ def run_ipc_receiver():
                     "proto_icmp": proto_icmp,
                     "proto_sctp": proto_sctp,
                     "proto_gre": proto_gre,
-                    "proto_esp": proto_esp
+                    "proto_esp": proto_esp,
+                    "source_port_entropy": source_port_entropy,
+                    "ttl_variance": ttl_variance,
+                    "fingerprint_diversity": fingerprint_diversity
                 }
                 state.last_metrics_by_target[victim_ip_str] = state.last_metrics.copy()
 
@@ -387,12 +438,13 @@ def run_ipc_receiver():
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
-                    # Log flash crowd incident. The row names the dominant
+                    # Log flash crowd (or, if the Isolation Forest flagged
+                    # it, Anomalous) incident. The row names the dominant
                     # source, so a window with none isn't a source-attributed
                     # event to log; the window itself is already captured,
                     # source-independent, in metrics_history above.
                     if dominant_ip_known:
-                        db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
+                        db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
                     # (dominant_rate computed once above, alongside the classifier features.)
@@ -414,11 +466,11 @@ def run_ipc_receiver():
                             entropy=entropy,
                         )
                 elif pred_class == 0:
-                    # Log normal traffic. Same reasoning as Flash Crowd above:
-                    # no dominant source means nothing source-attributed to
-                    # log, not an unnamed one.
+                    # Log normal (or Anomalous) traffic. Same reasoning as
+                    # Flash Crowd above: no dominant source means nothing
+                    # source-attributed to log, not an unnamed one.
                     if dominant_ip_known:
-                        db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
+                        db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
 
             conn.close()

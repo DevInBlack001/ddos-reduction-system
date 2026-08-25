@@ -130,9 +130,40 @@ Enforcement would not help much even if it were classified correctly: blocking
 forged addresses punishes whoever really owns them and leaves the attacker
 untouched.
 
-Closing this needs features invariant under address forgery, which this
-pipeline does not extract: source port entropy, TTL variance, and TCP option
-fingerprint diversity. That is planned work, not a configuration change.
+Closing this needs features invariant under address forgery: source port
+entropy, TTL variance, and TCP option fingerprint diversity. All three are
+now computed per window (V7) and sent over the wire, on both capture
+backends, using per window histograms keyed by the value itself, port
+number, TTL, fingerprint bucket, rather than by source address, so none of
+them inherit `SOURCES`'s fillability problem. See [ipc.md](ipc.md) for the
+wire format and the reasoning in full.
+
+Computing and transmitting the features is not the same as the classifier
+using them well. The shipped RandomForest is now trained on a capture that
+includes all three: on a 34,727 row real dataset, `source_port_entropy`
+placed fourth among fourteen features by importance, while `ttl_variance`
+and `fingerprint_diversity` contributed almost nothing, consistent with a
+single-topology capture where every session shares one hop count and one
+attack tool's TCP stack rather than a defect in the features themselves.
+See [training.md](training.md) for how to retrain as more varied traffic is
+captured.
+
+Detecting a randomized source flood is also a narrower problem than
+stopping one: blocking a forged address still punishes whoever really owns
+it. These features close the detection blind spot; they do not by
+themselves make enforcement against a spoofed flood safe.
+
+A second, unsupervised model complements the RandomForest for a related but
+distinct gap: an attack shaped differently from anything in the training
+set has no guaranteed reason to trip a supervised classifier at all,
+regardless of what features it is given. An Isolation Forest, trained on
+the same feature set but ignoring the label column, runs alongside the
+RandomForest in production and flags a window as `Anomalous` when the
+RandomForest calls it ordinary but the Isolation Forest finds it unlike
+anything in the training distribution. It does not drive enforcement; see
+[enforcement.md](enforcement.md#classification) for how the two models
+combine and [training.md](training.md#the-isolation-forest) for how it is
+trained.
 
 ## The Anomaly Boundary
 

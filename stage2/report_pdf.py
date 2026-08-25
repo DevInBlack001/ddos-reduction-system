@@ -159,7 +159,7 @@ _TEMPLATE_SOURCE = r"""
   <div class="block">
     <h2>Event volume by classification</h2>
     <div class="legend">
-      {% for cls in ["Normal", "Flash Crowd", "Rate Limited", "Blocked"] %}
+      {% for cls in ["Normal", "Flash Crowd", "Anomalous", "Rate Limited", "Blocked"] %}
       <span class="legend-item"><span class="swatch" style="background:{{ colors[cls] }};"></span>{{ cls }}</span>
       {% endfor %}
     </div>
@@ -172,6 +172,7 @@ _TEMPLATE_SOURCE = r"""
           <div class="bar-seg" style="height:{{ c.h_blocked }}; background:{{ colors['Blocked'] }};"></div>
           <div class="bar-seg" style="height:{{ c.h_rl }}; background:{{ colors['Rate Limited'] }};"></div>
           <div class="bar-seg" style="height:{{ c.h_flash }}; background:{{ colors['Flash Crowd'] }};"></div>
+          <div class="bar-seg" style="height:{{ c.h_anomalous }}; background:{{ colors['Anomalous'] }};"></div>
           <div class="bar-seg" style="height:{{ c.h_normal }}; background:{{ colors['Normal'] }};"></div>
         </div>
         {% endfor %}

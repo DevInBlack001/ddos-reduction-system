@@ -92,6 +92,47 @@ impl WelfordAccumulator {
         }
     }
 
+    /// Ingest `count` copies of the same value at once, using the standard
+    /// parallel variance merge formula (Chan et al. 1979) rather than
+    /// calling `update` in a loop.
+    ///
+    /// The kernel capture backend arrives with values already grouped by
+    /// count (e.g. "40 packets carried TTL 64"), so a per sample loop here
+    /// would put back the per packet cost that backend exists to remove,
+    /// the same reasoning `EntropyAccumulator::add_packets` already
+    /// documents for the entropy side.
+    ///
+    /// Treating the batch as a second accumulator of `count` identical
+    /// samples (mean `x`, M2 zero) and merging it in one step:
+    ///
+    ///     delta      = x - mean
+    ///     n_combined = n + count
+    ///     mean      += delta * count / n_combined
+    ///     M2        += delta² * n * count / n_combined
+    ///
+    /// The recency cap still applies to the resulting `n`, but only once
+    /// per call rather than once per sample: a batch that would cross the
+    /// cap mid way through has its excess samples dropped rather than
+    /// decaying M2 one sample at a time. That only differs from calling
+    /// `update` in a loop while a single batch is itself larger than the
+    /// remaining headroom under the cap, which is not the steady state the
+    /// cap exists to keep responsive.
+    pub fn update_batch(&mut self, x: f64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let delta = x - self.mean;
+        let n_before = self.n;
+        let n_after = (n_before + count).min(self.max_n);
+        let absorbed = n_after - n_before;
+        if absorbed == 0 {
+            return;
+        }
+        self.mean += delta * absorbed as f64 / n_after as f64;
+        self.m2 += delta * delta * n_before as f64 * absorbed as f64 / n_after as f64;
+        self.n = n_after;
+    }
+
     /// Population variance (σ²) using Bessel's correction (n−1).
     ///
     /// Returns `None` if fewer than 2 samples have been seen (division by zero
@@ -135,8 +176,7 @@ impl WelfordAccumulator {
         self.n >= WARMUP_WINDOWS
     }
 
-    /// Reset all state (used in unit tests and optional periodic re-baseline).
-    #[allow(dead_code)]
+    /// Reset all state.
     pub fn reset(&mut self) {
         self.n    = 0;
         self.mean = 0.0;
@@ -155,6 +195,47 @@ impl Default for WelfordAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A batch of identical samples must land on exactly the same mean and
+    /// variance as adding them one at a time. The two backends use
+    /// different arms of this, so they have to agree exactly.
+    #[test]
+    fn batch_update_matches_sequential_updates() {
+        let mut sequential = WelfordAccumulator::default();
+        for _ in 0..3 {
+            sequential.update(64.0);
+        }
+        sequential.update(128.0);
+
+        let mut batched = WelfordAccumulator::default();
+        batched.update_batch(64.0, 3);
+        batched.update_batch(128.0, 1);
+
+        assert_eq!(sequential.n, batched.n);
+        assert!((sequential.mean - batched.mean).abs() < 1e-10);
+        assert!((sequential.variance().unwrap() - batched.variance().unwrap()).abs() < 1e-10);
+    }
+
+    /// A batch of one value only, however large, has zero variance: every
+    /// sample agrees with the mean exactly.
+    #[test]
+    fn a_batch_of_one_distinct_value_has_zero_variance() {
+        let mut acc = WelfordAccumulator::default();
+        acc.update_batch(64.0, 200);
+        assert_eq!(acc.n, 200);
+        let var = acc.variance().unwrap();
+        assert!(var.abs() < 1e-10, "expected ~0 variance, got {var}");
+    }
+
+    /// A zero count batch changes nothing.
+    #[test]
+    fn a_batch_of_zero_changes_nothing() {
+        let mut acc = WelfordAccumulator::default();
+        acc.update(10.0);
+        acc.update_batch(999.0, 0);
+        assert_eq!(acc.n, 1);
+        assert_eq!(acc.mean, 10.0);
+    }
 
     /// Golden test vector from the architecture spec.
     /// Input  : [4, 7, 13, 16]

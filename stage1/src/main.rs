@@ -564,17 +564,15 @@ fn main() {
             let mut clean = Vec::with_capacity(buf.len());
             let mut i = 0;
             while i < buf.len() {
-                if buf[i] == 0x1b {
-                    if i + 1 < buf.len() && buf[i + 1] == b'[' {
-                        i += 2;
-                        while i < buf.len() && (buf[i] < 0x40 || buf[i] > 0x7E) {
-                            i += 1;
-                        }
-                        if i < buf.len() {
-                            i += 1;
-                        }
-                        continue;
+                if buf[i] == 0x1b && i + 1 < buf.len() && buf[i + 1] == b'[' {
+                    i += 2;
+                    while i < buf.len() && (buf[i] < 0x40 || buf[i] > 0x7E) {
+                        i += 1;
                     }
+                    if i < buf.len() {
+                        i += 1;
+                    }
+                    continue;
                 }
                 clean.push(buf[i]);
                 i += 1;
@@ -635,25 +633,27 @@ fn main() {
 
     // Capture config: BPF filter applied only when --no-filter is not set
     // and victim targets were provided.
-    let cap_cfg = if args.no_filter || args.victim_targets.is_none() {
-        log::warn!("main: BPF filter disabled, all traffic will be processed (dev mode only)");
-        CaptureConfig::for_test(&args.interface)
-    } else {
-        let targets = args.victim_targets.as_ref().unwrap();
+    let cap_cfg = if !args.no_filter
+        && let Some(targets) = args.victim_targets.as_ref()
+    {
         info!("main: BPF filter enabled for targets: {:?}", targets);
         CaptureConfig::for_targets(&args.interface, targets, capture::Direction::Ingress)
+    } else {
+        log::warn!("main: BPF filter disabled, all traffic will be processed (dev mode only)");
+        CaptureConfig::for_test(&args.interface)
     };
 
     // The egress side is optional, and uses the same filter as ingress:
     // what matters is traffic headed to a protected host on either side.
     let egress_cap_cfg = args.egress_interface.as_ref().map(|iface| {
-        if args.no_filter || args.victim_targets.is_none() {
+        if !args.no_filter
+            && let Some(targets) = args.victim_targets.as_ref()
+        {
+            CaptureConfig::for_targets(iface, targets, capture::Direction::Egress)
+        } else {
             let mut c = CaptureConfig::for_test(iface);
             c.direction = capture::Direction::Egress;
             c
-        } else {
-            let targets = args.victim_targets.as_ref().unwrap();
-            CaptureConfig::for_targets(iface, targets, capture::Direction::Egress)
         }
     });
 

@@ -44,14 +44,15 @@ flag with a documented default rather than a constant.
 
 ## Planned
 
-**V7, ensemble classification.** A multi model voting layer for evasion and
-stealth attacks, adding source port entropy, TTL variance, and TCP fingerprint
-diversity as features.
+**V7, evasion resistant features and a second model.** On branch `v7`, code
+complete, not yet merged or tagged. Two parts.
 
-Those three are the ones invariant under source address forgery, which is what
-makes them the answer to both randomized source spoofing and large NAT crowds
-reading as single source floods. See [detection.md](detection.md) for why the
-current feature set cannot see either.
+Part one adds source port entropy, TTL variance, and TCP fingerprint
+diversity as features. Those three are invariant under source address
+forgery, which is what makes them the answer to both randomized source
+spoofing and large NAT crowds reading as single source floods. See
+[detection.md](detection.md) for why the pre-V7 feature set cannot see
+either.
 
 Computed from new per window histograms keyed by the field value itself, port
 number, TTL, fingerprint bucket, not by source address. `SOURCES` is capped
@@ -60,6 +61,26 @@ across; port and TTL space are not (16 and 8 bit fields), so a value keyed
 histogram has a fixed ceiling regardless of how many addresses or packets a
 flood uses. Extending `SOURCES` itself instead would inherit its fillability
 problem at exactly the moment a randomized source flood makes it matter most.
+
+Part two adds a second model rather than a voting layer over several: an
+Isolation Forest, unsupervised, trained on the same feature set with the
+label column unused, running in production alongside the existing
+RandomForest rather than replacing or gating it. It answers a different
+question than the RandomForest does, not what class a window looks like but
+whether it looks like anything the training data contained at all, which is
+what closes the gap a supervised model cannot: an attack shaped differently
+from anything captured has no guaranteed reason to trip a classifier trained
+only on what it was shown. Surfaced as a distinct `Anomalous` state; it does
+not drive enforcement in this milestone. See
+[enforcement.md](enforcement.md#classification) and
+[training.md](training.md#the-isolation-forest).
+
+Verified against a real 35,442 row, 12 session capture: RandomForest LOSO
+accuracy 0.989, DDoS precision 0.97 and recall 0.98. Still open before this
+merges: real hardware verification of the eBPF side (compiled and reasoned
+about here, not run through the kernel verifier on this machine), dashboard
+visibility for the three raw features, and a non-technical explainer
+document.
 
 **V8, automated playbooks.** Granular incident reports and multi stage response
 playbooks executed during severe events.

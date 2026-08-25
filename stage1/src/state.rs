@@ -184,6 +184,21 @@ pub struct TargetState {
     pub(crate) peacetime_entropy_ref: Option<f64>,
     pub(crate) window_id: u64,
     pub(crate) ip_counts: HashMap<IpAddr, u32>,
+    /// V7: source port entropy. Same lifecycle as `entropy` above, reset
+    /// every window: it describes this window's port distribution, not a
+    /// trend, so it is not persisted across restarts either.
+    pub(crate) port_entropy: EntropyAccumulator<u16>,
+    /// V7: TTL variance within the current window. A per-window shape
+    /// descriptor, not a cross-window baseline, unlike `welford_rate` and
+    /// `welford_entropy` below: there is no meaningful "baseline TTL
+    /// variance" to carry across a restart, so this resets every window via
+    /// `WelfordAccumulator::reset()` rather than persisting.
+    pub(crate) welford_ttl: WelfordAccumulator,
+    /// V7: TCP fingerprint bucket entropy for the current window. Same
+    /// shape as `port_entropy` above: diversity across buckets, not a
+    /// count, so it reuses the identical entropy math rather than a raw
+    /// histogram this file would then have to reduce to entropy itself.
+    pub(crate) fingerprint_entropy: EntropyAccumulator<u8>,
     pub(crate) window_packet_count: usize,
     /// V5: packets seen on the egress side for this victim in the current
     /// window, i.e. what survived filtering. Reset at every window close.
@@ -241,6 +256,9 @@ impl TargetState {
             peacetime_entropy_ref,
             window_id: 0,
             ip_counts: HashMap::new(),
+            port_entropy: EntropyAccumulator::new(),
+            welford_ttl: WelfordAccumulator::default(),
+            fingerprint_entropy: EntropyAccumulator::new(),
             window_packet_count: 0,
             egress_packet_count: 0,
             last_window_close: Instant::now(),

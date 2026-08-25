@@ -106,13 +106,22 @@ is tracked in [roadmap.md](roadmap.md#known-gaps).
 
 ### Map Sizing
 
-The kernel side holds four maps: protected hosts as a prefix trie, per host
-counters, a per host per source histogram, and a flow table. Their capacities
-are compiled into the object as defaults, but a BPF map's size is fixed when
-the kernel creates it rather than when the object is built, so user space
-overrides them before loading. `--max-sources`, `--max-flows`, and
-`--max-protected-hosts` therefore change them without a rebuild, which matters
-because an object without the eBPF toolchain cannot be rebuilt at all.
+The kernel side holds seven maps: protected hosts as a prefix trie, per host
+counters, a per host per source histogram, a flow table, and, since V7, a per
+host per source port histogram, a per host per TTL histogram, and a per host
+per TCP fingerprint bucket histogram. Their capacities are compiled into the
+object as defaults, but a BPF map's size is fixed when the kernel creates it
+rather than when the object is built, so user space overrides the first four
+before loading. `--max-sources`, `--max-flows`, and `--max-protected-hosts`
+therefore change them without a rebuild, which matters because an object
+without the eBPF toolchain cannot be rebuilt at all.
+
+The three V7 maps take no such flag. Port space is 16 bit and TTL space is 8
+bit regardless of how many addresses or packets a flood uses, so unlike the
+source histogram, neither can be filled by an attacker spreading across more
+addresses; 65,536 and 256 are the whole space, not a budget. The fingerprint
+histogram is smaller still, a small fixed table of option orderings and
+window size ranges rather than a hash of arbitrary bytes.
 
 `--max-protected-hosts` sizes the counter map and the trie together. The
 counter map binds first, since the trie stores a whole subnet as a single
@@ -349,7 +358,8 @@ stage2/
   state.py         shared in memory state
   reports.py       PDF and CSV export
   alerts.py        Discord and SMTP dispatch
-  train.py         model training
+  train.py         RandomForest training
+  train_isolation_forest.py  Isolation Forest training
   setup_admin.py   first account provisioning
   static/          dashboard pages
   tests/           test suite
@@ -359,6 +369,8 @@ scripts/
   update.sh        rebuild and restart
   uninstall.sh     teardown
   run.sh           run both stages from a working copy, prompting for values
+  train.sh         select a training CSV and train the RandomForest, the
+                    Isolation Forest, or both
   calibrate.py     derive the sigma floors from observed traffic
   build-ebpf.sh    compile the eBPF programs
   test.sh          run every suite

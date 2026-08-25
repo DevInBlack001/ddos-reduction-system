@@ -243,7 +243,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     let _ = writeln!(
                         f,
                         "entropy,ewma_rate,mean_h,mean_r,sigma_h,sigma_r,\
-                         proto_ratio,dominant_ip_ratio,timestamp,label"
+                         proto_ratio,dominant_ip_ratio,source_port_entropy,\
+                         ttl_variance,fingerprint_diversity,timestamp,label"
                     );
                 }
                 info!("Analysis: training mode on, writing CSV to '{}' with label={}", path, cfg.train_label);
@@ -315,6 +316,22 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                             for (src_ip, count) in &sample.sources {
                                 target_state.entropy.add_packets(*src_ip, *count as u32);
                                 *target_state.ip_counts.entry(*src_ip).or_insert(0) += *count as u32;
+                            }
+                            // V7: port entropy and TTL variance, same bulk
+                            // add shape as the source entropy above. Both
+                            // arrive from the kernel already grouped by
+                            // value, so both feed their accumulator once per
+                            // distinct value with that value's count, rather
+                            // than needing a per packet loop the kernel
+                            // backend exists to avoid.
+                            for (port, count) in &sample.ports {
+                                target_state.port_entropy.add_packets(*port, *count as u32);
+                            }
+                            for (ttl, count) in &sample.ttls {
+                                target_state.welford_ttl.update_batch(*ttl as f64, *count);
+                            }
+                            for (bucket, count) in &sample.fingerprints {
+                                target_state.fingerprint_entropy.add_packets(*bucket, *count as u32);
                             }
                             target_state.window_packet_count += sample.ingress_packets as usize;
                             target_state.egress_packet_count += sample.egress_packets;
@@ -389,6 +406,13 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 target_state.entropy.add_packet(meta.src_ip);
                 *target_state.ip_counts.entry(meta.src_ip).or_insert(0) += 1;
                 target_state.window_packet_count += 1;
+
+                // V7: port entropy, TTL variance, TCP fingerprint diversity.
+                target_state.port_entropy.add_packet(meta.source_port);
+                target_state.welford_ttl.update(meta.ttl as f64);
+                if let Some(bucket) = meta.fingerprint_bucket {
+                    target_state.fingerprint_entropy.add_packet(bucket);
+                }
 
                 // Increment the Layer 4 protocol counter for the current window.
                 match meta.protocol {
@@ -485,6 +509,15 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // This call clears the internal HashMap and resets the packet counter.
             let h = target_state.entropy.compute_and_reset();
 
+            // V7: source port entropy and TCP fingerprint diversity, same
+            // shape as h above, over a different window. TTL variance reads
+            // and then clears separately: WelfordAccumulator has no
+            // combined compute-and-reset, so its reset sits with the other
+            // per-window accumulators below.
+            let source_port_entropy = target_state.port_entropy.compute_and_reset();
+            let fingerprint_diversity = target_state.fingerprint_entropy.compute_and_reset();
+            let ttl_variance = target_state.welford_ttl.variance().unwrap_or(0.0);
+
             // Read the current EWMA rate as a snapshot scalar r.
             // The rate is not reset: it carries memory across windows.
             let r = target_state.ewma.snapshot();
@@ -534,19 +567,22 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // The label file sits in a root owned directory so a local
             // account cannot flip it mid capture and poison the dataset.
             if now_instant.duration_since(last_label_check).as_secs_f64() >= 1.0 {
-                if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label") {
-                    if let Ok(parsed) = content.trim().parse::<u8>() {
-                        if parsed != current_train_label {
-                            info!("Analysis: Live label switch triggered via /run/ddos_stage1/train_label. Changed from {} to {}", current_train_label, parsed);
-                            current_train_label = parsed;
-                        }
-                    }
+                if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label")
+                    && let Ok(parsed) = content.trim().parse::<u8>()
+                    && parsed != current_train_label
+                {
+                    info!("Analysis: Live label switch triggered via /run/ddos_stage1/train_label. Changed from {} to {}", current_train_label, parsed);
+                    current_train_label = parsed;
                 }
                 last_label_check = now_instant;
             }
 
             // Reset all per-window accumulators for the next window.
             target_state.ip_counts.clear();
+            // V7: TTL variance is a per-window shape descriptor, not a
+            // cross-window baseline like welford_rate/welford_entropy
+            // below, so it resets here rather than persisting.
+            target_state.welford_ttl.reset();
             target_state.window_packet_count = 0;
             target_state.tcp_count  = 0;
             target_state.udp_count  = 0;
@@ -590,13 +626,40 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     cooldown_counter: target_state.cooldown_counter as f64,
                     egress_rate,
                     drop_ratio,
+                    source_port_entropy,
+                    ttl_variance,
+                    fingerprint_diversity,
                     dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
-                    victim_ip:   victim_ip,
+                    victim_ip,
                 };
                 // The IPC layer reports the connection going down and coming
                 // back. Repeating it here would be one line per window.
                 if !ipc.send(&fv) {
                     log::debug!("Analysis [victim={victim_ip}]: warm-up window not delivered");
+                }
+
+                // Training capture does not need a trustworthy anomaly
+                // baseline, only the raw per-window measurements against
+                // whatever label the operator is recording, so it does not
+                // wait out the 200 window warm-up the way live anomaly
+                // evaluation below still does. Early rows in a session
+                // carry a less converged mean/sigma than later ones, same
+                // as the warm-up telemetry sent above; a capture long
+                // enough to be useful training data makes that a small
+                // fraction of the session, not a reason to block capture
+                // from starting.
+                if let Some(ref mut f) = csv_writer {
+                    let _ = writeln!(
+                        f,
+                        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
+                        h, r,
+                        target_state.welford_entropy.mean, target_state.welford_rate.mean,
+                        target_state.welford_entropy.std_dev(), target_state.welford_rate.std_dev(),
+                        proto_ratio, dominant_ip_ratio,
+                        source_port_entropy, ttl_variance, fingerprint_diversity,
+                        timestamp,
+                        current_train_label
+                    );
                 }
 
                 continue;
@@ -755,8 +818,11 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     cooldown_counter: target_state.cooldown_counter as f64,
                     egress_rate,
                     drop_ratio,
+                    source_port_entropy,
+                    ttl_variance,
+                    fingerprint_diversity,
                     dominant_ip,
-                    victim_ip:   victim_ip,
+                    victim_ip,
                 };
 
                 if ipc.send(&fv) {
@@ -778,11 +844,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             if let Some(ref mut f) = csv_writer {
                 let _ = writeln!(
                     f,
-                    "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
+                    "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
                     h, r,
                     target_state.welford_entropy.mean, target_state.welford_rate.mean,
                     sigma_h, sigma_r,
                     proto_ratio, dominant_ip_ratio,
+                    source_port_entropy, ttl_variance, fingerprint_diversity,
                     timestamp,
                     current_train_label
                 );
@@ -1116,6 +1183,9 @@ mod tests {
             arrived_at: Instant::now(),
             protocol: Protocol::Tcp,
             dst_port: 80,
+            source_port: 51234,
+            ttl: 64,
+            fingerprint_bucket: None,
         }
     }
 
