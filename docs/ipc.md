@@ -6,7 +6,7 @@ Stage 1 serialises a feature vector and sends it over a Unix domain socket at
 `/run/ddos_stage1/stage1.sock`. It reports when a window is flagged, and on a
 heartbeat otherwise so a quiet target keeps updating.
 
-Exactly 208 bytes, little endian.
+Exactly 216 bytes, little endian.
 
 | Offset | Size | Field | Description |
 |-|-|-|-|
@@ -32,10 +32,35 @@ Exactly 208 bytes, little endian.
 | 152 | 8 | `source_port_entropy` | Shannon entropy of source ports, V7 |
 | 160 | 8 | `ttl_variance` | Variance of TTL / hop limit values, V7 |
 | 168 | 8 | `fingerprint_diversity` | Shannon entropy of TCP SYN fingerprint buckets, V7 |
-| 176 | 16 | `dominant_ip` | Busiest source, IPv6 or mapped IPv4 |
-| 192 | 16 | `victim_ip` | The protected host this window describes |
+| 176 | 8 | `is_warmup` | `1.0` if this window's mean/sigma are still from Stage 1's warm-up period, `0.0` otherwise, V7 |
+| 184 | 16 | `dominant_ip` | Busiest source, IPv6 or mapped IPv4 |
+| 200 | 16 | `victim_ip` | The protected host this window describes |
 
-Python unpacks it with `struct.unpack('<22d16s16s', data)`.
+Python unpacks it with `struct.unpack('<23d16s16s', data)`.
+
+## V7: The Warm-up Flag
+
+Stage 1 sends a `FeatureVector` on every warm-up window too, not just once
+warm-up completes, so the dashboard has something to show immediately rather
+than sitting blank for the first 200 windows. Those windows' `mean_h`,
+`mean_r`, `sigma_h`, and `sigma_r` come from whatever few samples the
+accumulator has seen so far, not a converged baseline: `sigma_r` in
+particular can read far below `--rate-sigma-floor`, something a converged
+baseline can never produce, since the floor only clamps it once the
+accumulator is being evaluated live.
+
+Stage 1 already excludes these windows from its own anomaly evaluation, the
+same warm-up gate that keeps `window_is_clean()` from running early. `
+is_warmup` carries that same fact to Stage 2, because Stage 2 does its own,
+separate evaluation: the RandomForest and Isolation Forest, both trained
+entirely on converged-baseline data, have never seen a value like
+`sigma_r=0.0`, and read "unfamiliar" as "anomalous" rather than "still
+warming up". Found in production: five targets restarted together read as
+`Anomalous` on 98.86% of windows during their warm-up period, on traffic
+that was, by every other measure in the same report, unremarkable. Stage 2
+now skips classification entirely on a warm-up window: `pred_class` stays
+its default, `Normal`, the same "record but take no action" path an
+ordinary Normal window already takes.
 
 ## V7: Features Invariant Under Address Forgery
 

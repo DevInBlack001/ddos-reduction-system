@@ -184,8 +184,20 @@ def run_ipc_receiver():
                 source_port_entropy = unpacked[19]
                 ttl_variance = unpacked[20]
                 fingerprint_diversity = unpacked[21]
-                ip_str = decode_ip(unpacked[22])
-                victim_ip_str = decode_ip(unpacked[23])
+                # V7: whether this window's mean/sigma came from Stage 1's
+                # warm-up period rather than a converged baseline. Warm-up
+                # windows are sent so the dashboard updates immediately, but
+                # their mean/sigma-derived features (delta_rate, delta_entropy,
+                # dominant_rate, and mean_r/sigma_r/mean_h/sigma_h themselves)
+                # come from too few samples to mean anything: sigma_r can read
+                # far below its own configured floor, something a converged
+                # baseline can never produce. The classifiers were trained
+                # entirely on converged-baseline data and have never seen
+                # values like that, so they read "unfamiliar" as "anomalous"
+                # rather than "still warming up". See docs/detection.md.
+                is_warmup = unpacked[22] != 0.0
+                ip_str = decode_ip(unpacked[23])
+                victim_ip_str = decode_ip(unpacked[24])
                 victim_ip_str = enforcement.resolve_victim_ip(victim_ip_str)
 
                 # Calculate delta features
@@ -225,35 +237,42 @@ def run_ipc_receiver():
                         "dominant_rate", "source_port_entropy", "ttl_variance",
                         "fingerprint_diversity"
                     ])
-                if clf:
-                    pred_class = int(clf.predict(features_df)[0])
+                # None of the classification below runs on a warm-up window:
+                # see the is_warmup unpack comment above for why its
+                # mean/sigma-derived inputs can't be trusted. pred_class
+                # stays its default (0, Normal), which is already the
+                # correct "record but take no action" path every branch
+                # below already implements for ordinary Normal windows.
+                if not is_warmup:
+                    if clf:
+                        pred_class = int(clf.predict(features_df)[0])
 
-                # Adaptive Safety overrides
-                # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
-                #    Aggregate rate is fine as the outer "is this worth a second
-                #    look" gate, it doesn't decide Flash-Crowd vs DDoS by itself.
-                rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
-                # 2. Extreme SINGLE-SOURCE rate trigger, based on dominant_rate
-                #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
-                #    Aggregate rate can't distinguish one attacker at extreme
-                #    volume from many genuine users each at a normal trickle,
-                #    a legitimate flash crowd's aggregate scales with participant
-                #    count the same way an attacker's does. Threshold matches
-                #    Tier 2's block_threshold below (computed once here as
-                #    extreme_dominant_rate_boundary and reused there).
-                extreme_dominant_rate_boundary = max(
-                    cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
-                )
-                # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
-                entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
+                    # Adaptive Safety overrides
+                    # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
+                    #    Aggregate rate is fine as the outer "is this worth a second
+                    #    look" gate, it doesn't decide Flash-Crowd vs DDoS by itself.
+                    rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
+                    # 2. Extreme SINGLE-SOURCE rate trigger, based on dominant_rate
+                    #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
+                    #    Aggregate rate can't distinguish one attacker at extreme
+                    #    volume from many genuine users each at a normal trickle,
+                    #    a legitimate flash crowd's aggregate scales with participant
+                    #    count the same way an attacker's does. Threshold matches
+                    #    Tier 2's block_threshold below (computed once here as
+                    #    extreme_dominant_rate_boundary and reused there).
+                    extreme_dominant_rate_boundary = max(
+                        cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+                    )
+                    # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
+                    entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
 
-                if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
-                    if dominant_rate > extreme_dominant_rate_boundary:
-                        pred_class = 2
-                    elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
-                        pred_class = 2
-                    else:
-                        pred_class = 1
+                    if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
+                        if dominant_rate > extreme_dominant_rate_boundary:
+                            pred_class = 2
+                        elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
+                            pred_class = 2
+                        else:
+                            pred_class = 1
 
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")
@@ -270,11 +289,16 @@ def run_ipc_receiver():
                 # auditable, operator tunable rule rather than an action
                 # baked into a classifier: see docs/detection.md.
                 is_anomalous = False
-                if if_clf and pred_class in (0, 1):
+                if not is_warmup and if_clf and pred_class in (0, 1):
                     # -1 = outlier, 1 = inlier, IsolationForest's own convention.
                     is_anomalous = int(if_clf.predict(features_df)[0]) == -1
                     if is_anomalous:
                         pred_name = "Anomalous"
+                        logging.debug(
+                            f"[V7] Anomalous flagged for victim={victim_ip_str}: "
+                            f"score={if_clf.decision_function(features_df)[0]:+.4f} "
+                            f"features={features_df.iloc[0].to_dict()}"
+                        )
 
                 # Alert on DDoS classification transitions only (not every
                 # window a victim stays classified DDoS, and not on

@@ -30,7 +30,7 @@ MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
 # V7: the Isolation Forest, trained separately (train_isolation_forest.py)
 # from the RandomForest above (train.py). Both load and run every window.
 IF_MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_if_model.joblib")
-FEATURE_VECTOR_FORMAT = "<22d16s16s"  # 22 x f64 (176 bytes) + 16-byte dominant IP + 16-byte victim IP = 208 bytes
+FEATURE_VECTOR_FORMAT = "<23d16s16s"  # 23 x f64 (184 bytes) + 16-byte dominant IP + 16-byte victim IP = 216 bytes
 PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
@@ -143,8 +143,13 @@ def get_alerts_config():
 
 # Logging
 
+# Mirrors stage1's RUST_LOG: default INFO in production, raised to DEBUG for
+# a single run without editing this file, e.g. to see the V7 Anomalous
+# feature-vector dump in ipc_receiver.py.
+_LOG_LEVEL = getattr(logging, os.environ.get("FLOD_LOG_LEVEL", "INFO").upper(), logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] stage2: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),

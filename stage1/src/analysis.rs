@@ -629,6 +629,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     source_port_entropy,
                     ttl_variance,
                     fingerprint_diversity,
+                    is_warmup: 1.0,
                     dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
                     victim_ip,
                 };
@@ -821,6 +822,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     source_port_entropy,
                     ttl_variance,
                     fingerprint_diversity,
+                    is_warmup: 0.0,
                     dominant_ip,
                     victim_ip,
                 };
