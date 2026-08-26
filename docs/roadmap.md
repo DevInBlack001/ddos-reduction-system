@@ -76,11 +76,15 @@ not drive enforcement in this milestone. See
 [training.md](training.md#the-isolation-forest).
 
 Verified against a real 35,442 row, 12 session capture: RandomForest LOSO
-accuracy 0.989, DDoS precision 0.97 and recall 0.98. Still open before this
-merges: real hardware verification of the eBPF side (compiled and reasoned
-about here, not run through the kernel verifier on this machine), dashboard
-visibility for the three raw features, and a non-technical explainer
-document.
+accuracy 0.989, DDoS precision 0.97 and recall 0.98. The eBPF side has since
+loaded and run on the sensor VM: the verifier accepted both programs, all
+seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
+entropy and 4 to 6% on ingress packet counts. The non-technical explainer is
+written, [docs/explainer.md](explainer.md). Still open before this merges:
+dashboard visibility for the three raw features, and a retrain against a
+capture taken with jittered traffic generators rather than the scripted,
+mechanically regular timing the sessions above used, see
+[Known Gaps](#known-gaps).
 
 **V8, automated playbooks.** Granular incident reports and multi stage response
 playbooks executed during severe events.
@@ -221,6 +225,21 @@ runs of a generator that does not repeat exactly.
 
 No throughput comparison has been made. That is a separate question from
 whether detection is preserved, and less important.
+
+**Scripted traffic generators can make the rate look artificially steady.**
+`sigma_r`, the standard deviation Stage 1 learns for a target's rate, comes
+from window to window variation in a smoothed EWMA rate. A load testing tool
+or flood tool that paces every request or packet on a fixed, regular
+interval, rather than the independent, uncoordinated timing real clients or
+a real botnet have, produces almost no such variation, so `sigma_r` reads at
+or near its configured floor for the entire capture regardless of how much
+traffic is actually flowing. A training set built this way teaches a model
+"this traffic is mechanically regular" rather than the intended class
+signature, which will not transfer to traffic with natural jitter. The fix
+is on the generator side: randomised inter request wait time, varying the
+active source or user count over the session rather than holding it flat,
+and avoiding an unpaced flood mode in favour of short, randomised bursts.
+See [training.md](training.md).
 
 ## References
 

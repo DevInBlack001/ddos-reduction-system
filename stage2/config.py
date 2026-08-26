@@ -33,6 +33,12 @@ IF_MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_if_model.joblib")
 FEATURE_VECTOR_FORMAT = "<23d16s16s"  # 23 x f64 (184 bytes) + 16-byte dominant IP + 16-byte victim IP = 216 bytes
 PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 
+# V7: every window the Isolation Forest flags Anomalous gets appended here,
+# in the same column order training.csv uses, plus context columns for a
+# human to go investigate with. label is left blank; nothing fills it in
+# automatically. See docs/training.md#reviewing-anomalous-traffic.
+ANOMALOUS_CSV_PATH = os.path.join(SCRIPT_DIR, "anomalous_capture.csv")
+
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
 WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
 # V5: IPs known to front many hosts (carrier NAT, corporate egress, proxies).

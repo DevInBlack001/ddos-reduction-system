@@ -131,7 +131,10 @@ forged addresses punishes whoever really owns them and leaves the attacker
 untouched.
 
 Closing this needs features invariant under address forgery: source port
-entropy, TTL variance, and TCP option fingerprint diversity. All three are
+entropy, TTL variance, and TCP option fingerprint diversity. For what these
+three measure and why, in plain language, see
+[Explainer](explainer.md#measurements-that-do-not-depend-on-the-senders-claimed-address).
+All three are
 now computed per window (V7) and sent over the wire, on both capture
 backends, using per window histograms keyed by the value itself, port
 number, TTL, fingerprint bucket, rather than by source address, so none of

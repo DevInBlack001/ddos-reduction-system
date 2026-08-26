@@ -168,6 +168,9 @@ described in [detection.md](detection.md). The programs only accumulate:
 | `COUNTERS` | Per host packet and protocol counts | 256 | `--max-protected-hosts` |
 | `SOURCES` | Per host, per source counts, which entropy is computed from | 65536 | `--max-sources` |
 | `FLOWS` | The flow table behind the network map | 8192 | `--max-flows` |
+| `PORT_HIST` | V7: per host, per source port counts, source port entropy | 65536 | fixed, whole port space |
+| `TTL_HIST` | V7: per host, per TTL / hop limit counts, TTL variance | 256 | fixed, whole TTL space |
+| `FINGERPRINT_HIST` | V7: per host, per TCP SYN fingerprint bucket counts | 64 | fixed, small bucket table |
 
 `PROTECTED` is a prefix trie so one lookup serves both an address list and a
 subnet, with a list stored as full length prefixes. Addresses are 16 bytes

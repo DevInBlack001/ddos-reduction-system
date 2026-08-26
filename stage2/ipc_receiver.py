@@ -7,6 +7,7 @@ the adaptive safety overrides, updates shared state, and dispatches the
 """
 
 import os
+import csv
 import json
 import socket
 import struct
@@ -38,6 +39,39 @@ def _maybe_alert_block(ip, victim_ip, rate, cfg):
         "FLOD System: IP Blocked",
         f"Blocked {ip} targeting {victim_ip} (sustained ~{rate:.1f} pps)."
     )
+
+
+ANOMALOUS_CSV_HEADER = [
+    "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+    "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
+    "fingerprint_diversity", "timestamp", "label", "victim_ip", "if_score", "rf_verdict",
+]
+
+
+def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
+    """Append one Anomalous window to config.ANOMALOUS_CSV_PATH for later
+    review. label is left blank: nothing here knows what this traffic
+    actually is, only that it looked unlike anything in training. The
+    first 13 columns match training.csv's own order exactly, so a row
+    can be copied straight across once a human fills in the label and
+    drops the victim_ip/if_score/rf_verdict columns on the end."""
+    write_header = not os.path.exists(config.ANOMALOUS_CSV_PATH)
+    try:
+        with open(config.ANOMALOUS_CSV_PATH, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(ANOMALOUS_CSV_HEADER)
+            w.writerow([
+                f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
+                f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
+                f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
+                f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
+                f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
+                f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
+                "", victim_ip, f"{if_score:+.4f}", rf_verdict,
+            ])
+    except OSError as e:
+        logging.error(f"[-] Failed to write anomalous_capture.csv row: {e}")
 
 
 def decode_ip(ip_bytes):
@@ -276,6 +310,7 @@ def run_ipc_receiver():
 
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")
+                rf_verdict_name = pred_name
 
                 # V7: the Isolation Forest's opinion, independent of the
                 # RandomForest's class. Only checked when the RF already
@@ -294,10 +329,19 @@ def run_ipc_receiver():
                     is_anomalous = int(if_clf.predict(features_df)[0]) == -1
                     if is_anomalous:
                         pred_name = "Anomalous"
+                        if_score = if_clf.decision_function(features_df)[0]
                         logging.debug(
                             f"[V7] Anomalous flagged for victim={victim_ip_str}: "
-                            f"score={if_clf.decision_function(features_df)[0]:+.4f} "
+                            f"score={if_score:+.4f} "
                             f"features={features_df.iloc[0].to_dict()}"
+                        )
+                        _write_anomalous_row(
+                            victim_ip_str, if_score, rf_verdict_name,
+                            entropy=entropy, ewma_rate=ewma_rate, mean_h=mean_h, mean_r=mean_r,
+                            sigma_h=sigma_h, sigma_r=sigma_r, proto_ratio=proto_ratio,
+                            dominant_ip_ratio=dominant_ip_ratio, source_port_entropy=source_port_entropy,
+                            ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
+                            timestamp=timestamp,
                         )
 
                 # Alert on DDoS classification transitions only (not every

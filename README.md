@@ -54,14 +54,20 @@ rate, source IP entropy, protocol mix, and how concentrated traffic is on its
 busiest source. In practice that means floods which are both high volume and
 concentrated, arriving from a bounded set of real addresses.
 
-Two things are explicitly out of scope:
-
-**Randomized source spoofing.** Forging a new source address per packet raises
-entropy instead of lowering it, inverting the signal the detector looks for.
+One thing is explicitly out of scope, and one is partially addressed:
 
 **Application layer attacks.** No request content is parsed, so low and slow
 request floods and connection exhaustion are outside what a header only feature
 set can observe.
+
+**Randomized source spoofing.** Forging a new source address per packet raises
+entropy instead of lowering it, inverting the signal the address based
+features look for. Source port entropy, TTL variance, and TCP SYN
+fingerprint diversity are invariant under address forgery and close this
+detection blind spot, but detecting a spoofed flood is a narrower problem
+than stopping one: blocking a forged address still punishes whoever really
+owns it, so safe enforcement against this class remains open. See
+[Detection](docs/detection.md) and the [Explainer](docs/explainer.md).
 
 
 ## Quick Start
@@ -127,6 +133,7 @@ scripts/test.sh
 |-|-|
 | [Architecture](docs/architecture.md) | The pipeline, threading, capture tuning, egress measurement |
 | [Detection](docs/detection.md) | Welford, EWMA, entropy, anomaly boundaries, baseline persistence |
+| [Explainer](docs/explainer.md) | Every term and every wire format field, explained for a non-technical reader |
 | [IPC](docs/ipc.md) | The feature vector wire format |
 | [Enforcement](docs/enforcement.md) | Classification, the four mitigation tiers, NAT handling |
 | [Training](docs/training.md) | Capturing labelled data and training the model |

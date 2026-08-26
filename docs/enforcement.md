@@ -30,6 +30,10 @@ gap the RandomForest structurally cannot: an attack shaped differently from
 anything in the training set has no guaranteed reason to trip a supervised
 classifier, whatever features it is given.
 
+Every flagged window is also appended to `stage2/anomalous_capture.csv` for
+a person to review, since `Anomalous` says a window is unfamiliar, not what
+it actually is. See [training.md](training.md#reviewing-anomalous-traffic).
+
 **Volumetric suspect**, which reopens the verdict:
 
 ```

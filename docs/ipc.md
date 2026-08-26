@@ -2,6 +2,9 @@
 
 **Files:** `stage1/src/ipc.rs`, `stage2/config.py`
 
+For what each field below means in plain language, not just its name and
+byte offset, see [Explainer](explainer.md#every-field-in-order).
+
 Stage 1 serialises a feature vector and sends it over a Unix domain socket at
 `/run/ddos_stage1/stage1.sock`. It reports when a window is flagged, and on a
 heartbeat otherwise so a quiet target keeps updating.

@@ -11,8 +11,8 @@ for historical reference only.
 
 | Version | Supported          |
 |-|-|
-| 0.5.x   | :white_check_mark: |
-| < 0.5   | :x:                |
+| 1.1.x   | :white_check_mark: |
+| < 1.1   | :x:                |
 
 The `v1` through `v5` branches are frozen mirrors of tags `0.1` through `0.5`,
 kept so each version stays browsable. They are **not** maintained lines and

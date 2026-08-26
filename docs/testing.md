@@ -28,7 +28,7 @@ cd stage1
 cargo test
 ```
 
-51 tests across the online variance accumulator, the smoothed rate, entropy,
+63 tests across the online variance accumulator, the smoothed rate, entropy,
 IPC serialisation, baseline persistence, the kernel backend's address
 handling, and the analysis loop.
 
@@ -54,8 +54,8 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-196 tests across storage, configuration, request models, the database schema,
-the audit writers, enforcement, and authentication.
+229 tests across storage, configuration, request models, the database schema,
+the audit writers, enforcement, authentication, and the Anomalous review CSV.
 
 Written against the standard library's `unittest`. Keep it that way: the suite
 runs anywhere the service runs, with no extra dependency to install.

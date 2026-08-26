@@ -76,6 +76,33 @@ hundreds, and shrink the overall crowd instead of pushing one source harder.
 Pushing it too hard just reproduces a single source attack signature with a
 legitimate label on it, which teaches the model the opposite of what you want.
 
+### Generator Timing Regularity
+
+A scripted load or flood tool paces requests far more evenly than real
+clients or a real botnet do. `sigma_r`, the rate's standard deviation, is
+computed from window to window variation in the smoothed rate; if every
+source sends on a fixed schedule, or a flood tool runs unpaced (`hping3
+--flood`, which sends as fast as the machine can rather than on any
+schedule at all), that variation collapses to almost nothing and `sigma_r`
+sits at its configured floor for the entire session no matter how much
+traffic is flowing. Every row then carries the same value for a feature the
+classifier expects to vary, which teaches "this traffic is mechanically
+regular" instead of the class signature you actually want captured.
+
+Before capturing Flash Crowd or DDoS sessions, check that whatever is
+generating the traffic:
+
+- Paces requests with a randomised wait time or interval, not a fixed one.
+- Varies the active source or user count over the session rather than
+  holding it flat for the whole capture.
+- Runs a flood tool in short, randomised bursts rather than one continuous
+  unpaced flood, so the aggregate rate has real amplitude across windows.
+
+A quick way to check before committing a whole session: after a short test
+capture, group the CSV by label and look at `sigma_r`'s spread. If it is a
+single repeated value for a label, the generator is too regular and the
+session is not worth keeping as is.
+
 ## Training
 
 ```bash
@@ -185,3 +212,44 @@ Both `.joblib` files load at startup and run every window, independently,
 not in sequence or as a fallback chain. See
 [enforcement.md](enforcement.md#classification) for how the two verdicts
 combine into the `Anomalous` state.
+
+## Reviewing Anomalous Traffic
+
+**File:** `stage2/config.py`, `stage2/ipc_receiver.py`
+
+An `Anomalous` verdict is not itself a label. It means the Isolation Forest
+found a window unlike anything in the training set, not what the window
+actually is: a new attack shape, a legitimate pattern the Normal or Flash
+Crowd sessions never captured, or something else entirely. Deciding which
+of those it was needs a person to look at it, the same way any other
+labelling decision in this document does. Feeding a flagged window straight
+back into `train.py` without that step would train the RandomForest on an
+unverified guess, and worse, gives anyone who can shape traffic that gets
+flagged a way to influence what the model later learns is acceptable.
+
+Every window the Isolation Forest flags is appended to
+`stage2/anomalous_capture.csv`, created on the first flagged window. Its
+first thirteen columns are in the exact order `training.csv` uses:
+
+```
+entropy,ewma_rate,mean_h,mean_r,sigma_h,sigma_r,proto_ratio,dominant_ip_ratio,
+source_port_entropy,ttl_variance,fingerprint_diversity,timestamp,label
+```
+
+`label` is always written blank. Nothing fills it in automatically. Three
+further columns carry context for the review itself, not for training:
+`victim_ip`, the protected host; `if_score`, the Isolation Forest's own
+anomaly score for that window, more negative is more unlike training; and
+`rf_verdict`, what the RandomForest called it before the Isolation Forest
+overrode the display label.
+
+To use it: look at what each flagged window actually was, whatever logs,
+traffic captures, or dashboard history are available for that time and
+victim. Fill in `0`, `1`, or `2` for any row whose real class you can
+determine. Drop `victim_ip`, `if_score`, and `rf_verdict`, and the row is
+now a normal training row, appendable to `training.csv` the same way a new
+capture session is, following [More Than One Session Per
+Label](#more-than-one-session-per-label) above: a handful of individually
+reviewed rows is not a session, and does not substitute for one, but it is
+real ground truth about a gap the current training data has, which is
+exactly what should shape what to capture on purpose next.

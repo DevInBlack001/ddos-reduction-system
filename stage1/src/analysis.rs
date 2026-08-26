@@ -639,30 +639,14 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     log::debug!("Analysis [victim={victim_ip}]: warm-up window not delivered");
                 }
 
-                // Training capture does not need a trustworthy anomaly
-                // baseline, only the raw per-window measurements against
-                // whatever label the operator is recording, so it does not
-                // wait out the 200 window warm-up the way live anomaly
-                // evaluation below still does. Early rows in a session
-                // carry a less converged mean/sigma than later ones, same
-                // as the warm-up telemetry sent above; a capture long
-                // enough to be useful training data makes that a small
-                // fraction of the session, not a reason to block capture
-                // from starting.
-                if let Some(ref mut f) = csv_writer {
-                    let _ = writeln!(
-                        f,
-                        "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
-                        h, r,
-                        target_state.welford_entropy.mean, target_state.welford_rate.mean,
-                        target_state.welford_entropy.std_dev(), target_state.welford_rate.std_dev(),
-                        proto_ratio, dominant_ip_ratio,
-                        source_port_entropy, ttl_variance, fingerprint_diversity,
-                        timestamp,
-                        current_train_label
-                    );
-                }
-
+                // Training capture does not write warm-up windows to the
+                // CSV. sigma_r/sigma_h here are the raw, unclamped Welford
+                // std_dev, not the floored values every post-warmup row
+                // gets at the write below: a warm-up row can read arbitrarily
+                // below --rate-sigma-floor/--entropy-sigma-floor, a range
+                // live production traffic can never produce once warmed up,
+                // so mixing the two into one column silently trains on data
+                // the deployed sensor cannot generate.
                 continue;
             }
 
