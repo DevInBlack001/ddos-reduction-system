@@ -106,15 +106,16 @@ is tracked in [roadmap.md](roadmap.md#known-gaps).
 
 ### Map Sizing
 
-The kernel side holds seven maps: protected hosts as a prefix trie, per host
-counters, a per host per source histogram, a flow table, and, since V7, a per
-host per source port histogram, a per host per TTL histogram, and a per host
-per TCP fingerprint bucket histogram. Their capacities are compiled into the
-object as defaults, but a BPF map's size is fixed when the kernel creates it
-rather than when the object is built, so user space overrides the first four
-before loading. `--max-sources`, `--max-flows`, and `--max-protected-hosts`
-therefore change them without a rebuild, which matters because an object
-without the eBPF toolchain cannot be rebuilt at all.
+The kernel side holds eight maps: protected hosts as a prefix trie, a second
+trie of addresses excluded from it, per host counters, a per host per source
+histogram, a flow table, and, since V7, a per host per source port histogram,
+a per host per TTL histogram, and a per host per TCP fingerprint bucket
+histogram. Their capacities are compiled into the object as defaults, but a
+BPF map's size is fixed when the kernel creates it rather than when the
+object is built, so user space overrides the first five before loading.
+`--max-sources`, `--max-flows`, and `--max-protected-hosts` therefore change
+them without a rebuild, which matters because an object without the eBPF
+toolchain cannot be rebuilt at all.
 
 The three V7 maps take no such flag. Port space is 16 bit and TTL space is 8
 bit regardless of how many addresses or packets a flood uses, so unlike the
@@ -165,6 +166,7 @@ described in [detection.md](detection.md). The programs only accumulate:
 | Map | Holds | Default | Sized by |
 |-|-|-|-|
 | `PROTECTED` | Protected hosts, as a prefix trie | 1024 | `--max-protected-hosts` |
+| `EXCLUDED` | Addresses carved out of `PROTECTED`, e.g. the gateway itself | 1024 | `--max-protected-hosts` |
 | `COUNTERS` | Per host packet and protocol counts | 256 | `--max-protected-hosts` |
 | `SOURCES` | Per host, per source counts, which entropy is computed from | 65536 | `--max-sources` |
 | `FLOWS` | The flow table behind the network map | 8192 | `--max-flows` |

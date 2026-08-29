@@ -101,6 +101,11 @@ struct CliArgs {
     /// did before and no drop metrics are reported.
     egress_interface: Option<String>,
     victim_targets: Option<VictimTargets>,
+    /// Addresses carved out of victim_targets, most often the gateway's own
+    /// address when it falls inside --victim-subnet. Checked in addition to,
+    /// not instead of, victim_targets: an address must match the targets and
+    /// not match this list to be treated as protected.
+    exclude_ips:    Vec<std::net::IpAddr>,
     k:              f64,
     alpha:          f64,
     socket:         String,
@@ -175,6 +180,7 @@ impl CliArgs {
         let mut peacetime_ewma_weight = state::DEFAULT_PEACETIME_EWMA_WEIGHT;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
+        let mut exclude_ips_str: Option<String> = None;
         let mut k         = 2.0_f64;
         let mut alpha     = ewma::DEFAULT_ALPHA;
         let mut socket      = ipc::SOCKET_PATH.to_string();
@@ -289,6 +295,10 @@ impl CliArgs {
                     i += 1;
                     victim_subnet = args.get(i).cloned();
                 }
+                "--exclude-ips" | "--exclude-ip" => {
+                    i += 1;
+                    exclude_ips_str = args.get(i).cloned();
+                }
                 "--k" => {
                     i += 1;
                     k = args.get(i)
@@ -400,7 +410,25 @@ impl CliArgs {
             None
         };
 
-        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
+        // Addresses excluded from an otherwise matching victim_targets, most
+        // often the gateway's own address falling inside --victim-subnet.
+        // Same comma-separated format as --victim-ips.
+        let exclude_ips = if let Some(ref ip_str) = exclude_ips_str {
+            let mut list = Vec::new();
+            for s in ip_str.split(',') {
+                if let Ok(ip) = s.parse::<std::net::IpAddr>() {
+                    list.push(ip);
+                } else {
+                    eprintln!("Error: Invalid IP address '{s}' in exclude list.");
+                    process::exit(1);
+                }
+            }
+            list
+        } else {
+            Vec::new()
+        };
+
+        Self { interface, egress_interface, victim_targets, exclude_ips, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
                entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
                entropy_min_packets, max_sources, max_flows, max_protected_hosts,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
@@ -451,6 +479,7 @@ fn print_usage(bin: &str) {
     eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
+    eprintln!("  --exclude-ips <IPs>    Comma-separated addresses carved out of the above, e.g. the gateway's own address");
     eprintln!("  --k          <FLOAT>   Anomaly multiplier k  [default: 2.0]");
     eprintln!("  --alpha      <FLOAT>   EWMA smoothing alpha  [default: 0.125]");
     eprintln!();
@@ -662,6 +691,7 @@ fn main() {
         ewma_alpha:     args.alpha,
         socket_path:    args.socket.clone(),
         victim_targets: args.victim_targets.clone(),
+        exclude_ips:    args.exclude_ips.clone(),
         train_csv:      args.train_csv.clone(),
         train_label:    args.train_label,
         baseline_path:      args.baseline_path.clone(),
@@ -708,6 +738,7 @@ fn main() {
             &args.interface,
             args.egress_interface.as_deref(),
             targets,
+            &args.exclude_ips,
             kernel::MapSizes {
                 sources: args.max_sources,
                 flows: args.max_flows,

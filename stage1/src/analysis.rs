@@ -295,6 +295,13 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 match capture.drain() {
                     Ok(samples) => {
                         for (victim_ip, sample) in samples {
+                            // The kernel's EXCLUDED trie already keeps an
+                            // excluded host's packets out of every map, this
+                            // is a userspace backstop against a stale eBPF
+                            // object loaded without that trie populated.
+                            if !cfg.is_effectively_protected(&victim_ip) {
+                                continue;
+                            }
                             for ((src, dst, port, proto), count) in &sample.flows {
                                 let key = (*src, *dst, *port, *proto);
                                 let at_capacity = flow_counts.len() >= cfg.max_tracked_flows;
@@ -378,13 +385,10 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     }
                 }
 
-                // Check if destination IP is one of our victim targets
-                let is_target = match &cfg.victim_targets {
-                    Some(targets) => targets.contains(&meta.dst_ip),
-                    None => true, // In dev/test mode without a BPF filter, track all up to limits
-                };
-
-                if !is_target {
+                // Check if destination IP is one of our victim targets, and
+                // not one carved back out via --exclude-ips (most often the
+                // gateway's own address falling inside --victim-subnet).
+                if !cfg.is_effectively_protected(&meta.dst_ip) {
                     continue;
                 }
 

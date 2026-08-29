@@ -28,8 +28,9 @@ cd stage1
 cargo test
 ```
 
-63 tests across the online variance accumulator, the smoothed rate, entropy,
-IPC serialisation, baseline persistence, the kernel backend's address
+68 tests across the online variance accumulator, the smoothed rate, entropy,
+IPC serialisation, baseline persistence, victim target and exclusion
+matching, the kernel backend's address
 handling, and the analysis loop.
 
 Building needs libpcap headers, `libpcap-dev` on Debian and Ubuntu or

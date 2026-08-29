@@ -54,6 +54,10 @@ pub struct AnalysisConfig {
     pub socket_path: String,
     /// Monitored victim targets.
     pub victim_targets: Option<crate::VictimTargets>,
+    /// Addresses carved out of victim_targets, most often the gateway's own
+    /// address falling inside --victim-subnet. An address must match
+    /// victim_targets and not appear here to be treated as protected.
+    pub exclude_ips: Vec<IpAddr>,
     /// If Some, write every post-warmup feature vector to this CSV file.
     /// The file is created (or appended) at thread start.
     pub train_csv: Option<String>,
@@ -141,6 +145,7 @@ impl Default for AnalysisConfig {
             ewma_alpha:  crate::ewma::DEFAULT_ALPHA,
             socket_path: crate::ipc::SOCKET_PATH.to_string(),
             victim_targets: None,
+            exclude_ips: Vec::new(),
             train_csv:   None,
             train_label: 0,
             baseline_path: persistence::DEFAULT_BASELINE_PATH.to_string(),
@@ -162,6 +167,76 @@ impl Default for AnalysisConfig {
             cooldown_k_factor:      DEFAULT_COOLDOWN_K_FACTOR,
             peacetime_ewma_weight:  DEFAULT_PEACETIME_EWMA_WEIGHT,
         }
+    }
+}
+
+impl AnalysisConfig {
+    /// Whether `addr` should be tracked as a protected host: matching
+    /// `victim_targets` (or nothing configured at all, meaning track
+    /// everything, the dev/test mode without a BPF filter) and not carved
+    /// back out via `exclude_ips`. The one place both backends decide this,
+    /// so a kernel side trie and a pcap side check cannot drift apart.
+    pub fn is_effectively_protected(&self, addr: &IpAddr) -> bool {
+        let matches_targets = match &self.victim_targets {
+            Some(targets) => targets.contains(addr),
+            None => true,
+        };
+        matches_targets && !self.exclude_ips.contains(addr)
+    }
+}
+
+#[cfg(test)]
+mod exclude_ips_tests {
+    use super::*;
+    use crate::VictimTargets;
+
+    fn subnet_cfg(exclude: Vec<IpAddr>) -> AnalysisConfig {
+        AnalysisConfig {
+            victim_targets: Some(VictimTargets::Subnet {
+                ip: "192.0.2.0".parse().unwrap(),
+                prefix: 24,
+            }),
+            exclude_ips: exclude,
+            ..AnalysisConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_host_inside_the_subnet_is_protected_when_nothing_is_excluded() {
+        let cfg = subnet_cfg(vec![]);
+        assert!(cfg.is_effectively_protected(&"192.0.2.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn the_gateways_address_stops_being_protected_once_excluded() {
+        let gateway: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = subnet_cfg(vec![gateway]);
+        assert!(!cfg.is_effectively_protected(&gateway));
+    }
+
+    #[test]
+    fn excluding_the_gateway_does_not_affect_other_hosts_in_the_subnet() {
+        let gateway: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = subnet_cfg(vec![gateway]);
+        assert!(cfg.is_effectively_protected(&"192.0.2.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_host_outside_the_subnet_is_never_protected_exclusion_or_not() {
+        let cfg = subnet_cfg(vec!["203.0.113.5".parse().unwrap()]);
+        assert!(!cfg.is_effectively_protected(&"203.0.113.5".parse().unwrap()));
+    }
+
+    #[test]
+    fn with_no_victim_targets_configured_everything_is_tracked_except_exclusions() {
+        let excluded: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = AnalysisConfig {
+            victim_targets: None,
+            exclude_ips: vec![excluded],
+            ..AnalysisConfig::default()
+        };
+        assert!(!cfg.is_effectively_protected(&excluded));
+        assert!(cfg.is_effectively_protected(&"198.51.100.7".parse().unwrap()));
     }
 }
 

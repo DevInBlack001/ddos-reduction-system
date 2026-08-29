@@ -239,8 +239,18 @@ distributed legitimate traffic, not an attack. Removing one such host from a
 four target set took the remaining three from roughly a fifth of their windows
 flagged to none.
 
-If a gateway genuinely needs protecting, it needs its own baseline, which
-means its own sensor.
+**`--exclude-ips` carves specific addresses back out of a subnet**, so a
+gateway sitting inside the range being protected does not have to be
+excluded by falling back to an explicit `--victim-ips` list instead, which
+would stop covering any host added to the subnet later. Excluded addresses
+never become a target on either capture backend: on the kernel backend they
+are matched against a second trie the compiled program checks in addition
+to the protected set, so an excluded host's packets are never counted at
+all, not merely counted and then discarded.
+
+If a gateway genuinely needs protecting in its own right, rather than
+merely being caught by a subnet aimed at the hosts behind it, it needs its
+own baseline, which means its own sensor.
 
 ### Measuring the Floors
 

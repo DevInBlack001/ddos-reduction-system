@@ -89,6 +89,18 @@ const MAX_TCP_OPTION_STEPS: usize = 10;
 #[map]
 static PROTECTED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
 
+/// Addresses carved out of PROTECTED, most often the gateway's own address
+/// falling inside a --victim-subnet range. Checked in addition to PROTECTED,
+/// never instead of it: a destination must match PROTECTED and not match
+/// this trie to be treated as protected. Empty, and therefore free, when no
+/// exclusion is configured.
+///
+/// Sized by `--max-protected-hosts`, the same knob PROTECTED uses: an
+/// exclusion list is always a small subset of the hosts it carves an
+/// address out of, so it does not need a flag of its own.
+#[map]
+static EXCLUDED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
+
 /// Per host counters for the current window.
 /// Per CPU so concurrent receive queues cannot lose an increment. Each CPU
 /// updates only its own slot, and user space sums them when draining.
@@ -349,10 +361,15 @@ unsafe fn fingerprint_bucket(start: usize, end: usize, p: &Parsed) -> Option<u8>
 }
 
 /// Whether this address is one of the hosts being protected.
+///
+/// Excluded addresses are checked here rather than left out of PROTECTED at
+/// load time, because PROTECTED's subnet entry is one trie node covering the
+/// whole range; there is no way to carve a single host back out of a prefix
+/// match without a second, separate check.
 #[inline(always)]
 fn is_protected(addr: &Addr) -> bool {
     let key = aya_ebpf::maps::lpm_trie::Key::new(128, *addr);
-    PROTECTED.get(&key).is_some()
+    PROTECTED.get(&key).is_some() && EXCLUDED.get(&key).is_none()
 }
 
 #[inline(always)]

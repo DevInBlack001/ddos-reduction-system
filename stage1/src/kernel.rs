@@ -167,6 +167,7 @@ impl KernelCapture {
         ingress: &str,
         egress: Option<&str>,
         targets: &VictimTargets,
+        exclude_ips: &[IpAddr],
         sizes: MapSizes,
     ) -> Result<Self, String> {
         // Checked before loading, because aya reports a missing file the same
@@ -201,10 +202,15 @@ impl KernelCapture {
             .map_max_entries("FLOWS", sizes.flows)
             .map_max_entries("COUNTERS", sizes.protected_hosts)
             .map_max_entries("PROTECTED", sizes.protected_hosts)
+            // Exclusions are operator specified, always a small subset of the
+            // protected hosts they carve an address out of, so the same
+            // sizing knob covers both rather than adding another flag.
+            .map_max_entries("EXCLUDED", sizes.protected_hosts)
             .load_file(object_path)
             .map_err(|e| format!("failed to load '{object_path}': {}", error_chain(&e)))?;
 
         Self::populate_targets(&mut ebpf, targets)?;
+        Self::populate_excluded(&mut ebpf, exclude_ips)?;
 
         // XDP first. A driver without native support falls back to the generic
         // hook, which is slower but still correct, so this is worth trying
@@ -333,6 +339,32 @@ impl KernelCapture {
                 .map_err(|e| format!("could not add a protected host: {}", error_chain(&e)))?;
         }
         info!("Kernel: {} protected host entries loaded", entries.len());
+        Ok(())
+    }
+
+    /// Fill the second prefix trie the kernel program checks in addition to
+    /// PROTECTED: a destination matching both is not counted. Always full
+    /// length entries, since an exclusion names one address, most often the
+    /// gateway's own, never a range.
+    fn populate_excluded(ebpf: &mut Ebpf, exclude_ips: &[IpAddr]) -> Result<(), String> {
+        if exclude_ips.is_empty() {
+            return Ok(());
+        }
+
+        let mut trie: LpmTrie<&mut MapData, Addr, u8> = ebpf
+            .map_mut("EXCLUDED")
+            .ok_or("object has no 'EXCLUDED' map")?
+            .try_into()
+            .map_err(|e| format!("'EXCLUDED' is not an LPM trie: {}", error_chain(&e)))?;
+
+        for ip in exclude_ips {
+            // Always a full length match: an address stored in its mapped
+            // 16 byte form, the same way VictimTargets::List's entries are.
+            let key = aya::maps::lpm_trie::Key::new(128, to_addr(*ip));
+            trie.insert(&key, 1u8, 0)
+                .map_err(|e| format!("could not add an excluded host: {}", error_chain(&e)))?;
+        }
+        info!("Kernel: {} excluded host entries loaded", exclude_ips.len());
         Ok(())
     }
 

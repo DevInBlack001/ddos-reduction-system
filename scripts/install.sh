@@ -23,6 +23,7 @@
 #   --interface  <IFACE>     Default capture interface written into the service unit
 #   --victim-ips <IPs>       Default list of victim IPs (comma-separated, alias: --victim-ip)
 #   --victim-subnet <SUBNET> Default victim subnet CIDR (e.g. 10.0.0.0/24)
+#   --exclude-ips <IPs>      Addresses carved out of the above, comma-separated (alias: --exclude-ip)
 #   --capture-mode <MODE>    pcap (default) or kernel. 'kernel' uses XDP and TC
 #                            and is written into the service unit
 #   --no-service             Skip systemd unit installation
@@ -57,6 +58,7 @@ INTERFACE="br0"
 VICTIM_IP=""
 VICTIM_IPS=""
 VICTIM_SUBNET=""
+EXCLUDE_IPS=""
 # Which backend the generated unit starts with. pcap by default because it
 # works on any interface; the kernel backend additionally needs the compiled
 # object and a driver the verifier will attach to.
@@ -88,6 +90,7 @@ while [[ $# -gt 0 ]]; do
         --interface)               INTERFACE="$2"; shift 2 ;;
         --victim-ip|--victim-ips)  VICTIM_IPS="$2"; shift 2 ;;
         --victim-subnet)           VICTIM_SUBNET="$2"; shift 2 ;;
+        --exclude-ip|--exclude-ips) EXCLUDE_IPS="$2"; shift 2 ;;
         --capture-mode)
             case "$2" in
                 pcap|kernel) CAPTURE_MODE="$2" ;;
@@ -146,6 +149,16 @@ if [[ -t 0 ]]; then
         else
             VICTIM_IPS="$input_target"
             VICTIM_SUBNET=""
+        fi
+    fi
+
+    echo -ne "${YELLOW}[INPUT]${NC} Enter any IP(s) to exclude from monitoring, comma-separated (e.g. the gateway's own address, if it falls inside a subnet above) [default: ${EXCLUDE_IPS:-none}]: "
+    read -r input_exclude
+    if [[ -n "$input_exclude" ]]; then
+        if [[ "$input_exclude" == "none" ]]; then
+            EXCLUDE_IPS=""
+        else
+            EXCLUDE_IPS="$input_exclude"
         fi
     fi
     echo ""
@@ -580,6 +593,9 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
     else
         warn "No --victim-ips or --victim-subnet specified. Service will run without a BPF filter (dev mode)."
         EXEC_START+=" --no-filter"
+    fi
+    if [[ -n "$EXCLUDE_IPS" ]]; then
+        EXEC_START+=" --exclude-ips $EXCLUDE_IPS"
     fi
 
     if [[ "$CAPTURE_MODE" == "kernel" ]]; then

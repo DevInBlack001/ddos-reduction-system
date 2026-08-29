@@ -41,6 +41,7 @@ INTERFACE="$(detect_interface)"
 INTERFACE="${INTERFACE:-eth0}"
 EGRESS_INTERFACE=""
 TARGETS=""
+EXCLUDE_IPS=""
 CAPTURE_MODE="pcap"
 K_MULTIPLIER="2.0"
 LOG_LEVEL="info"
@@ -65,6 +66,8 @@ Options:
   -e, --egress-interface <IFACE>  Egress interface, enables drop measurement
   -t, --targets <IPs|CIDR>      Protected hosts. A comma separated list, or a
                                 subnet such as 192.0.2.0/24
+  -x, --exclude-ips <IPs>       Addresses carved out of --targets, comma
+                                separated, e.g. the gateway's own address
   -m, --capture-mode <MODE>     pcap or kernel               [default: $CAPTURE_MODE]
   -k, --multiplier <VAL>        Anomaly multiplier k         [default: $K_MULTIPLIER]
   -l, --log-level <LEVEL>       RUST_LOG value               [default: $LOG_LEVEL]
@@ -83,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         -i|--interface)          INTERFACE="$2"; shift 2 ;;
         -e|--egress-interface)   EGRESS_INTERFACE="$2"; shift 2 ;;
         -t|--targets)            TARGETS="$2"; shift 2 ;;
+        -x|--exclude-ips)        EXCLUDE_IPS="$2"; shift 2 ;;
         -m|--capture-mode)       CAPTURE_MODE="$2"; shift 2 ;;
         -k|--multiplier)         K_MULTIPLIER="$2"; shift 2 ;;
         -l|--log-level)          LOG_LEVEL="$2"; shift 2 ;;
@@ -156,6 +160,8 @@ fi
 TARGETS=$(ask "Protected hosts, comma separated or a subnet" "$TARGETS")
 [[ -n "$TARGETS" ]] || error "Protected hosts are required. Without them the sensor has nothing to watch."
 
+EXCLUDE_IPS=$(ask "Addresses to exclude, comma separated (blank for none)" "$EXCLUDE_IPS")
+
 CAPTURE_MODE=$(ask "Capture mode (pcap or kernel)" "$CAPTURE_MODE")
 case "$CAPTURE_MODE" in
     pcap|kernel) ;;
@@ -216,6 +222,7 @@ STAGE1_ARGS=(
     --socket "$SOCKET_PATH"
 )
 [[ -n "$EGRESS_INTERFACE" ]]    && STAGE1_ARGS+=(--egress-interface "$EGRESS_INTERFACE")
+[[ -n "$EXCLUDE_IPS" ]]         && STAGE1_ARGS+=(--exclude-ips "$EXCLUDE_IPS")
 [[ -n "$MAX_SOURCES" ]]         && STAGE1_ARGS+=(--max-sources "$MAX_SOURCES")
 [[ -n "$MAX_FLOWS" ]]           && STAGE1_ARGS+=(--max-flows "$MAX_FLOWS")
 [[ -n "$MAX_PROTECTED_HOSTS" ]] && STAGE1_ARGS+=(--max-protected-hosts "$MAX_PROTECTED_HOSTS")
