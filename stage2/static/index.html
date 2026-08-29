@@ -329,6 +329,37 @@
                     </div>
                 </div>
 
+                <!-- V7: evasion-resistant signals, invariant under address
+                     forgery. Source port entropy, TTL variance, and TCP SYN
+                     fingerprint diversity, see docs/detection.md. -->
+                <div class="hud-panel" style="margin-bottom: 25px;">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Evasion-Resistant Signals</div>
+                    </div>
+                    <p style="color: var(--text-tertiary); font-size: 0.8rem; margin: 0 0 16px;">
+                        Computed from source port, TTL, and TCP option ordering rather than
+                        source address, so a randomized-source flood cannot raise these the
+                        way it raises address entropy.
+                    </p>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <span class="stat-label">Source Port Entropy</span>
+                            <span id="statPortEntropy" class="stat-value">0.0000</span>
+                            <span class="stat-meta">0 = one port, 1 = fully spread</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">TTL Variance</span>
+                            <span id="statTtlVariance" class="stat-value">0.0000</span>
+                            <span class="stat-meta">Spread of observed hop counts</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">TCP Fingerprint Diversity</span>
+                            <span id="statFingerprintDiversity" class="stat-value">0.0000</span>
+                            <span class="stat-meta">Distinct SYN option orderings</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- V5: ingress vs egress mitigation effectiveness -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
@@ -895,6 +926,9 @@
                 document.getElementById('statBlocked').innerText = data.blocked_count;
                 document.getElementById('statRatelimited').innerText = data.ratelimited_count;
                 document.getElementById('targetInterfaceName').innerText = data.active_interface || '--';
+                document.getElementById('statPortEntropy').innerText = (data.source_port_entropy ?? 0).toFixed(4);
+                document.getElementById('statTtlVariance').innerText = (data.ttl_variance ?? 0).toFixed(4);
+                document.getElementById('statFingerprintDiversity').innerText = (data.fingerprint_diversity ?? 0).toFixed(4);
 
                 if (data.cooldown > 0) {
                     document.getElementById('statSensitivity').innerText = `Cooldown: ${data.cooldown}s`;
