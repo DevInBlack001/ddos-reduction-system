@@ -43,6 +43,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
 STAGE2_DIR="$(dirname "$SCRIPT_DIR")/stage2"
 BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+SERVICE_DIR="/etc/systemd/system"
+# Same root-owned locations install.sh installs into, see its own comment
+# on why: Stage 2 runs as root and must not execute code, or load a model,
+# from a directory the operator's own login account can still write to.
+STAGE2_INSTALL_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
 
 # Toolchain discovery, used by the Rust and eBPF steps below.
 # shellcheck source=/dev/null
@@ -154,38 +160,103 @@ if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
 fi
 
 # =============================================================================
-# Update Stage 2 Python dependencies
+# Update Stage 2: re-copy the code, rebuild the venv, all in the root-owned
+# runtime location, never in place in the checkout. Mirrors the equivalent
+# section of install.sh; an update has to move an existing checkout-rooted
+# install (from before this split existed) onto the new layout too, not
+# only refresh one that is already there.
 # =============================================================================
 if [[ -d "$STAGE2_DIR" ]]; then
-    info "Updating Stage 2 Python dependencies..."
-    if [[ -d "$STAGE2_DIR/venv" ]]; then
-        # Check if the python interpreter path is valid/executable
-        if ! "$STAGE2_DIR/venv/bin/python" -c "import sys" &>/dev/null; then
-            warn "Virtual environment is broken, moved, or invalid. Re-creating..."
-            python3 -m venv --clear "$STAGE2_DIR/venv"
-        fi
-        
-        "$STAGE2_DIR/venv/bin/pip" install --upgrade pip
-        "$STAGE2_DIR/venv/bin/pip" install -r "$STAGE2_DIR/requirements.txt"
+    info "Updating Stage 2 in $STAGE2_INSTALL_DIR..."
 
-        # WeasyPrint has no Python-level dependency for this, it dlopen()s
-        # Pango at runtime, so pip install succeeding is not enough: an
-        # existing install upgrading past the version that introduced the
-        # PDF report needs this system package once, by hand. Caught here
-        # rather than left to surface as a crash loop after this script exits.
-        if ! "$STAGE2_DIR/venv/bin/python" -c "from weasyprint import HTML" &>/dev/null; then
-            warn "WeasyPrint cannot load Pango. Install your distribution's"
-            warn "'pango' (dnf/yum/apk) or 'libpango-1.0-0' (apt) package,"
-            warn "then re-run this script or restart ddos-stage2 by hand."
-        fi
-
-        info "Updating/migrating administrative database..."
-        "$STAGE2_DIR/venv/bin/python" "$STAGE2_DIR/setup_admin.py"
-        
-        success "Stage 2 dependencies updated."
-    else
-        warn "Stage 2 virtual environment not found. Skip pip update."
+    install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR"
+    for f in "$STAGE2_DIR"/*.py "$STAGE2_DIR/requirements.txt"; do
+        [[ -f "$f" ]] || continue
+        install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
+    done
+    if [[ -d "$STAGE2_DIR/static" ]]; then
+        install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR/static"
+        while IFS= read -r -d '' f; do
+            rel="${f#"$STAGE2_DIR"/static/}"
+            install -D -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/static/$rel"
+        done < <(find "$STAGE2_DIR/static" -type f -print0)
     fi
+    success "Stage 2 source refreshed in $STAGE2_INSTALL_DIR."
+
+    if ! "$STAGE2_INSTALL_DIR/venv/bin/python" -c "import sys" &>/dev/null; then
+        warn "Virtual environment is missing, broken, or moved. Re-creating..."
+        python3 -m venv --clear "$STAGE2_INSTALL_DIR/venv"
+        chown -R root:root "$STAGE2_INSTALL_DIR/venv"
+    fi
+
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install --upgrade pip
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install -r "$STAGE2_INSTALL_DIR/requirements.txt"
+
+    # WeasyPrint has no Python-level dependency for this, it dlopen()s
+    # Pango at runtime, so pip install succeeding is not enough: an
+    # existing install upgrading past the version that introduced the
+    # PDF report needs this system package once, by hand. Caught here
+    # rather than left to surface as a crash loop after this script exits.
+    if ! "$STAGE2_INSTALL_DIR/venv/bin/python" -c "from weasyprint import HTML" &>/dev/null; then
+        warn "WeasyPrint cannot load Pango. Install your distribution's"
+        warn "'pango' (dnf/yum/apk) or 'libpango-1.0-0' (apt) package,"
+        warn "then re-run this script or restart ddos-stage2 by hand."
+    fi
+
+    # State migration: a pre-existing checkout-rooted install (from before
+    # this layout existed) still has its real data sitting in $STAGE2_DIR.
+    # Only files present there and absent from the new location move, so
+    # this is a no-op on a second run.
+    install -d -o root -g root -m 700 "$STAGE2_STATE_DIR"
+    for f in stage2.db whitelist.json shared_ips.json victims.json \
+             enforcement_config.json alerts_config.json stage2.log \
+             anomalous_capture.csv ddos_rf_model.joblib ddos_if_model.joblib; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            mv "$STAGE2_DIR/$f" "$STAGE2_STATE_DIR/$f"
+            info "Migrated existing $f to $STAGE2_STATE_DIR."
+        fi
+    done
+    chown -R root:root "$STAGE2_STATE_DIR"
+
+    info "Updating/migrating administrative database..."
+    DB_PATH="$STAGE2_STATE_DIR/stage2.db" \
+        "$STAGE2_INSTALL_DIR/venv/bin/python" "$STAGE2_INSTALL_DIR/setup_admin.py"
+
+    # Rewrite the unit unconditionally so a pre-existing unit that still
+    # points at the old checkout-rooted layout gets moved onto the new one,
+    # not only a fresh install. Left disabled/stopped units alone otherwise;
+    # only content is refreshed here, enablement state is not touched.
+    if command -v systemctl &>/dev/null; then
+        cat > "$SERVICE_DIR/ddos-stage2.service" << EOF
+# =============================================================================
+# ddos-stage2.service, systemd unit for the DDoS mitigation Stage 2 daemon
+# Regenerated by update.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# =============================================================================
+
+[Unit]
+Description=Adaptive DDoS Mitigation Stage 2 Classifier (Python)
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$STAGE2_INSTALL_DIR
+ExecStart=/bin/bash -c 'source "$STAGE2_INSTALL_DIR/venv/bin/activate" && exec python3 stage2.py'
+Restart=on-failure
+RestartSec=5s
+Environment="PYTHONUNBUFFERED=1"
+Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
+Environment="DB_PATH=$STAGE2_STATE_DIR/stage2.db"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+    fi
+
+    success "Stage 2 updated: code and venv in $STAGE2_INSTALL_DIR, state in $STAGE2_STATE_DIR."
 fi
 
 # =============================================================================

@@ -116,6 +116,19 @@ same cleaned CSV, so they see the same shape of data. Either script can
 still be run directly, `cd stage2 && python3 train.py`, when only one model
 needs retraining.
 
+**Where the trained model actually lands depends on what it finds.** A
+production install (`scripts/install.sh`) runs Stage 2 from a root owned
+`/opt/flod/stage2`, loading its models from `/var/lib/flod`, not the
+checkout; see [Security](security.md). `scripts/train.sh` detects that
+install and writes there instead, which needs `sudo` since that directory
+is root only, exactly like updating what a root process will load
+should. Run it plainly, without a detected production install, and it
+trains into the checkout as before, no `sudo` needed, matching a
+development setup. Running `train.py`/`train_isolation_forest.py`
+directly follows the same rule: both honour `MODEL_PATH`/`IF_MODEL_PATH`
+environment variables, which `scripts/train.sh` sets when it detects a
+production install.
+
 The RandomForest script drops rows containing NaN or infinity, computes the
 three derived features, and detects capture sessions.
 

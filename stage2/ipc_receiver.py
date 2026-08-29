@@ -14,6 +14,7 @@ import struct
 import ipaddress
 import logging
 import grp
+import pwd
 import time
 
 import joblib
@@ -39,6 +40,39 @@ def _maybe_alert_block(ip, victim_ip, rate, cfg):
         "FLOD System: IP Blocked",
         f"Blocked {ip} targeting {victim_ip} (sustained ~{rate:.1f} pps)."
     )
+
+
+def apply_safety_overrides(pred_class, ewma_rate, mean_r, sigma_r, mean_h, sigma_h,
+                            dominant_rate, entropy, dominant_ip_ratio, k_multiplier, cfg):
+    """Deterministic, non-ML threshold checks that can force pred_class to
+    Flash Crowd (1) or DDoS (2). Never skipped, including during Stage 1's
+    warm-up: unlike the RandomForest and Isolation Forest, nothing here
+    depends on training data, only on mean_r/sigma_r/mean_h/sigma_h, which
+    are meaningful, if noisier, from a target's very first window. Skipping
+    this during warm-up used to leave a target fully unenforced for its
+    first 200 windows after every restart, newly added victim, or
+    --clear-baseline recovery, a real, repeatedly reachable gap rather
+    than a one-time startup blip.
+
+    Returns (pred_class, extreme_dominant_rate_boundary). The second value
+    is also Tier 2's own per-source block bar further down in the caller,
+    same formula, same inputs; returned rather than recomputed there so
+    the two can never drift apart from each other.
+    """
+    rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
+    extreme_dominant_rate_boundary = max(
+        cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+    )
+    entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
+
+    if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
+        if dominant_rate > extreme_dominant_rate_boundary:
+            return 2, extreme_dominant_rate_boundary
+        elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
+            return 2, extreme_dominant_rate_boundary
+        else:
+            return 1, extreme_dominant_rate_boundary
+    return pred_class, extreme_dominant_rate_boundary
 
 
 ANOMALOUS_CSV_HEADER = [
@@ -72,6 +106,19 @@ def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
             ])
     except OSError as e:
         logging.error(f"[-] Failed to write anomalous_capture.csv row: {e}")
+
+
+def _peer_uid(conn):
+    """The connecting process's real UID, via SO_PEERCRED. Linux only,
+    which is the only platform this project targets (systemd, ipset,
+    iptables). Returns None if the kernel can't report it, rather than
+    raising, so a caller can fail closed on that too."""
+    try:
+        creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", creds)
+        return uid
+    except OSError:
+        return None
 
 
 def decode_ip(ip_bytes):
@@ -137,6 +184,18 @@ def run_ipc_receiver():
     except KeyError:
         pass
 
+    # Defence in depth alongside the socket permission bits above: even a
+    # process that is somehow able to connect (group membership broader
+    # than intended, a permission bug) gets its actual UID checked against
+    # who is expected to be on the other end, root, or the de-rooted
+    # Stage 1 service account install.sh creates, rather than trusted
+    # purely because the connection was accepted at all.
+    expected_uids = {0}
+    try:
+        expected_uids.add(pwd.getpwnam("ddos-stage1").pw_uid)
+    except KeyError:
+        pass
+
     os.makedirs(config.RUNTIME_DIR, exist_ok=True)
     os.chmod(config.RUNTIME_DIR, 0o770 if ipc_gid is not None else 0o700)
     if ipc_gid is not None:
@@ -175,6 +234,14 @@ def run_ipc_receiver():
     while True:
         try:
             conn, _ = server.accept()
+            peer_uid = _peer_uid(conn)
+            if peer_uid not in expected_uids:
+                logging.warning(
+                    f"[!] Rejected an IPC connection from uid={peer_uid}, "
+                    f"expected one of {expected_uids}."
+                )
+                conn.close()
+                continue
             while True:
                 data = conn.recv(config.PAYLOAD_SIZE)
                 if not data:
@@ -271,42 +338,22 @@ def run_ipc_receiver():
                         "dominant_rate", "source_port_entropy", "ttl_variance",
                         "fingerprint_diversity"
                     ])
-                # None of the classification below runs on a warm-up window:
-                # see the is_warmup unpack comment above for why its
-                # mean/sigma-derived inputs can't be trusted. pred_class
-                # stays its default (0, Normal), which is already the
-                # correct "record but take no action" path every branch
-                # below already implements for ordinary Normal windows.
-                if not is_warmup:
-                    if clf:
-                        pred_class = int(clf.predict(features_df)[0])
+                # The RandomForest does not run on a warm-up window: see the
+                # is_warmup unpack comment above for why its mean/sigma
+                # derived inputs can't be trusted by a model trained
+                # entirely on converged-baseline data. pred_class stays its
+                # default (0, Normal) as this model's own opinion.
+                if not is_warmup and clf:
+                    pred_class = int(clf.predict(features_df)[0])
 
-                    # Adaptive Safety overrides
-                    # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
-                    #    Aggregate rate is fine as the outer "is this worth a second
-                    #    look" gate, it doesn't decide Flash-Crowd vs DDoS by itself.
-                    rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
-                    # 2. Extreme SINGLE-SOURCE rate trigger, based on dominant_rate
-                    #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
-                    #    Aggregate rate can't distinguish one attacker at extreme
-                    #    volume from many genuine users each at a normal trickle,
-                    #    a legitimate flash crowd's aggregate scales with participant
-                    #    count the same way an attacker's does. Threshold matches
-                    #    Tier 2's block_threshold below (computed once here as
-                    #    extreme_dominant_rate_boundary and reused there).
-                    extreme_dominant_rate_boundary = max(
-                        cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
-                    )
-                    # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
-                    entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
-
-                    if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
-                        if dominant_rate > extreme_dominant_rate_boundary:
-                            pred_class = 2
-                        elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
-                            pred_class = 2
-                        else:
-                            pred_class = 1
+                # Adaptive safety overrides. Deliberately NOT gated on
+                # is_warmup, see apply_safety_overrides' own docstring.
+                # extreme_dominant_rate_boundary is Tier 2's own block bar
+                # further down, same value, not recomputed there.
+                pred_class, extreme_dominant_rate_boundary = apply_safety_overrides(
+                    pred_class, ewma_rate, mean_r, sigma_r, mean_h, sigma_h,
+                    dominant_rate, entropy, dominant_ip_ratio, k_multiplier, cfg,
+                )
 
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")

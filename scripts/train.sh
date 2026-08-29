@@ -93,11 +93,37 @@ while true; do
     esac
 done
 
-VENV_PYTHON="$PROJECT_ROOT/stage2/venv/bin/python3"
-if [[ ! -x "$VENV_PYTHON" ]]; then
-    warn "No Stage 2 virtual environment at $VENV_PYTHON."
-    warn "Falling back to the system python3; run scripts/install.sh for a proper venv."
-    VENV_PYTHON="python3"
+# A production install (scripts/install.sh) copies Stage 2's code and venv
+# into a root-owned /opt/flod/stage2, root-owned so the running root
+# service never executes anything an operator's login account could still
+# modify, and the running service loads its models from /var/lib/flod, not
+# the checkout. Training against that install has to target the same
+# locations, or a freshly trained model would silently sit in the checkout
+# while the service keeps running the old one.
+STAGE2_PROD_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
+TRAIN_DIR="$PROJECT_ROOT/stage2"
+
+if [[ -x "$STAGE2_PROD_DIR/venv/bin/python3" ]]; then
+    if [[ $EUID -ne 0 ]]; then
+        error "A production install exists at $STAGE2_PROD_DIR, whose state" \
+              "directory ($STAGE2_STATE_DIR) is root owned. Re-run this" \
+              "script with sudo to update its models, or run scripts/train.sh" \
+              "from a plain checkout with no production install to train" \
+              "into the checkout instead."
+    fi
+    VENV_PYTHON="$STAGE2_PROD_DIR/venv/bin/python3"
+    TRAIN_DIR="$STAGE2_PROD_DIR"
+    export MODEL_PATH="$STAGE2_STATE_DIR/ddos_rf_model.joblib"
+    export IF_MODEL_PATH="$STAGE2_STATE_DIR/ddos_if_model.joblib"
+    info "Production install detected: training into $STAGE2_STATE_DIR."
+else
+    VENV_PYTHON="$PROJECT_ROOT/stage2/venv/bin/python3"
+    if [[ ! -x "$VENV_PYTHON" ]]; then
+        warn "No Stage 2 virtual environment at $VENV_PYTHON."
+        warn "Falling back to the system python3; run scripts/install.sh for a proper venv."
+        VENV_PYTHON="python3"
+    fi
 fi
 
 echo ""
@@ -105,7 +131,7 @@ info "CSV      $CSV_PATH"
 info "Training $WHICH"
 echo ""
 
-cd "$PROJECT_ROOT/stage2"
+cd "$TRAIN_DIR"
 
 if [[ "$WHICH" == "rf" || "$WHICH" == "both" ]]; then
     info "Training the RandomForest (train.py)..."

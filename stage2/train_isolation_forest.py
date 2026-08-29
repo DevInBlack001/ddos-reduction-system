@@ -28,7 +28,9 @@ from sklearn.ensemble import IsolationForest
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
-IF_MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_if_model.joblib")
+# Same IF_MODEL_PATH environment variable config.py honours, see train.py's
+# matching MODEL_PATH comment.
+IF_MODEL_PATH = os.environ.get("IF_MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_if_model.joblib"))
 
 # Matches train.py's FEATURE_COLS exactly. Kept as a separate literal rather
 # than imported from train.py, since train.py is not a module meant to be

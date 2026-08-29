@@ -55,8 +55,9 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-229 tests across storage, configuration, request models, the database schema,
-the audit writers, enforcement, authentication, and the Anomalous review CSV.
+240 tests across storage, configuration, request models, the database schema,
+the audit writers, enforcement, authentication, the Anomalous review CSV,
+the deterministic safety overrides, and IPC peer verification.
 
 Written against the standard library's `unittest`. Keep it that way: the suite
 runs anywhere the service runs, with no extra dependency to install.

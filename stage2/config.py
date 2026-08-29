@@ -26,10 +26,24 @@ SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
 VERSION = "1.2.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
+
+# Every path below defaults to living beside this file, which is what a
+# checkout run directly (scripts/run.sh, development) wants. A production
+# install is different on purpose: install.sh copies the Stage 2 code into
+# a root-owned directory and points these at root-owned locations instead
+# (FLOD_STATE_DIR under /var/lib, models under /var/lib, DB_PATH already
+# followed this pattern before the rest did). The code that reads a model
+# file or a JSON config as root should never be reading something an
+# operator's ordinary login account can still write to; see
+# docs/security.md for the reasoning in full. FLOD_STATE_DIR is a single
+# override point for everything that isn't already independently
+# overridable, so a systemd unit only has to set one variable, not eight.
+_STATE_DIR = os.environ.get("FLOD_STATE_DIR", SCRIPT_DIR)
+
+MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(_STATE_DIR, "ddos_rf_model.joblib"))
 # V7: the Isolation Forest, trained separately (train_isolation_forest.py)
 # from the RandomForest above (train.py). Both load and run every window.
-IF_MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_if_model.joblib")
+IF_MODEL_PATH = os.environ.get("IF_MODEL_PATH", os.path.join(_STATE_DIR, "ddos_if_model.joblib"))
 FEATURE_VECTOR_FORMAT = "<23d16s16s"  # 23 x f64 (184 bytes) + 16-byte dominant IP + 16-byte victim IP = 216 bytes
 PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 
@@ -37,17 +51,17 @@ PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 # in the same column order training.csv uses, plus context columns for a
 # human to go investigate with. label is left blank; nothing fills it in
 # automatically. See docs/training.md#reviewing-anomalous-traffic.
-ANOMALOUS_CSV_PATH = os.path.join(SCRIPT_DIR, "anomalous_capture.csv")
+ANOMALOUS_CSV_PATH = os.environ.get("ANOMALOUS_CSV_PATH", os.path.join(_STATE_DIR, "anomalous_capture.csv"))
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(SCRIPT_DIR, "stage2.db"))
-WHITELIST_PATH = os.path.join(SCRIPT_DIR, "whitelist.json")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(_STATE_DIR, "stage2.db"))
+WHITELIST_PATH = os.environ.get("WHITELIST_PATH", os.path.join(_STATE_DIR, "whitelist.json"))
 # V5: IPs known to front many hosts (carrier NAT, corporate egress, proxies).
 # Never hard-blocked, see enforcement.block_ip().
-SHARED_IPS_PATH = os.path.join(SCRIPT_DIR, "shared_ips.json")
-VICTIMS_PATH = os.path.join(SCRIPT_DIR, "victims.json")
+SHARED_IPS_PATH = os.environ.get("SHARED_IPS_PATH", os.path.join(_STATE_DIR, "shared_ips.json"))
+VICTIMS_PATH = os.environ.get("VICTIMS_PATH", os.path.join(_STATE_DIR, "victims.json"))
 FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
-ENFORCEMENT_CONFIG_PATH = os.path.join(SCRIPT_DIR, "enforcement_config.json")
-ALERTS_CONFIG_PATH = os.path.join(SCRIPT_DIR, "alerts_config.json")
+ENFORCEMENT_CONFIG_PATH = os.environ.get("ENFORCEMENT_CONFIG_PATH", os.path.join(_STATE_DIR, "enforcement_config.json"))
+ALERTS_CONFIG_PATH = os.environ.get("ALERTS_CONFIG_PATH", os.path.join(_STATE_DIR, "alerts_config.json"))
 
 STAGE1_UNIT_PATH = "/etc/systemd/system/ddos-stage1.service"
 
@@ -154,11 +168,13 @@ def get_alerts_config():
 # feature-vector dump in ipc_receiver.py.
 _LOG_LEVEL = getattr(logging, os.environ.get("FLOD_LOG_LEVEL", "INFO").upper(), logging.INFO)
 
+_LOG_PATH = os.environ.get("STAGE2_LOG_PATH", os.path.join(_STATE_DIR, "stage2.log"))
+
 logging.basicConfig(
     level=_LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] stage2: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(SCRIPT_DIR, "stage2.log"), mode="a")
+        logging.FileHandler(_LOG_PATH, mode="a")
     ]
 )

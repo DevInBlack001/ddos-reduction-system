@@ -45,6 +45,9 @@ SOCKET_FILE="/run/ddos_stage1/stage1.sock"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(dirname "$SCRIPT_DIR")/stage1/target"
 STAGE2_DIR="$(dirname "$SCRIPT_DIR")/stage2"
+# Where install.sh/update.sh put things from this version onward.
+STAGE2_INSTALL_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -78,7 +81,8 @@ if $CONFIRM; then
     warn "  • $SERVICE_FILE (if present)"
     warn "  • $SERVICE2_FILE (if present)"
     warn "  • $SOCKET_FILE (if present)"
-    warn "  • $STAGE2_DIR/venv (Python virtual environment)"
+    warn "  • $STAGE2_INSTALL_DIR (Stage 2 code and virtual environment)"
+    warn "  • $STAGE2_STATE_DIR (database, config, trained models)"
     $REMOVE_BUILD && warn "  • $BUILD_DIR (build cache)"
     $REMOVE_RUST  && warn "  • Rust toolchain (~/.cargo and ~/.rustup)"
     echo ""
@@ -123,9 +127,15 @@ success "Firewall rules and ipsets cleaned."
 # Clean up databases and configuration policies
 # =============================================================================
 info "Cleaning up SQLite database and policy files..."
-rm -f "$STAGE2_DIR/stage2.db"
-rm -f "$STAGE2_DIR/whitelist.json"
-rm -f "$STAGE2_DIR/victims.json"
+rm -rf "$STAGE2_STATE_DIR"
+# Older installs, from before Stage 2's state moved out of the checkout,
+# may still have these sitting beside the source. Cleaned up too so an
+# uninstall on one of those hosts is still complete.
+rm -f "$STAGE2_DIR/stage2.db" "$STAGE2_DIR/whitelist.json" "$STAGE2_DIR/victims.json" \
+      "$STAGE2_DIR/shared_ips.json" "$STAGE2_DIR/enforcement_config.json" \
+      "$STAGE2_DIR/alerts_config.json" "$STAGE2_DIR/stage2.log" \
+      "$STAGE2_DIR/anomalous_capture.csv" "$STAGE2_DIR/ddos_rf_model.joblib" \
+      "$STAGE2_DIR/ddos_if_model.joblib"
 rm -rf "/run/ddos_stage1"
 success "Database and configurations removed."
 
@@ -218,12 +228,22 @@ if getent group ddos-ipc &>/dev/null; then
 fi
 
 # =============================================================================
-# Remove Stage 2 Python Virtual Environment
+# Remove Stage 2's installed code and virtual environment
 # =============================================================================
+if [[ -d "$STAGE2_INSTALL_DIR" ]]; then
+    info "Removing $STAGE2_INSTALL_DIR..."
+    rm -rf "$STAGE2_INSTALL_DIR"
+    success "Stage 2 install directory removed."
+fi
+# Older installs built the venv inside the checkout directly; remove that
+# too if present, so an uninstall on one of those hosts is still complete.
+# This was already this script's behaviour before the venv moved to
+# $STAGE2_INSTALL_DIR, kept as is rather than trying to guess whether a
+# given checkout venv came from install.sh or a developer's own setup.
 if [[ -d "$STAGE2_DIR/venv" ]]; then
-    info "Removing Stage 2 Python virtual environment..."
+    info "Removing legacy Stage 2 virtual environment in the checkout..."
     rm -rf "$STAGE2_DIR/venv"
-    success "Python virtual environment removed."
+    success "Legacy virtual environment removed."
 fi
 
 # =============================================================================

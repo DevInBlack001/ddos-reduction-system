@@ -42,6 +42,9 @@
 #     If running as root via sudo, the toolchain lands in /root/.cargo.
 #   • Use `sudo setcap cap_net_raw+ep /usr/local/bin/ddos_stage1` after install
 #     to run the binary WITHOUT root in production.
+#
+# Full instructions, including network placement and first login, are in
+# the wiki: https://github.com/DevInBlack001/ddos-reduction-system/wiki
 # =============================================================================
 
 set -euo pipefail
@@ -78,6 +81,17 @@ INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
+# Stage 2 runs as root, so its code and venv must not live somewhere the
+# operator's own login account can still write to: anyone who can modify
+# the checkout would otherwise get root the next time the service
+# restarts, updates, or training reruns. The checkout is a source from
+# here on, copied into these root-owned locations, never executed from
+# directly by the systemd unit. scripts/run.sh and a developer's own venv
+# (see CONTRIBUTING.md) still run straight from the checkout, deliberately:
+# that path never crosses a privilege boundary, the operator only ever
+# runs it as themselves.
+STAGE2_INSTALL_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
 
 # Toolchain discovery, used by both the Rust and eBPF steps below.
 # shellcheck source=/dev/null
@@ -522,29 +536,73 @@ install -d -m 700 -o ddos-stage1 -g ddos-stage1 /var/lib/ddos_stage1
 success "Baseline persistence directory ready: /var/lib/ddos_stage1"
 
 # =============================================================================
-# Setup Stage 2 Python Virtual Environment
+# Install Stage 2 into a root-owned runtime location
 # =============================================================================
-info "Setting up Stage 2 Python virtual environment..."
+info "Installing Stage 2 into $STAGE2_INSTALL_DIR (root owned)..."
 STAGE2_DIR="$(dirname "$PROJECT_DIR")/stage2"
 if [[ -d "$STAGE2_DIR" ]]; then
     if ! command -v python3 &>/dev/null; then
         error "python3 is not installed."
     fi
-    info "Creating virtual environment at $STAGE2_DIR/venv..."
-    if [[ "$PKG_MANAGER" == "apk" ]]; then
-        python3 -m venv --clear --system-site-packages "$STAGE2_DIR/venv"
-    else
-        python3 -m venv --clear "$STAGE2_DIR/venv"
+
+    # Code only: *.py at the top level, static/, requirements.txt. An
+    # explicit allowlist rather than "copy everything except", so a stray
+    # capture CSV or leftover state file sitting in the checkout never
+    # rides along into the runtime copy.
+    install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR"
+    for f in "$STAGE2_DIR"/*.py "$STAGE2_DIR/requirements.txt"; do
+        [[ -f "$f" ]] || continue
+        install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
+    done
+    if [[ -d "$STAGE2_DIR/static" ]]; then
+        install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR/static"
+        while IFS= read -r -d '' f; do
+            rel="${f#"$STAGE2_DIR"/static/}"
+            install -D -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/static/$rel"
+        done < <(find "$STAGE2_DIR/static" -type f -print0)
     fi
-    
+    success "Stage 2 source copied to $STAGE2_INSTALL_DIR."
+
+    info "Creating the Stage 2 virtual environment..."
+    if [[ "$PKG_MANAGER" == "apk" ]]; then
+        python3 -m venv --clear --system-site-packages "$STAGE2_INSTALL_DIR/venv"
+    else
+        python3 -m venv --clear "$STAGE2_INSTALL_DIR/venv"
+    fi
+    chown -R root:root "$STAGE2_INSTALL_DIR/venv"
+
     info "Installing dependencies from requirements.txt..."
-    "$STAGE2_DIR/venv/bin/pip" install --upgrade pip
-    "$STAGE2_DIR/venv/bin/pip" install -r "$STAGE2_DIR/requirements.txt"
-    
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install --upgrade pip
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install -r "$STAGE2_INSTALL_DIR/requirements.txt"
+
+    # Mutable state: database, JSON config, models, logs, the anomalous
+    # traffic review CSV. Never under $STAGE2_INSTALL_DIR: everything
+    # there should be safely re-derivable from a fresh install, this
+    # directory is not. Root owned since Stage 2 itself runs as root.
+    install -d -o root -g root -m 700 "$STAGE2_STATE_DIR"
+
+    # Upgrading a pre-existing checkout-rooted install: carry real state
+    # forward instead of silently starting over. Only files present in the
+    # old location and absent from the new one move, so re-running this
+    # after the state directory exists is a no-op here.
+    for f in stage2.db whitelist.json shared_ips.json victims.json \
+             enforcement_config.json alerts_config.json stage2.log \
+             anomalous_capture.csv ddos_rf_model.joblib ddos_if_model.joblib; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            mv "$STAGE2_DIR/$f" "$STAGE2_STATE_DIR/$f"
+            info "Migrated existing $f to $STAGE2_STATE_DIR."
+        fi
+    done
+    chown -R root:root "$STAGE2_STATE_DIR"
+
     info "Setting up administrative database and user..."
-    "$STAGE2_DIR/venv/bin/python" "$STAGE2_DIR/setup_admin.py"
-    
-    success "Stage 2 Python environment setup complete."
+    # setup_admin.py resolves its own DB_PATH independently of config.py's
+    # FLOD_STATE_DIR, it predates that mechanism, so it needs the specific
+    # file path, not the directory.
+    DB_PATH="$STAGE2_STATE_DIR/stage2.db" \
+        "$STAGE2_INSTALL_DIR/venv/bin/python" "$STAGE2_INSTALL_DIR/setup_admin.py"
+
+    success "Stage 2 installed: code and venv in $STAGE2_INSTALL_DIR, state in $STAGE2_STATE_DIR."
 else
     warn "Stage 2 directory not found at $STAGE2_DIR. Skipping."
 fi
@@ -623,7 +681,7 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
 
 [Unit]
 Description=Adaptive DDoS Pre-Filter Stage 1 (Rust)
-Documentation=https://github.com/your-repo/ddos-reduction
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
 # Start after network is up and Stage 2 classification engine is running
 After=network-online.target ddos-stage2.service
 Wants=network-online.target
@@ -670,17 +728,24 @@ EOF
 
 [Unit]
 Description=Adaptive DDoS Mitigation Stage 2 Classifier (Python)
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
 After=network-online.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$STAGE2_DIR
-ExecStart=/bin/bash -c 'source "$STAGE2_DIR/venv/bin/activate" && exec python3 stage2.py'
+WorkingDirectory=$STAGE2_INSTALL_DIR
+ExecStart=/bin/bash -c 'source "$STAGE2_INSTALL_DIR/venv/bin/activate" && exec python3 stage2.py'
 Restart=on-failure
 RestartSec=5s
 Environment="PYTHONUNBUFFERED=1"
+# Everything mutable (database, JSON config, models, logs, the anomalous
+# traffic review CSV) lives outside $STAGE2_INSTALL_DIR on purpose: see
+# config.py's FLOD_STATE_DIR comment. DB_PATH is set explicitly alongside
+# it because setup_admin.py and config.py resolve it independently.
+Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
+Environment="DB_PATH=$STAGE2_STATE_DIR/stage2.db"
 
 [Install]
 WantedBy=multi-user.target
@@ -732,9 +797,11 @@ info "     sudo ddos_stage1 --interface \$INTERFACE --victim-ips <VICTIM_IPS> --
 info ""
 info "Step 2: Train Both Classifier Models:"
 info "  Run the interactive training selector, which trains the Random Forest,"
-info "  the Isolation Forest, or both against a chosen CSV and saves the"
-info "  model files inside the stage2 directory:"
+info "  the Isolation Forest, or both against a chosen CSV:"
 info "     scripts/train.sh"
+info "  This install's running service loads models from $STAGE2_STATE_DIR,"
+info "  not the checkout, so scripts/train.sh saves there when it detects"
+info "  this install (see the script's own output for where it wrote them)."
 info ""
 info "Step 3: Launch System Daemons:"
 info "  Once trained, start and enable the systemd services:"

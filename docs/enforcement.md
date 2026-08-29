@@ -14,6 +14,18 @@ transmitted fields plus the three derived ones.
 Statistical overrides then run on top of the prediction, so an extreme spike is
 never missed because the classifier was unsure.
 
+**The overrides run on every window, including a target's warm-up
+period.** Only the RandomForest and Isolation Forest are skipped during
+warm-up (see [ipc.md](ipc.md#v7-the-warm-up-flag) for why: both were trained
+entirely on converged-baseline data and misread a warm-up window's
+unsettled statistics as anomalous). The overrides are threshold checks
+against `mean_r`/`sigma_r`/`mean_h`/`sigma_h`, not a trained model, so a
+target that has not warmed up yet is not the case that skip exists for.
+Gating them on warm-up too used to leave a target fully unenforced, no
+blocking, no rate-limiting, no DDoS alert, for its first 200 windows after
+every Stage 1 restart, newly added victim, or `--clear-baseline` recovery,
+a real, repeatedly reachable gap rather than a one-time startup blip.
+
 **A second model, an Isolation Forest, runs every window alongside the
 RandomForest.** It is unsupervised, trained on the full feature set with the
 label column unused, and answers a different question: not what class this

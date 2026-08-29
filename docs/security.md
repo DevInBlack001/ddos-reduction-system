@@ -17,12 +17,29 @@ other local accounts, not against root. Since Stage 2 already runs as root,
 pre existing root on the sensor host is outside the model; unprivileged local
 access is inside it.
 
+**Root never executes code from the working copy.** `install.sh` and
+`update.sh` copy Stage 2's source and build its virtual environment into
+`/opt/flod/stage2`, root owned, not writable by whichever account ran `git
+clone`. Every model file, database, and JSON config a root process reads
+lives in `/var/lib/flod`, also root owned, never beside the source. Without
+this, an unprivileged account able to write to the checkout, its own
+account, or anything with access to it, could plant code or a model that
+root would load on the next restart, update, or training run. The
+working copy is a source, copied from, from install time onward; only
+`scripts/run.sh`, development and demonstrations, and a developer's own
+virtual environment (see `CONTRIBUTING.md`) still run directly from it,
+deliberately: neither crosses a privilege boundary, since the operator
+only ever runs them as themselves.
+
 ## Transport and Authentication
 
 The console serves over HTTPS when a certificate is present, and the installer
-generates a self signed one. Without a certificate it falls back to plain HTTP
-with an explicit startup warning. Previously the login form, the session
-cookie, and every enforcement call travelled in cleartext.
+generates a self signed one. Without a certificate, Stage 2 refuses to start
+rather than silently serving the login form, the session cookie, and every
+block or unblock call in cleartext on `0.0.0.0`: an administrative control
+plane defaulting to unencrypted is a real exposure, not a convenience worth
+defaulting to. Setting `FLOD_ALLOW_INSECURE_HTTP=1` opts back into the plain
+HTTP fallback explicitly, for a trusted lab network or local testing.
 
 The session cookie is marked secure only when TLS is actually configured. A
 secure cookie is never sent over plain HTTP, so setting it unconditionally
@@ -72,9 +89,29 @@ Previously any local account could race to bind the socket path ahead of Stage
 2, for instance during a restart, and either receive live telemetry or inject
 fabricated windows straight into the enforcement pipeline.
 
+**The socket's permission bits are the primary control, and every accepted
+connection's UID is checked against who is expected to be on the other
+end besides.** `SO_PEERCRED` reports the kernel verified real UID of the
+connecting process, root, or the de-rooted Stage 1 service account, not
+something a connecting process can claim to be. This is defence in depth
+on top of an already sound control: the socket's mode and group already
+determine who can connect at all, `SO_PEERCRED` catches the case where
+that boundary is somehow broader than intended, group membership drifting,
+a permission bug, rather than being the only thing standing between an
+unexpected local account and the enforcement pipeline.
+
 The database, the whitelist, the target list, and the saved configuration are
-all owner only. They were previously world readable, letting any local account
-read credentials or enforcement thresholds off disk.
+all owner only, in `/var/lib/flod`, not beside the source. They were
+previously world readable, letting any local account read credentials or
+enforcement thresholds off disk.
+
+Every JSON config write goes through a temp file in the same directory
+followed by an atomic rename, so a reader never observes a half written
+file and a crash mid write leaves the previous complete file in place
+rather than a truncated one. Reads refuse to follow a symlink planted at
+the path (`O_NOFOLLOW`), and creating a missing file for the first time
+uses `O_CREAT|O_EXCL` rather than a separate existence check, closing the
+race between the two.
 
 The database permission is set before write ahead logging is enabled. SQLite
 gives the sidecar files the mode the database has when it creates them, and
@@ -123,6 +160,16 @@ test-alert response. A network exception does not necessarily contain the
 webhook URL as one contiguous string, so the token is stripped by matching the
 path pattern itself rather than the full URL; the SMTP username and password
 are stripped as literal substrings.
+
+## Dependency Pinning
+
+`stage2/requirements.txt` pins every dependency to an exact version rather
+than a lower bound. `install.sh` and `update.sh` both run `pip install -r
+requirements.txt` as root; an unbounded minimum lets a routine update
+silently pull in whatever a compromised or malicious release on PyPI
+happens to publish next. Bumping a version is a deliberate edit to this
+file, tested first, not something that happens automatically underneath
+an update.
 
 ## Resource Bounds
 

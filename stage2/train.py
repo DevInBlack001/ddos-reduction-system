@@ -17,7 +17,11 @@ from sklearn.utils import resample
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
-MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
+# Same MODEL_PATH environment variable config.py honours, so training run
+# against a production install can be pointed at the root-owned model
+# directory Stage 2 actually loads from, rather than silently writing a
+# new model into the checkout that nothing running in production reads.
+MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib"))
 FEATURE_COLS = [
     "entropy",
     "ewma_rate",

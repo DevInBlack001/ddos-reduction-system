@@ -77,14 +77,22 @@ git clone https://github.com/DevInBlack001/ddos-reduction-system.git
 cd ddos-reduction-system
 sudo bash scripts/install.sh --interface <IFACE> --victim-ips <IP1>,<IP2>
 
-cd stage2 && sudo venv/bin/python3 setup_admin.py
-
 sudo systemctl enable --now ddos-stage2
 sudo systemctl enable --now ddos-stage1
 ```
 
-The dashboard is on port 8000. Full instructions, including the network layout
-this depends on, are in the wiki.
+The installer builds Stage 1, then copies Stage 2's code and virtual
+environment into `/opt/flod/stage2` (root owned) and sets up the
+administrative account there, since Stage 2 runs as root and must not
+execute anything from the checkout an unprivileged account can still
+write to. Mutable state, the database, JSON config, trained models, lives
+in `/var/lib/flod`. The checkout itself is only ever a source from here
+on; re-running `scripts/install.sh` or `scripts/update.sh` refreshes the
+installed copy from it. See [Security](docs/security.md) for why.
+
+The dashboard is on port 8000, over HTTPS once the installer's self signed
+certificate is in place. Full instructions, including the network layout
+this depends on, are in the [wiki](https://github.com/DevInBlack001/ddos-reduction-system/wiki).
 
 The installer also sets up the eBPF build toolchain when it can, matching
 whatever LLVM your distribution ships. That part is optional: without it the
@@ -118,7 +126,7 @@ scripts/test.sh
 
 ## Documentation
 
-**Wiki**, for running the system:
+**[Wiki](https://github.com/DevInBlack001/ddos-reduction-system/wiki)**, for running the system:
 
 | Page | Covers |
 |-|-|

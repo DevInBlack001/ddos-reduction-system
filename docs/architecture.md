@@ -389,6 +389,16 @@ optional because Stage 1 retries the IPC socket and keeps analysing without it,
 which is what a run for calibration or a backend comparison wants. Deployment
 is `install.sh` and systemd.
 
+This layout is the source tree, not where a deployed Stage 2 actually runs
+from. `install.sh` copies its code and virtual environment into
+`/opt/flod/stage2`, root owned, and points mutable state, the database,
+JSON config, trained models, at `/var/lib/flod`, since Stage 2 runs as
+root and must not execute anything from a directory the checkout's owner
+can still write to. See [Security](security.md) for why. `scripts/run.sh`
+above and a developer's own virtual environment (`CONTRIBUTING.md`) are
+the exception, running straight from this tree deliberately, since
+neither crosses a privilege boundary.
+
 ## Dependencies
 
 Stage 1:
