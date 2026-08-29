@@ -127,6 +127,16 @@ else
 fi
 
 if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    # An install from before this script stopped building as root can have
+    # left root-owned files inside the checkout, most visibly the compiled
+    # eBPF object under stage1/src/bpf: the unprivileged build below cannot
+    # even remove or overwrite those, since deleting a file needs write
+    # access to its directory, not just the file. Reclaiming the checkout
+    # for the invoking account first is a one-time fix on such a system; on
+    # one that was always built this way, every path here is already that
+    # account's own, so this is a fast no-op.
+    chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" \
+        "$PROJECT_DIR" "$(dirname "$SCRIPT_DIR")/stage1-ebpf" 2>/dev/null || true
     sudo -u "$SUDO_USER" -H bash "$SCRIPT_DIR/build-stage1.sh" "${BUILD_ARGS[@]}"
 else
     warn "No non-root account to build as: this script was not invoked with"
