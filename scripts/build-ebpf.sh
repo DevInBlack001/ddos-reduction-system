@@ -36,8 +36,10 @@ if ! nightly_ready; then
         error "Install it, then re-run this script:"
         error "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
         error ""
-        error "If you installed it with 'sudo scripts/install.sh', it went to"
-        error "root's home. Run this script with sudo so it is found."
+        error "If you installed it via 'sudo scripts/install.sh' or"
+        error "'sudo scripts/update.sh', it went to the home of the account"
+        error "sudo was run from, not root's: run this script as that same"
+        error "account, or as root via 'sudo -u <that account>'."
     fi
     exit 1
 fi

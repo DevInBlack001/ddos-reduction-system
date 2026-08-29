@@ -50,11 +50,6 @@ SERVICE_DIR="/etc/systemd/system"
 STAGE2_INSTALL_DIR="/opt/flod/stage2"
 STAGE2_STATE_DIR="/var/lib/flod"
 
-# Toolchain discovery, used by the Rust and eBPF steps below.
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/lib-toolchain.sh"
-load_cargo_env
-
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -102,62 +97,48 @@ else
 fi
 
 # =============================================================================
-# Update the Rust toolchain (optional)
+# Rebuild Stage 1 and, if the kernel backend is already deployed, its eBPF
+# object
 # =============================================================================
-if $UPDATE_TOOLCHAIN; then
-    info "Updating Rust toolchain..."
-    # Source the cargo env in case we're running in a minimal shell.
-    # shellcheck source=/dev/null
-    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-
-    if command -v rustup &>/dev/null; then
-        rustup update stable 2>&1
-        success "Rust toolchain updated: $(rustc --version)"
-    elif [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
-        # This deployment uses the kernel backend, which needs a nightly
-        # toolchain to rebuild. Without rustup that is impossible, so install
-        # it rather than silently shipping a stale object.
-        info "rustup not found but the kernel backend is installed. Installing rustup..."
-        if ensure_rustup; then
-            rustup update stable &>/dev/null || true
-            success "rustup installed: $(rustc --version)"
-        else
-            warn "Could not install rustup. The eBPF object cannot be rebuilt."
-        fi
-    else
-        warn "rustup not found. Skipping toolchain update (using existing compiler)."
-    fi
-else
-    info "Toolchain update skipped (--no-toolchain-update)."
-fi
-
-# =============================================================================
-# Rebuild Stage 1
-# =============================================================================
-info "Rebuilding Stage 1 in release mode..."
+# Compiling means running cargo against this checkout: build.rs and proc
+# macros in any dependency run arbitrary code as whoever invokes cargo, same
+# as rustup and the eBPF build. Done as the account that ran git clone, never
+# as root, matching install.sh; see scripts/build-stage1.sh for why. This
+# script itself never sources lib-toolchain.sh or touches cargo directly.
+info "Rebuilding Stage 1..."
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
     error "Stage 1 source directory not found at: $PROJECT_DIR"
 fi
 
-# Source cargo env again in case we are in a fresh root shell.
-[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-
-cd "$PROJECT_DIR"
-RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
-success "Build complete."
-
-# This script runs as root, so everything it just wrote under target/ is root
-# owned. Building from a working copy would then break every later non root
-# cargo build with a permission error. Hand the tree back to whoever invoked
-# sudo. Only applies when running from a checkout, not from an unpacked copy.
-if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
-    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
-        [[ -d "$tree" ]] || continue
-        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
-    done
-    info "Build artefacts returned to $SUDO_USER."
+BUILD_ARGS=()
+if $UPDATE_TOOLCHAIN; then
+    BUILD_ARGS+=(--update-toolchain)
+else
+    info "Toolchain update skipped (--no-toolchain-update)."
 fi
+# Only rebuilding the eBPF object when one is already installed matches this
+# script's original behaviour: a deployment on the libpcap backend has no
+# toolchain and should not start needing one at update time.
+if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
+    BUILD_ARGS+=(--with-ebpf)
+else
+    BUILD_ARGS+=(--no-ebpf)
+fi
+
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    sudo -u "$SUDO_USER" -H bash "$SCRIPT_DIR/build-stage1.sh" "${BUILD_ARGS[@]}"
+else
+    warn "No non-root account to build as: this script was not invoked with"
+    warn "sudo from a normal login. Building as root instead, which trusts"
+    warn "this checkout's build scripts and every dependency's build code."
+    warn "Prefer 'sudo bash scripts/update.sh' from a normal account."
+    bash "$SCRIPT_DIR/build-stage1.sh" "${BUILD_ARGS[@]}"
+fi
+
+BINARY_PATH="$PROJECT_DIR/target/release/$BINARY_NAME"
+[[ -f "$BINARY_PATH" ]] || error "Stage 1 build did not produce $BINARY_PATH."
+success "Build complete: $BINARY_PATH"
 
 # =============================================================================
 # Update Stage 2: re-copy the code, rebuild the venv, all in the root-owned
@@ -283,28 +264,28 @@ info "Replacing binary at $INSTALL_DIR/$BINARY_NAME..."
 # Copy to a temp file first, then atomically move it over the old binary.
 # This avoids a race window where the binary is partially written.
 TMP_BINARY="$(mktemp --tmpdir="$INSTALL_DIR" "$BINARY_NAME.XXXXXX")"
-install -m 755 "target/release/$BINARY_NAME" "$TMP_BINARY"
+install -m 755 "$BINARY_PATH" "$TMP_BINARY"
 mv -f "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary updated: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
-# Rebuild the eBPF object
+# Install the rebuilt eBPF object
 # =============================================================================
-# Only when one is already installed. A deployment on the libpcap backend has
-# no toolchain and should not start needing one at update time.
+# Already rebuilt above, as the unprivileged build account, only when one was
+# already installed. Root's job here is just to place the result: a
+# deployment on the libpcap backend has no toolchain and should not start
+# needing one at update time.
+EBPF_OBJ="$PROJECT_DIR/src/bpf/ddos-stage1.o"
 if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
-    info "Rebuilding the eBPF programs..."
-    if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
-        install -o root -g root -m 644 \
-            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
-            "$BPF_OBJECT_DIR/ddos-stage1.o"
+    if [[ -f "$EBPF_OBJ" ]]; then
+        install -o root -g root -m 644 "$EBPF_OBJ" "$BPF_OBJECT_DIR/ddos-stage1.o"
         success "eBPF object updated."
     else
         # Leaving the old object in place would silently run the previous
         # version against a new binary, so say so loudly.
         warn "eBPF rebuild FAILED. The installed object is now older than the"
-        warn "binary. Run scripts/build-ebpf.sh for the reason, or start with"
-        warn "--capture-mode pcap until it is fixed."
+        warn "binary. Run scripts/build-stage1.sh for the reason, or start"
+        warn "with --capture-mode pcap until it is fixed."
     fi
 fi
 

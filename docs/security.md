@@ -31,6 +31,17 @@ virtual environment (see `CONTRIBUTING.md`) still run directly from it,
 deliberately: neither crosses a privilege boundary, since the operator
 only ever runs them as themselves.
 
+The same held only partly for Stage 1's own build: `install.sh` and
+`update.sh` used to run `cargo build`, `rustup`, and the eBPF build
+directly as root, against this same checkout. `cargo build` runs
+arbitrary `build.rs` and proc-macro code from every dependency in the
+tree, not only this repository's own source, so this was a sharper edge
+than it first looks, not merely a theoretical one. `scripts/build-stage1.sh`
+now does all of that as the account that ran git clone (`sudo -u`),
+never as root; root's own job in both scripts starts only once that
+script has exited and left a binary and, best effort, an eBPF object on
+disk to install.
+
 The code-copy loop in `install.sh` and `update.sh` refuses a symlink at
 any of the paths it copies from, rather than only checking that the path
 resolves to a regular file. `-f` alone follows a symlink, so a checkout a

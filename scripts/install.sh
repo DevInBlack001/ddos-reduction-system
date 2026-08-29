@@ -38,8 +38,11 @@
 #
 # Notes:
 #   • Must be run as root (or with sudo) because pcap and systemd require it.
-#   • The Rust toolchain is installed into ~/.cargo for the current user.
-#     If running as root via sudo, the toolchain lands in /root/.cargo.
+#   • Building Stage 1 is not: it runs as the account sudo was invoked from
+#     (via 'sudo -u'), never as root, so cargo, rustup, and every
+#     dependency's build code run with that account's privileges. The Rust
+#     toolchain is installed into that account's own ~/.cargo, not root's.
+#     Only the resulting binary and eBPF object are then installed as root.
 #   • Use `sudo setcap cap_net_raw+ep /usr/local/bin/ddos_stage1` after install
 #     to run the binary WITHOUT root in production.
 #
@@ -92,11 +95,6 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
 # runs it as themselves.
 STAGE2_INSTALL_DIR="/opt/flod/stage2"
 STAGE2_STATE_DIR="/var/lib/flod"
-
-# Toolchain discovery, used by both the Rust and eBPF steps below.
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/lib-toolchain.sh"
-load_cargo_env
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -295,107 +293,47 @@ esac
 success "System dependencies installed."
 
 # =============================================================================
-# Install Rust toolchain via rustup
+# Build Stage 1 and its eBPF backend
 # =============================================================================
-info "Checking for Rust toolchain..."
+# Compiling means running cargo against this checkout: build.rs and proc
+# macros in any dependency run arbitrary code as whoever invokes cargo, and
+# rustup, cargo install, and the eBPF build all touch the checkout the same
+# way. Done as the account that ran git clone, never as root, so a checkout
+# that account can write to cannot use a poisoned dependency or a modified
+# build script to run code as root. This script itself never sources
+# lib-toolchain.sh or touches cargo directly; scripts/build-stage1.sh does,
+# entirely as that unprivileged account. Root's job starts only once real
+# files exist on disk to install.
+info "Building Stage 1..."
 
-if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
-    success "Rust already installed: $(rustc --version)"
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    sudo -u "$SUDO_USER" -H bash "$SCRIPT_DIR/build-stage1.sh"
 else
-    info "Rust not found. Installing via rustup..."
-    if ! ensure_rustup; then
-        error "Could not install the Rust toolchain. Install cargo and rustc"
-        error "from your distribution, or rustup from https://rustup.rs, then"
-        error "re-run this script."
-        exit 1
-    fi
-    success "Rust toolchain installed: $(rustc --version)"
+    warn "No non-root account to build as: this script was not invoked with"
+    warn "sudo from a normal login. Building as root instead, which trusts"
+    warn "this checkout's build scripts and every dependency's build code."
+    warn "Prefer 'sudo bash scripts/install.sh' from a normal account."
+    bash "$SCRIPT_DIR/build-stage1.sh"
 fi
 
-# Only meaningful when rustup is managing the toolchain. A distribution
-# install has no notion of a default and the call is a harmless no-op.
-if command -v rustup &>/dev/null; then
-    rustup default stable &>/dev/null || true
-fi
-
-# =============================================================================
-# eBPF build toolchain (optional)
-# =============================================================================
-# The XDP capture backend is compiled separately: it targets BPF bytecode on
-# nightly, while the sensor targets the host on stable. This is best effort.
-# A machine without it still builds and runs Stage 1 on the libpcap backend.
-info "Setting up the eBPF build toolchain..."
-
-EBPF_READY=false
-
-# cargo can come from a distribution package with no rustup alongside it. That
-# builds the sensor fine but cannot add nightly or rust-src, so rustup is
-# installed here rather than assumed.
-if ! command -v rustup &>/dev/null; then
-    info "rustup not found. Installing it so a nightly toolchain can be added..."
-    if ensure_rustup; then
-        success "rustup installed: $(rustup --version 2>/dev/null | head -1)"
-    else
-        warn "Could not install rustup. Skipping the kernel capture backend."
-        warn "Stage 1 will still build and run on the libpcap backend."
-    fi
-fi
-
-if command -v rustup &>/dev/null && ! nightly_ready; then
-    info "Installing the nightly toolchain and rust-src (needed to build core)..."
-    rustup toolchain install nightly --component rust-src --profile minimal &>/dev/null || true
-fi
-
-if nightly_ready; then
-    if command -v bpf-linker &>/dev/null; then
-        success "bpf-linker already present: $(bpf-linker --version 2>/dev/null || echo unknown)"
-        EBPF_READY=true
-    elif detect_llvm; then
-        info "Found LLVM $LLVM_MAJOR at $LLVM_PREFIX. Installing a matching bpf-linker..."
-        # Version is chosen from the LLVM actually installed, not pinned here:
-        # bpf-linker links against LLVM, and which LLVM a machine has is its
-        # distribution's decision. Candidates are tried until one builds.
-        if CHOSEN=$(install_bpf_linker "$LLVM_MAJOR" "$LLVM_PREFIX"); then
-            success "bpf-linker installed ($CHOSEN, built against LLVM $LLVM_MAJOR)."
-            EBPF_READY=true
-        else
-            warn "Could not build bpf-linker against LLVM $LLVM_MAJOR."
-            warn "Stage 1 will still build and run on the libpcap backend."
-        fi
-    else
-        warn "No LLVM installation found, so bpf-linker cannot be built."
-        warn "Install your distribution's llvm and clang packages, then re-run."
-    fi
-else
-    warn "Nightly toolchain unavailable. Skipping the eBPF backend."
-fi
+BINARY_PATH="$PROJECT_DIR/target/release/$BINARY_NAME"
+[[ -f "$BINARY_PATH" ]] || error "Stage 1 build did not produce $BINARY_PATH."
+success "Build complete: $BINARY_PATH"
 
 BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+EBPF_OBJ="$PROJECT_DIR/src/bpf/ddos-stage1.o"
+EBPF_READY=false
 
-if $EBPF_READY; then
-    info "Building the eBPF programs..."
-    EBPF_LOG="$(mktemp)"
-    if bash "$SCRIPT_DIR/build-ebpf.sh" >"$EBPF_LOG" 2>&1; then
-        # The sensor loads this into the kernel as a privileged process, so a
-        # non root account able to replace it would be running its own kernel
-        # code. Root owned directory, not writable by anyone else.
-        install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
-        install -o root -g root -m 644 \
-            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
-            "$BPF_OBJECT_DIR/ddos-stage1.o"
-        success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
-        rm -f "$EBPF_LOG"
-    else
-        EBPF_READY=false
-        warn "eBPF build failed. The reason follows; the installation continues"
-        warn "and Stage 1 will run on the libpcap backend."
-        echo
-        # Showing the reason here saves a second run just to find out what
-        # went wrong.
-        sed 's/^/    /' "$EBPF_LOG" | tail -n 25
-        echo
-        warn "Full output kept at $EBPF_LOG"
-    fi
+if [[ -f "$EBPF_OBJ" ]]; then
+    # The sensor loads this into the kernel as a privileged process, so a
+    # non root account able to replace it would be running its own kernel
+    # code. Root owned directory, not writable by anyone else.
+    install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
+    install -o root -g root -m 644 "$EBPF_OBJ" "$BPF_OBJECT_DIR/ddos-stage1.o"
+    success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
+    EBPF_READY=true
+else
+    warn "No eBPF object was built. Stage 1 will run on the libpcap backend."
 fi
 
 # The kernel backend cannot start without the object, so a unit asking for it
@@ -408,40 +346,10 @@ if [[ "$CAPTURE_MODE" == "kernel" ]] && ! $EBPF_READY; then
 fi
 
 # =============================================================================
-# Compile Stage 1 in release mode
-# =============================================================================
-info "Building Stage 1 (release mode, this may take a few minutes on first build)..."
-
-if [[ ! -d "$PROJECT_DIR" ]]; then
-    error "Stage 1 source directory not found at: $PROJECT_DIR"
-fi
-
-cd "$PROJECT_DIR"
-
-# RUSTFLAGS: target-cpu=native enables CPU-specific optimisations (AVX2, etc.)
-# on the gateway host. Remove this flag if building for distribution to other
-# machines (use target-cpu=x86-64-v2 or omit entirely).
-RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
-
-success "Build complete: target/release/$BINARY_NAME"
-
-# This script runs as root, so everything it just wrote under target/ is root
-# owned. Building from a working copy would then break every later non root
-# cargo build with a permission error. Hand the tree back to whoever invoked
-# sudo. Only applies when running from a checkout, not from an unpacked copy.
-if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
-    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
-        [[ -d "$tree" ]] || continue
-        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
-    done
-    info "Build artefacts returned to $SUDO_USER."
-fi
-
-# =============================================================================
 # Install the binary
 # =============================================================================
 info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
-install -m 755 "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+install -m 755 "$BINARY_PATH" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary installed: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
