@@ -551,7 +551,7 @@ if [[ -d "$STAGE2_DIR" ]]; then
     # rides along into the runtime copy.
     install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR"
     for f in "$STAGE2_DIR"/*.py "$STAGE2_DIR/requirements.txt"; do
-        [[ -f "$f" ]] || continue
+        [[ -f "$f" && ! -L "$f" ]] || continue
         install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
     done
     if [[ -d "$STAGE2_DIR/static" ]]; then
@@ -584,16 +584,32 @@ if [[ -d "$STAGE2_DIR" ]]; then
     # Upgrading a pre-existing checkout-rooted install: carry real state
     # forward instead of silently starting over. Only files present in the
     # old location and absent from the new one move, so re-running this
-    # after the state directory exists is a no-op here.
+    # after the state directory exists is a no-op here. Model files are
+    # deliberately not in this list: joblib.load() deserialises via
+    # pickle and can execute arbitrary code on load, so a .joblib sitting
+    # in the checkout, writable by whichever account ran git clone, must
+    # never be auto-promoted into the path root loads from. See below.
     for f in stage2.db whitelist.json shared_ips.json victims.json \
              enforcement_config.json alerts_config.json stage2.log \
-             anomalous_capture.csv ddos_rf_model.joblib ddos_if_model.joblib; do
+             anomalous_capture.csv; do
         if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
             mv "$STAGE2_DIR/$f" "$STAGE2_STATE_DIR/$f"
             info "Migrated existing $f to $STAGE2_STATE_DIR."
         fi
     done
     chown -R root:root "$STAGE2_STATE_DIR"
+
+    for f in ddos_rf_model.joblib ddos_if_model.joblib; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            warn "Found $f in the checkout but did not migrate it:" \
+                 "a model file is loaded with joblib.load(), which can run" \
+                 "arbitrary code, so one sitting in a location the checkout" \
+                 "account can write to is not trusted automatically. Train" \
+                 "a fresh model with 'sudo scripts/train.sh', which writes" \
+                 "directly to $STAGE2_STATE_DIR, or verify $f yourself and" \
+                 "copy it to $STAGE2_STATE_DIR/$f as root."
+        fi
+    done
 
     info "Setting up administrative database and user..."
     # setup_admin.py resolves its own DB_PATH independently of config.py's

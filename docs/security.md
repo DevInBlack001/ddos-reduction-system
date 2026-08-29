@@ -31,6 +31,24 @@ virtual environment (see `CONTRIBUTING.md`) still run directly from it,
 deliberately: neither crosses a privilege boundary, since the operator
 only ever runs them as themselves.
 
+The code-copy loop in `install.sh` and `update.sh` refuses a symlink at
+any of the paths it copies from, rather than only checking that the path
+resolves to a regular file. `-f` alone follows a symlink, so a checkout a
+non-root account can write to could point a filename `install.sh` expects
+at an arbitrary root-readable file elsewhere on disk, and root's own copy
+step would read through it and place the contents in the world-readable
+runtime directory.
+
+Model files are the one exception to the state migration folding an
+existing checkout-rooted install's data into `/var/lib/flod`
+automatically. `joblib.load()` deserialises with `pickle`, which can
+execute arbitrary code as the loading process, root here, so a
+`.joblib` sitting in a location the checkout account can write to is not
+promoted automatically the way the database and JSON config are.
+Upgrading a pre-existing install with real models on disk needs `sudo
+scripts/train.sh` to retrain them directly into `/var/lib/flod`, or a
+manual, verified copy as root.
+
 ## Transport and Authentication
 
 The console serves over HTTPS when a certificate is present, and the installer
