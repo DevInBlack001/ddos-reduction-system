@@ -9,6 +9,8 @@ An adaptive two stage Layer 4 volumetric DDoS mitigation gateway.
 **Project:** Adaptive Two Stage Framework for Near Real Time Layer 4 Volumetric
 DDoS Mitigation Using Behavioral Traffic Analysis
 
+![The FLOD dashboard overview, five protected targets, all reading Normal](docs/images/dashboard-overview.png)
+
 
 ## What It Does
 

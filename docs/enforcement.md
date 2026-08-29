@@ -76,6 +76,8 @@ entropy < mean_h - k_multiplier * sigma_h
 dominant_ip_ratio > dominant_ip_ratio_extreme_threshold
 ```
 
+![The dashboard's Overview during a mixed event: several targets reading Flash Crowd alongside one reading DDoS, distinguished by concentration and dominant source share rather than volume alone](images/dashboard-classification.png)
+
 ## The Four Tiers
 
 Evaluated in order. Each works on a per source rate rollup summed across every
@@ -111,6 +113,11 @@ Both sets carry an expiry, so enforcement heals on its own if a decision was
 wrong.
 
 ## Settings
+
+All of the below are editable live from the dashboard's Firewall page,
+which also shows active blocks and rate limits as they stand:
+
+![The dashboard's Firewall page mid-incident: active blocks and active rate limits, each with its own countdown to self-heal](images/dashboard-firewall.png)
 
 | Setting | Default | Meaning |
 |-|-|-|
@@ -179,6 +186,15 @@ flow features the pipeline does not yet extract.
 
 Every action is recorded with the source, the protected host, that source's own
 rate, and the window's classification.
+
+![The dashboard's Event Log, filterable by classification, one row per record written during the window](images/dashboard-event-log.png)
+
+The same audit trail is exportable, as the raw ledger for a SIEM or as a
+generated PDF incident report:
+
+![The dashboard's Incident Response and Reporting page: raw CSV export alongside a compiled PDF report over a chosen time window](images/dashboard-incident-response.png)
+
+![Page one of a generated incident report: event volume, peak rate, and source concentration per window, each against this network's own measured baseline](images/incident-report-example.png)
 
 The rate stored is the individual source's rate, not the window total. Using
 the window aggregate meant a fallback throttling fifty sources wrote fifty

@@ -1,5 +1,15 @@
 # Architecture
 
+![FLOD system architecture: Stage 1's eBPF/XDP sensor, the IPC channel, Stage 2's analysis and enforcement, and the end to end packet flow](images/architecture-diagram.png)
+
+A big picture view of the pipeline described in this document. Illustrative
+rather than authoritative on specifics: it predates the V7 map set (drawn
+as generic "Flow/Stats/Protocol/Entropy/Victims/Config" maps rather than
+the eight actual maps in [Map Sizing](#map-sizing)) and the state
+directory move to `/var/lib/flod` (drawn as `/var/lib/ddos_stage2`, see
+[Security](security.md)). Where this diagram and the text disagree, the
+text is current.
+
 ## Why Two Stages
 
 Stage 1 sees every packet. Stage 2 sees one summary per window, roughly one or
@@ -33,6 +43,11 @@ between:
               ingress sensor    block or throttle    egress sensor
               (what arrived)      happens here      (what got through)
 ```
+
+The dashboard's own interfaces page reports which interfaces are up and
+which role, ingress or egress sniffer, each one is currently playing:
+
+![The dashboard's Network Interfaces page, showing each interface's state and its ingress/egress sniffer role](images/dashboard-interfaces.png)
 
 ## The Pipeline
 
@@ -311,6 +326,12 @@ the model to predict its own past behaviour.
 Egress capture is optional. Without it the egress fields report as unavailable
 rather than as a zero drop rate, since a genuine zero is a meaningful reading.
 
+The dashboard's traffic flow view draws directly on this: blocked flows are
+rendered stopping short of the protected host, dropped at the gateway,
+rather than fading out or continuing on as if nothing happened.
+
+![The dashboard's Traffic view during an active block, showing normal, rate-limited, and blocked flows, the blocked ones stopping at the gateway](images/dashboard-traffic-flow.png)
+
 ## Dashboard Rendering
 
 The flow and network views draw from the same active flow list the sensor
@@ -330,6 +351,8 @@ silently truncating.
 
 The same bound applies to the attack source table, which is rebuilt on every
 poll and whose length an attacker controls.
+
+![The dashboard's Network Map view, protected hosts as central nodes with sources colour coded by status, victim/blocked, rate-limited, whitelisted, or plain source](images/dashboard-network-map.png)
 
 ## File Layout
 

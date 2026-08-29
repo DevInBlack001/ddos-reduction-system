@@ -180,6 +180,13 @@ trained.
 `k` defaults to 2.0 and is set with `--k`. Two standard deviations covers about
 95 percent of a normal distribution.
 
+The dashboard's per target view plots the live rate against exactly this
+boundary and the learned baseline mean, alongside the egress based
+mitigation effectiveness measurement from
+[architecture.md](architecture.md#egress-measurement):
+
+![A protected target's detail view: live rate against its upper threshold and baseline mean, and the ingress/egress comparison behind the mitigation effectiveness figure](images/dashboard-target-monitor.png)
+
 Flags are a bitmask:
 
 | Flag | Meaning |

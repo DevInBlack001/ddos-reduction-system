@@ -41,6 +41,8 @@ plane defaulting to unencrypted is a real exposure, not a convenience worth
 defaulting to. Setting `FLOD_ALLOW_INSECURE_HTTP=1` opts back into the plain
 HTTP fallback explicitly, for a trusted lab network or local testing.
 
+![The dashboard's login page, served over HTTPS by default](images/dashboard-login.png)
+
 The session cookie is marked secure only when TLS is actually configured. A
 secure cookie is never sent over plain HTTP, so setting it unconditionally
 would lock out every deployment without a certificate.
