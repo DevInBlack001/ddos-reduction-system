@@ -8,12 +8,25 @@ trains a Random Forest classifier, and saves the trained model.
 
 import os
 import sys
+import warnings
 import joblib
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils import resample
+
+# n_jobs=-1 below fans RandomForestClassifier's fit/predict out to joblib
+# workers; this specific sklearn/joblib version pairing warns on every such
+# call that the current thread's sklearn config isn't propagated to those
+# workers. Nothing here reads sklearn.get_config() or calls set_config(),
+# so there is no config for a worker to miss. Cosmetic, not suppressed
+# globally so an unrelated warning still surfaces.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
+    category=UserWarning,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")

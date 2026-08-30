@@ -33,11 +33,21 @@ data it never trained on, not a proxy for it.
 import argparse
 import os
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.utils import resample
+
+# See stage2/train.py's matching comment: n_jobs=-1 below triggers a
+# cosmetic sklearn/joblib warning about config propagation that doesn't
+# apply here, since nothing in this script touches sklearn's global config.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
+    category=UserWarning,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)

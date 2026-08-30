@@ -21,10 +21,20 @@ stage2/ipc_receiver.py.
 
 import os
 import sys
+import warnings
 import joblib
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
+
+# See train.py's matching comment: n_jobs=-1 below triggers a cosmetic
+# sklearn/joblib warning about config propagation that doesn't apply here,
+# since nothing in this script touches sklearn's global config.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
+    category=UserWarning,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
