@@ -34,6 +34,10 @@
         .text-normal {
             color: var(--text-secondary) !important;
         }
+        .text-anomalous {
+            color: var(--status-anomaly) !important;
+            font-weight: 600;
+        }
         .btn-filter {
             padding: 6px 14px;
             font-size: 0.78rem;
@@ -184,6 +188,9 @@
                     } else if (l.classification === 'Flash Crowd') {
                         classStyle = 'text-flash';
                         badgeClass = 'badge badge-flash';
+                    } else if (l.classification === 'Anomalous') {
+                        classStyle = 'text-anomalous';
+                        badgeClass = 'badge badge-anomalous';
                     } else if (l.classification === 'Released') {
                         classStyle = 'text-normal';
                         badgeClass = 'badge badge-flash';

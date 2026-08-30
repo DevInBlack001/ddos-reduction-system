@@ -14,6 +14,38 @@ transmitted fields plus the three derived ones.
 Statistical overrides then run on top of the prediction, so an extreme spike is
 never missed because the classifier was unsure.
 
+**The overrides run on every window, including a target's warm-up
+period.** Only the RandomForest and Isolation Forest are skipped during
+warm-up (see [ipc.md](ipc.md#v7-the-warm-up-flag) for why: both were trained
+entirely on converged-baseline data and misread a warm-up window's
+unsettled statistics as anomalous). The overrides are threshold checks
+against `mean_r`/`sigma_r`/`mean_h`/`sigma_h`, not a trained model, so a
+target that has not warmed up yet is not the case that skip exists for.
+Gating them on warm-up too used to leave a target fully unenforced, no
+blocking, no rate-limiting, no DDoS alert, for its first 200 windows after
+every Stage 1 restart, newly added victim, or `--clear-baseline` recovery,
+a real, repeatedly reachable gap rather than a one-time startup blip.
+
+**A second model, an Isolation Forest, runs every window alongside the
+RandomForest.** It is unsupervised, trained on the full feature set with the
+label column unused, and answers a different question: not what class this
+window looks like, but whether it looks like anything the training data
+contained at all. When the RandomForest calls a window normal or flash crowd
+and the Isolation Forest scores it a strong outlier, the window is logged and
+surfaced as `Anomalous` instead. This never changes `pred_class`, the value
+every tier and override below reads: `Anomalous` overrides only the label
+shown to an operator, not the enforcement path. When the RandomForest already
+calls a window an attack, the Isolation Forest's opinion is redundant for
+enforcement, since the window is already escalated. See
+[detection.md](detection.md) for why a second, unsupervised model closes a
+gap the RandomForest structurally cannot: an attack shaped differently from
+anything in the training set has no guaranteed reason to trip a supervised
+classifier, whatever features it is given.
+
+Every flagged window is also appended to `stage2/anomalous_capture.csv` for
+a person to review, since `Anomalous` says a window is unfamiliar, not what
+it actually is. See [training.md](training.md#reviewing-anomalous-traffic).
+
 **Volumetric suspect**, which reopens the verdict:
 
 ```
@@ -43,6 +75,8 @@ entropy < mean_h - k_multiplier * sigma_h
   or
 dominant_ip_ratio > dominant_ip_ratio_extreme_threshold
 ```
+
+![The dashboard's Overview during a mixed event: several targets reading Flash Crowd alongside one reading DDoS, distinguished by concentration and dominant source share rather than volume alone](images/dashboard-classification.png)
 
 ## The Four Tiers
 
@@ -79,6 +113,11 @@ Both sets carry an expiry, so enforcement heals on its own if a decision was
 wrong.
 
 ## Settings
+
+All of the below are editable live from the dashboard's Firewall page,
+which also shows active blocks and rate limits as they stand:
+
+![The dashboard's Firewall page mid-incident: active blocks and active rate limits, each with its own countdown to self-heal](images/dashboard-firewall.png)
 
 | Setting | Default | Meaning |
 |-|-|-|
@@ -148,6 +187,15 @@ flow features the pipeline does not yet extract.
 Every action is recorded with the source, the protected host, that source's own
 rate, and the window's classification.
 
+![The dashboard's Event Log, filterable by classification, one row per record written during the window](images/dashboard-event-log.png)
+
+The same audit trail is exportable, as the raw ledger for a SIEM or as a
+generated PDF incident report:
+
+![The dashboard's Incident Response and Reporting page: raw CSV export alongside a compiled PDF report over a chosen time window](images/dashboard-incident-response.png)
+
+![Page one of a generated incident report: event volume, peak rate, and source concentration per window, each against this network's own measured baseline](images/incident-report-example.png)
+
 The rate stored is the individual source's rate, not the window total. Using
 the window aggregate meant a fallback throttling fifty sources wrote fifty
 identical rows, each claiming the entire attack volume.
@@ -165,8 +213,10 @@ traffic, which is the signature of a single source flood, so an unrecorded
 value would assert the opposite of a distributed one.
 
 The rows that record a window verdict rather than an enforcement action,
-`Normal` and `Flash Crowd`, name the window's dominant source, so that
-source's rate is what they carry.
+`Normal`, `Flash Crowd`, and `Anomalous`, name the window's dominant source,
+so that source's rate is what they carry. `Anomalous` replaces `Normal` or
+`Flash Crowd` as the logged classification for the same row when the
+Isolation Forest flags it, rather than adding a separate row.
 
 An unknown rate is stored as null rather than zero. An operator blocking an
 address by hand has no measured rate, and zero would read as an observation

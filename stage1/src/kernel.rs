@@ -14,7 +14,7 @@ use aya::{
     programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpMode},
     Ebpf, EbpfLoader,
 };
-use ddos_stage1_common::{Addr, Counters, FlowKey, SourceKey};
+use ddos_stage1_common::{Addr, Counters, FingerprintKey, FlowKey, PortKey, SourceKey, TtlKey};
 use log::{info, warn};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -97,6 +97,14 @@ pub struct WindowSample {
     pub sources: HashMap<IpAddr, u64>,
     /// Packet counts per flow, for the dashboard.
     pub flows: HashMap<(IpAddr, IpAddr, u16, u8), u64>,
+    /// V7: packets per source port, which port entropy is computed from.
+    pub ports: HashMap<u16, u64>,
+    /// V7: packets per TTL value, which TTL variance is computed from.
+    pub ttls: HashMap<u8, u64>,
+    /// V7: SYNs per TCP fingerprint bucket, which fingerprint diversity is
+    /// computed from. Only SYNs are counted, so a window with no new TCP
+    /// connections legitimately has none of these.
+    pub fingerprints: HashMap<u8, u64>,
 }
 
 /// Owns the loaded programs and their maps for the life of the process.
@@ -129,6 +137,14 @@ struct DrainStats {
     /// bounded, but the measurement degrades silently.
     source_entries: u64,
     flow_entries: u64,
+    /// V7: occupancy of PORT_HIST / TTL_HIST / FINGERPRINT_HIST. Unlike
+    /// `source_entries`, these are not attacker fillable: port and TTL space
+    /// are fixed regardless of address or packet volume, so this is here for
+    /// the same observability reason `source_entries` is, not because these
+    /// three can silently degrade the way the source map can.
+    port_entries: u64,
+    ttl_entries: u64,
+    fingerprint_entries: u64,
     drains: u64,
     errors: u64,
 }
@@ -151,6 +167,7 @@ impl KernelCapture {
         ingress: &str,
         egress: Option<&str>,
         targets: &VictimTargets,
+        exclude_ips: &[IpAddr],
         sizes: MapSizes,
     ) -> Result<Self, String> {
         // Checked before loading, because aya reports a missing file the same
@@ -185,10 +202,15 @@ impl KernelCapture {
             .map_max_entries("FLOWS", sizes.flows)
             .map_max_entries("COUNTERS", sizes.protected_hosts)
             .map_max_entries("PROTECTED", sizes.protected_hosts)
+            // Exclusions are operator specified, always a small subset of the
+            // protected hosts they carve an address out of, so the same
+            // sizing knob covers both rather than adding another flag.
+            .map_max_entries("EXCLUDED", sizes.protected_hosts)
             .load_file(object_path)
             .map_err(|e| format!("failed to load '{object_path}': {}", error_chain(&e)))?;
 
         Self::populate_targets(&mut ebpf, targets)?;
+        Self::populate_excluded(&mut ebpf, exclude_ips)?;
 
         // XDP first. A driver without native support falls back to the generic
         // hook, which is slower but still correct, so this is worth trying
@@ -260,13 +282,16 @@ impl KernelCapture {
         let fill = (s.source_entries as f64 / SOURCES_CAPACITY as f64) * 100.0;
         info!(
             "Kernel: status | interface={} | ingress={} | egress={} | sources={} ({:.1}% of map) \
-             | flows={} | drains={} | errors={}",
+             | flows={} | ports={} | ttls={} | fingerprints={} | drains={} | errors={}",
             self.ingress,
             s.ingress_packets,
             s.egress_packets,
             s.source_entries,
             fill,
             s.flow_entries,
+            s.port_entries,
+            s.ttl_entries,
+            s.fingerprint_entries,
             s.drains,
             s.errors,
         );
@@ -317,6 +342,32 @@ impl KernelCapture {
         Ok(())
     }
 
+    /// Fill the second prefix trie the kernel program checks in addition to
+    /// PROTECTED: a destination matching both is not counted. Always full
+    /// length entries, since an exclusion names one address, most often the
+    /// gateway's own, never a range.
+    fn populate_excluded(ebpf: &mut Ebpf, exclude_ips: &[IpAddr]) -> Result<(), String> {
+        if exclude_ips.is_empty() {
+            return Ok(());
+        }
+
+        let mut trie: LpmTrie<&mut MapData, Addr, u8> = ebpf
+            .map_mut("EXCLUDED")
+            .ok_or("object has no 'EXCLUDED' map")?
+            .try_into()
+            .map_err(|e| format!("'EXCLUDED' is not an LPM trie: {}", error_chain(&e)))?;
+
+        for ip in exclude_ips {
+            // Always a full length match: an address stored in its mapped
+            // 16 byte form, the same way VictimTargets::List's entries are.
+            let key = aya::maps::lpm_trie::Key::new(128, to_addr(*ip));
+            trie.insert(&key, 1u8, 0)
+                .map_err(|e| format!("could not add an excluded host: {}", error_chain(&e)))?;
+        }
+        info!("Kernel: {} excluded host entries loaded", exclude_ips.len());
+        Ok(())
+    }
+
     /// Read and clear every map, returning one sample per host that saw
     /// traffic.
     ///
@@ -334,7 +385,10 @@ impl KernelCapture {
         let result = self
             .drain_counters(&mut out)
             .and_then(|_| self.drain_sources(&mut out))
-            .and_then(|_| self.drain_flows(&mut out));
+            .and_then(|_| self.drain_flows(&mut out))
+            .and_then(|_| self.drain_ports(&mut out))
+            .and_then(|_| self.drain_ttls(&mut out))
+            .and_then(|_| self.drain_fingerprints(&mut out));
 
         self.stats.drains += 1;
         if result.is_err() {
@@ -345,6 +399,9 @@ impl KernelCapture {
             self.stats.egress_packets += sample.egress_packets;
             self.stats.source_entries += sample.sources.len() as u64;
             self.stats.flow_entries += sample.flows.len() as u64;
+            self.stats.port_entries += sample.ports.len() as u64;
+            self.stats.ttl_entries += sample.ttls.len() as u64;
+            self.stats.fingerprint_entries += sample.fingerprints.len() as u64;
         }
 
         result.map(|_| out)
@@ -395,6 +452,72 @@ impl KernelCapture {
                     .or_default()
                     .sources
                     .insert(from_addr(&key.source), total);
+            }
+            let _ = map.remove(&key);
+        }
+        Ok(())
+    }
+
+    fn drain_ports(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
+        let mut map: PerCpuHashMap<&mut MapData, PortKey, u64> = self
+            .ebpf
+            .map_mut("PORT_HIST")
+            .ok_or("object has no 'PORT_HIST' map")?
+            .try_into()
+            .map_err(|e| format!("'PORT_HIST' has an unexpected type: {}", error_chain(&e)))?;
+
+        let keys: Vec<PortKey> = map.keys().filter_map(|k| k.ok()).collect();
+        for key in keys {
+            if let Ok(per_cpu) = map.get(&key, 0) {
+                let total: u64 = per_cpu.iter().sum();
+                out.entry(from_addr(&key.victim))
+                    .or_default()
+                    .ports
+                    .insert(key.port, total);
+            }
+            let _ = map.remove(&key);
+        }
+        Ok(())
+    }
+
+    fn drain_ttls(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
+        let mut map: PerCpuHashMap<&mut MapData, TtlKey, u64> = self
+            .ebpf
+            .map_mut("TTL_HIST")
+            .ok_or("object has no 'TTL_HIST' map")?
+            .try_into()
+            .map_err(|e| format!("'TTL_HIST' has an unexpected type: {}", error_chain(&e)))?;
+
+        let keys: Vec<TtlKey> = map.keys().filter_map(|k| k.ok()).collect();
+        for key in keys {
+            if let Ok(per_cpu) = map.get(&key, 0) {
+                let total: u64 = per_cpu.iter().sum();
+                out.entry(from_addr(&key.victim))
+                    .or_default()
+                    .ttls
+                    .insert(key.ttl, total);
+            }
+            let _ = map.remove(&key);
+        }
+        Ok(())
+    }
+
+    fn drain_fingerprints(&mut self, out: &mut HashMap<IpAddr, WindowSample>) -> Result<(), String> {
+        let mut map: PerCpuHashMap<&mut MapData, FingerprintKey, u64> = self
+            .ebpf
+            .map_mut("FINGERPRINT_HIST")
+            .ok_or("object has no 'FINGERPRINT_HIST' map")?
+            .try_into()
+            .map_err(|e| format!("'FINGERPRINT_HIST' has an unexpected type: {}", error_chain(&e)))?;
+
+        let keys: Vec<FingerprintKey> = map.keys().filter_map(|k| k.ok()).collect();
+        for key in keys {
+            if let Ok(per_cpu) = map.get(&key, 0) {
+                let total: u64 = per_cpu.iter().sum();
+                out.entry(from_addr(&key.victim))
+                    .or_default()
+                    .fingerprints
+                    .insert(key.bucket, total);
             }
             let _ = map.remove(&key);
         }

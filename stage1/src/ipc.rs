@@ -1,6 +1,6 @@
 //! The feature vector sent to Stage 2 over a Unix domain socket.
 //!
-//! 184 bytes, little endian, unpacked in Python with `<19d16s16s`. The full
+//! 216 bytes, little endian, unpacked in Python with `<23d16s16s`. The full
 //! field table is in docs/ipc.md, and any change to it is a change to both
 //! stages in the same commit.
 //!
@@ -30,9 +30,9 @@ use std::{
 pub const SOCKET_PATH: &str = "/run/ddos_stage1/stage1.sock";
 
 /// Wire size of one serialised `FeatureVector` in bytes.
-/// 19 fields × 8 bytes (f64) = 152 bytes + 16 bytes for dominant IP + 16 bytes for victim IP = 184 bytes.
-/// Python format: `struct.unpack('<19d16s16s', data)`
-pub const FEATURE_VECTOR_BYTES: usize = 184;
+/// 23 fields × 8 bytes (f64) = 184 bytes + 16 bytes for dominant IP + 16 bytes for victim IP = 216 bytes.
+/// Python format: `struct.unpack('<23d16s16s', data)`
+pub const FEATURE_VECTOR_BYTES: usize = 216;
 
 /// Anomaly flag: EWMA rate exceeded upper boundary (volume flood).
 /// Kept for logging. Not sent on the wire.
@@ -46,8 +46,8 @@ pub const FLAG_ENTROPY_ANOMALY: u8 = 0x02;
 
 /// The data payload handed to Stage 2 after every anomalous window.
 ///
-/// Wire format: 19 × f64 (little-endian) + 16 bytes dominant IP + 16 bytes victim IP = 184 bytes total.
-/// Python unpacks with: `struct.unpack('<19d16s16s', data)`
+/// Wire format: 23 × f64 (little-endian) + 16 bytes dominant IP + 16 bytes victim IP = 216 bytes total.
+/// Python unpacks with: `struct.unpack('<23d16s16s', data)`
 ///
 /// Field order matches the Python unpack string. Do not reorder.
 #[derive(Debug, Clone)]
@@ -96,6 +96,31 @@ pub struct FeatureVector {
     /// egress sensor is configured, so unknown stays distinguishable from a
     /// genuine 0% drop rate.
     pub drop_ratio: f64,
+    /// V7: normalized Shannon entropy of source ports in the closed window.
+    /// Invariant under source address forgery, unlike `entropy` above: a
+    /// randomized source flood raises `entropy` toward 1.0 and is
+    /// undetectable on it alone, but has no reason to touch the port
+    /// distribution the same way.
+    pub source_port_entropy: f64,
+    /// V7: variance of TTL / hop limit values seen in the closed window. A
+    /// single real host's traffic clusters on one or two TTLs; a forged or
+    /// mixed source flood tends not to.
+    pub ttl_variance: f64,
+    /// V7: normalized Shannon entropy of TCP SYN fingerprint buckets
+    /// (option ordering + window size range, p0f style) in the closed
+    /// window. `0.0` when the window had no SYNs to fingerprint, which is
+    /// not distinguishable on this field alone from "very low diversity";
+    /// see docs/detection.md.
+    pub fingerprint_diversity: f64,
+    /// Whether this window's mean/sigma come from Stage 1's warm-up period
+    /// rather than a converged baseline (`1.0` warm-up, `0.0` otherwise).
+    /// Warm-up windows are sent so the dashboard updates immediately, but
+    /// their mean/sigma-derived fields are computed from too few samples to
+    /// be trustworthy, the same reason live anomaly evaluation ignores them
+    /// in Stage 1 itself. Stage 2 must skip classification on these, not
+    /// just Stage 1: a classifier trained on converged baselines has never
+    /// seen values like this and reads unfamiliar as anomalous.
+    pub is_warmup: f64,
     /// The dominant IP address in this window (used for mitigation blocks).
     pub dominant_ip: std::net::IpAddr,
     /// The victim destination IP address.
@@ -106,10 +131,10 @@ impl FeatureVector {
     /// Serialise the feature vector into a fixed-size byte buffer.
     ///
     /// All numeric fields are written as **little-endian f64** to match
-    /// Python's `struct.unpack('<19d16s16s', data)` format string exactly.
+    /// Python's `struct.unpack('<23d16s16s', data)` format string exactly.
     ///
     /// # Returns
-    /// Exactly 184 bytes, no padding.
+    /// Exactly 216 bytes, no padding.
     pub fn to_bytes(&self) -> [u8; FEATURE_VECTOR_BYTES] {
         let mut buf = Vec::with_capacity(FEATURE_VECTOR_BYTES);
 
@@ -152,6 +177,14 @@ impl FeatureVector {
             .expect("write egress_rate");
         buf.write_f64::<LittleEndian>(self.drop_ratio)
             .expect("write drop_ratio");
+        buf.write_f64::<LittleEndian>(self.source_port_entropy)
+            .expect("write source_port_entropy");
+        buf.write_f64::<LittleEndian>(self.ttl_variance)
+            .expect("write ttl_variance");
+        buf.write_f64::<LittleEndian>(self.fingerprint_diversity)
+            .expect("write fingerprint_diversity");
+        buf.write_f64::<LittleEndian>(self.is_warmup)
+            .expect("write is_warmup");
 
         // Serialize dominant_ip as 16 bytes (IPv6 or IPv6-mapped IPv4 address)
         let ip_v6 = match self.dominant_ip {
@@ -316,6 +349,10 @@ mod tests {
             cooldown_counter: 7.0,
             egress_rate: 210.5,
             drop_ratio:  0.83,
+            source_port_entropy: 0.91,
+            ttl_variance: 3.7,
+            fingerprint_diversity: 0.44,
+            is_warmup: 0.0,
             dominant_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 4)),
             victim_ip:   std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 3)),
         }
@@ -326,7 +363,7 @@ mod tests {
     fn serialised_size_is_correct() {
         let bytes = sample_fv().to_bytes();
         assert_eq!(bytes.len(), FEATURE_VECTOR_BYTES);
-        assert_eq!(FEATURE_VECTOR_BYTES, 184);
+        assert_eq!(FEATURE_VECTOR_BYTES, 216);
     }
 
     /// Round-trip: serialise then re-parse with byteorder.
@@ -359,6 +396,10 @@ mod tests {
         let cooldown_counter  = cur.read_f64::<LittleEndian>().unwrap();
         let egress_rate       = cur.read_f64::<LittleEndian>().unwrap();
         let drop_ratio        = cur.read_f64::<LittleEndian>().unwrap();
+        let source_port_entropy   = cur.read_f64::<LittleEndian>().unwrap();
+        let ttl_variance          = cur.read_f64::<LittleEndian>().unwrap();
+        let fingerprint_diversity = cur.read_f64::<LittleEndian>().unwrap();
+        let is_warmup             = cur.read_f64::<LittleEndian>().unwrap();
 
         let mut ip_bytes = [0u8; 16];
         std::io::Read::read_exact(&mut cur, &mut ip_bytes).unwrap();
@@ -387,6 +428,10 @@ mod tests {
         assert!((cooldown_counter - 7.0              ).abs() < 1e-9);
         assert!((egress_rate      - 210.5            ).abs() < 1e-9);
         assert!((drop_ratio       - 0.83             ).abs() < 1e-9);
+        assert!((source_port_entropy   - 0.91).abs() < 1e-9);
+        assert!((ttl_variance          - 3.7 ).abs() < 1e-9);
+        assert!((fingerprint_diversity - 0.44).abs() < 1e-9);
+        assert!((is_warmup             - 0.0 ).abs() < 1e-9);
         assert_eq!(dominant_ip, std::net::IpAddr::V6(std::net::Ipv4Addr::new(192, 168, 1, 4).to_ipv6_mapped()));
         assert_eq!(victim_ip, std::net::IpAddr::V6(std::net::Ipv4Addr::new(10, 0, 0, 3).to_ipv6_mapped()));
     }

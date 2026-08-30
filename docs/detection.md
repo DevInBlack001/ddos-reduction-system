@@ -130,9 +130,43 @@ Enforcement would not help much even if it were classified correctly: blocking
 forged addresses punishes whoever really owns them and leaves the attacker
 untouched.
 
-Closing this needs features invariant under address forgery, which this
-pipeline does not extract: source port entropy, TTL variance, and TCP option
-fingerprint diversity. That is planned work, not a configuration change.
+Closing this needs features invariant under address forgery: source port
+entropy, TTL variance, and TCP option fingerprint diversity. For what these
+three measure and why, in plain language, see
+[Explainer](explainer.md#measurements-that-do-not-depend-on-the-senders-claimed-address).
+All three are
+now computed per window (V7) and sent over the wire, on both capture
+backends, using per window histograms keyed by the value itself, port
+number, TTL, fingerprint bucket, rather than by source address, so none of
+them inherit `SOURCES`'s fillability problem. See [ipc.md](ipc.md) for the
+wire format and the reasoning in full.
+
+Computing and transmitting the features is not the same as the classifier
+using them well. The shipped RandomForest is now trained on a capture that
+includes all three: on a 34,727 row real dataset, `source_port_entropy`
+placed fourth among fourteen features by importance, while `ttl_variance`
+and `fingerprint_diversity` contributed almost nothing, consistent with a
+single-topology capture where every session shares one hop count and one
+attack tool's TCP stack rather than a defect in the features themselves.
+See [training.md](training.md) for how to retrain as more varied traffic is
+captured.
+
+Detecting a randomized source flood is also a narrower problem than
+stopping one: blocking a forged address still punishes whoever really owns
+it. These features close the detection blind spot; they do not by
+themselves make enforcement against a spoofed flood safe.
+
+A second, unsupervised model complements the RandomForest for a related but
+distinct gap: an attack shaped differently from anything in the training
+set has no guaranteed reason to trip a supervised classifier at all,
+regardless of what features it is given. An Isolation Forest, trained on
+the same feature set but ignoring the label column, runs alongside the
+RandomForest in production and flags a window as `Anomalous` when the
+RandomForest calls it ordinary but the Isolation Forest finds it unlike
+anything in the training distribution. It does not drive enforcement; see
+[enforcement.md](enforcement.md#classification) for how the two models
+combine and [training.md](training.md#the-isolation-forest) for how it is
+trained.
 
 ## The Anomaly Boundary
 
@@ -145,6 +179,13 @@ fingerprint diversity. That is planned work, not a configuration change.
 
 `k` defaults to 2.0 and is set with `--k`. Two standard deviations covers about
 95 percent of a normal distribution.
+
+The dashboard's per target view plots the live rate against exactly this
+boundary and the learned baseline mean, alongside the egress based
+mitigation effectiveness measurement from
+[architecture.md](architecture.md#egress-measurement):
+
+![A protected target's detail view: live rate against its upper threshold and baseline mean, and the ingress/egress comparison behind the mitigation effectiveness figure](images/dashboard-target-monitor.png)
 
 Flags are a bitmask:
 
@@ -205,8 +246,18 @@ distributed legitimate traffic, not an attack. Removing one such host from a
 four target set took the remaining three from roughly a fifth of their windows
 flagged to none.
 
-If a gateway genuinely needs protecting, it needs its own baseline, which
-means its own sensor.
+**`--exclude-ips` carves specific addresses back out of a subnet**, so a
+gateway sitting inside the range being protected does not have to be
+excluded by falling back to an explicit `--victim-ips` list instead, which
+would stop covering any host added to the subnet later. Excluded addresses
+never become a target on either capture backend: on the kernel backend they
+are matched against a second trie the compiled program checks in addition
+to the protected set, so an excluded host's packets are never counted at
+all, not merely counted and then discarded.
+
+If a gateway genuinely needs protecting in its own right, rather than
+merely being caught by a subnet aimed at the hosts behind it, it needs its
+own baseline, which means its own sensor.
 
 ### Measuring the Floors
 
@@ -264,10 +315,11 @@ a calibration overrides whatever the installer chose without the script
 needing to know the interface, the targets, or the capture mode. Deleting the
 file returns those values.
 
-The script also reports when a host's traffic has outgrown its learned mean,
-which is a state the baseline cannot leave on its own, since every flagged
-window freezes it. `--clear-baseline` deletes the persisted file so the
-sensor relearns at the current level.
+The script also reports when a host's traffic has outgrown its learned mean.
+`--max-baseline-freeze-windows`, below, now lets the baseline leave that
+state on its own after long enough; `--clear-baseline` remains the
+immediate way to force it, deleting the persisted file so the sensor
+relearns at the current level right away instead of waiting out the cap.
 
 ### Cooldown
 
@@ -320,6 +372,36 @@ other. If the boundary sits close to the mean, ordinary windows get flagged,
 the baseline stops updating, the standard deviation never grows to reflect real
 variation, and the false positives sustain themselves. Every other flagged
 window still freezes, so the slow ramp defence is unchanged.
+
+**A bound on how long any freeze may last.** The entropy exception above
+only covers one specific, provably safe case. Rate has no equivalent: a
+distributed flood is also high rate and low dominance, the same shape as
+a target's traffic genuinely growing, so a window flagged only on rate
+still freezes even where the growth is real. Left alone that freeze does
+not recover on its own, since the boundary it is measured against can
+never move to catch up. `--max-baseline-freeze-windows` (default 400,
+roughly double `WARMUP_WINDOWS`) bounds it instead: once a target has
+sat frozen for more consecutive windows than this, the current traffic is
+accepted as the new baseline regardless of whether it is still being
+flagged. This does not weaken detection while frozen. Stage 1 keeps
+flagging and reporting every anomalous window to Stage 2 for the whole
+freeze, cooldown and the boundary maths included, since only the
+learning side pauses, not the reporting side that enforcement in Stage 2
+actually depends on. An attacker gains nothing beyond what a target's own
+first warm up already grants: the escape hatch only opens after
+sustaining elevated traffic for longer than the configured cap, not after
+a single well-placed window.
+
+**The escaping sample also bypasses the outlier check.** A window that
+has been pushing against a frozen boundary for the entire cap deviates
+from the stale mean and sigma by a large margin almost by definition,
+since that gap is the reason the freeze happened at all. The ordinary
+`--outlier-sigma` (default 5.0) rejection would otherwise reject this
+exact sample for the same reason it deserved to escape the freeze in the
+first place, leaving Welford exactly as frozen as before despite the
+escape firing. Only a window that is clean specifically because it
+escaped a freeze skips the check; a window that was already naturally
+clean, or one still frozen, is unaffected.
 
 ## Baseline Persistence
 

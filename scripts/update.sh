@@ -43,11 +43,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
 STAGE2_DIR="$(dirname "$SCRIPT_DIR")/stage2"
 BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
-
-# Toolchain discovery, used by the Rust and eBPF steps below.
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/lib-toolchain.sh"
-load_cargo_env
+SERVICE_DIR="/etc/systemd/system"
+# Same root-owned locations install.sh installs into, see its own comment
+# on why: Stage 2 runs as root and must not execute code, or load a model,
+# from a directory the operator's own login account can still write to.
+STAGE2_INSTALL_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -96,96 +97,173 @@ else
 fi
 
 # =============================================================================
-# Update the Rust toolchain (optional)
+# Rebuild Stage 1 and, if the kernel backend is already deployed, its eBPF
+# object
 # =============================================================================
-if $UPDATE_TOOLCHAIN; then
-    info "Updating Rust toolchain..."
-    # Source the cargo env in case we're running in a minimal shell.
-    # shellcheck source=/dev/null
-    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-
-    if command -v rustup &>/dev/null; then
-        rustup update stable 2>&1
-        success "Rust toolchain updated: $(rustc --version)"
-    elif [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
-        # This deployment uses the kernel backend, which needs a nightly
-        # toolchain to rebuild. Without rustup that is impossible, so install
-        # it rather than silently shipping a stale object.
-        info "rustup not found but the kernel backend is installed. Installing rustup..."
-        if ensure_rustup; then
-            rustup update stable &>/dev/null || true
-            success "rustup installed: $(rustc --version)"
-        else
-            warn "Could not install rustup. The eBPF object cannot be rebuilt."
-        fi
-    else
-        warn "rustup not found. Skipping toolchain update (using existing compiler)."
-    fi
-else
-    info "Toolchain update skipped (--no-toolchain-update)."
-fi
-
-# =============================================================================
-# Rebuild Stage 1
-# =============================================================================
-info "Rebuilding Stage 1 in release mode..."
+# Compiling means running cargo against this checkout: build.rs and proc
+# macros in any dependency run arbitrary code as whoever invokes cargo, same
+# as rustup and the eBPF build. Done as the account that ran git clone, never
+# as root, matching install.sh; see scripts/build-stage1.sh for why. This
+# script itself never sources lib-toolchain.sh or touches cargo directly.
+info "Rebuilding Stage 1..."
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
     error "Stage 1 source directory not found at: $PROJECT_DIR"
 fi
 
-# Source cargo env again in case we are in a fresh root shell.
-[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-
-cd "$PROJECT_DIR"
-RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
-success "Build complete."
-
-# This script runs as root, so everything it just wrote under target/ is root
-# owned. Building from a working copy would then break every later non root
-# cargo build with a permission error. Hand the tree back to whoever invoked
-# sudo. Only applies when running from a checkout, not from an unpacked copy.
-if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
-    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
-        [[ -d "$tree" ]] || continue
-        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
-    done
-    info "Build artefacts returned to $SUDO_USER."
+BUILD_ARGS=()
+if $UPDATE_TOOLCHAIN; then
+    BUILD_ARGS+=(--update-toolchain)
+else
+    info "Toolchain update skipped (--no-toolchain-update)."
+fi
+# Only rebuilding the eBPF object when one is already installed matches this
+# script's original behaviour: a deployment on the libpcap backend has no
+# toolchain and should not start needing one at update time.
+if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
+    BUILD_ARGS+=(--with-ebpf)
+else
+    BUILD_ARGS+=(--no-ebpf)
 fi
 
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    # An install from before this script stopped building as root can have
+    # left root-owned files inside the checkout, most visibly the compiled
+    # eBPF object under stage1/src/bpf: the unprivileged build below cannot
+    # even remove or overwrite those, since deleting a file needs write
+    # access to its directory, not just the file. Reclaiming the checkout
+    # for the invoking account first is a one-time fix on such a system; on
+    # one that was always built this way, every path here is already that
+    # account's own, so this is a fast no-op.
+    chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" \
+        "$PROJECT_DIR" "$(dirname "$SCRIPT_DIR")/stage1-ebpf" 2>/dev/null || true
+    sudo -u "$SUDO_USER" -H bash "$SCRIPT_DIR/build-stage1.sh" "${BUILD_ARGS[@]}"
+else
+    warn "No non-root account to build as: this script was not invoked with"
+    warn "sudo from a normal login. Building as root instead, which trusts"
+    warn "this checkout's build scripts and every dependency's build code."
+    warn "Prefer 'sudo bash scripts/update.sh' from a normal account."
+    bash "$SCRIPT_DIR/build-stage1.sh" "${BUILD_ARGS[@]}"
+fi
+
+BINARY_PATH="$PROJECT_DIR/target/release/$BINARY_NAME"
+[[ -f "$BINARY_PATH" ]] || error "Stage 1 build did not produce $BINARY_PATH."
+success "Build complete: $BINARY_PATH"
+
 # =============================================================================
-# Update Stage 2 Python dependencies
+# Update Stage 2: re-copy the code, rebuild the venv, all in the root-owned
+# runtime location, never in place in the checkout. Mirrors the equivalent
+# section of install.sh; an update has to move an existing checkout-rooted
+# install (from before this split existed) onto the new layout too, not
+# only refresh one that is already there.
 # =============================================================================
 if [[ -d "$STAGE2_DIR" ]]; then
-    info "Updating Stage 2 Python dependencies..."
-    if [[ -d "$STAGE2_DIR/venv" ]]; then
-        # Check if the python interpreter path is valid/executable
-        if ! "$STAGE2_DIR/venv/bin/python" -c "import sys" &>/dev/null; then
-            warn "Virtual environment is broken, moved, or invalid. Re-creating..."
-            python3 -m venv --clear "$STAGE2_DIR/venv"
-        fi
-        
-        "$STAGE2_DIR/venv/bin/pip" install --upgrade pip
-        "$STAGE2_DIR/venv/bin/pip" install -r "$STAGE2_DIR/requirements.txt"
+    info "Updating Stage 2 in $STAGE2_INSTALL_DIR..."
 
-        # WeasyPrint has no Python-level dependency for this, it dlopen()s
-        # Pango at runtime, so pip install succeeding is not enough: an
-        # existing install upgrading past the version that introduced the
-        # PDF report needs this system package once, by hand. Caught here
-        # rather than left to surface as a crash loop after this script exits.
-        if ! "$STAGE2_DIR/venv/bin/python" -c "from weasyprint import HTML" &>/dev/null; then
-            warn "WeasyPrint cannot load Pango. Install your distribution's"
-            warn "'pango' (dnf/yum/apk) or 'libpango-1.0-0' (apt) package,"
-            warn "then re-run this script or restart ddos-stage2 by hand."
-        fi
-
-        info "Updating/migrating administrative database..."
-        "$STAGE2_DIR/venv/bin/python" "$STAGE2_DIR/setup_admin.py"
-        
-        success "Stage 2 dependencies updated."
-    else
-        warn "Stage 2 virtual environment not found. Skip pip update."
+    install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR"
+    for f in "$STAGE2_DIR"/*.py "$STAGE2_DIR/requirements.txt"; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
+    done
+    if [[ -d "$STAGE2_DIR/static" ]]; then
+        install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR/static"
+        while IFS= read -r -d '' f; do
+            rel="${f#"$STAGE2_DIR"/static/}"
+            install -D -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/static/$rel"
+        done < <(find "$STAGE2_DIR/static" -type f -print0)
     fi
+    success "Stage 2 source refreshed in $STAGE2_INSTALL_DIR."
+
+    if ! "$STAGE2_INSTALL_DIR/venv/bin/python" -c "import sys" &>/dev/null; then
+        warn "Virtual environment is missing, broken, or moved. Re-creating..."
+        python3 -m venv --clear "$STAGE2_INSTALL_DIR/venv"
+        chown -R root:root "$STAGE2_INSTALL_DIR/venv"
+    fi
+
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install --upgrade pip
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install -r "$STAGE2_INSTALL_DIR/requirements.txt"
+
+    # WeasyPrint has no Python-level dependency for this, it dlopen()s
+    # Pango at runtime, so pip install succeeding is not enough: an
+    # existing install upgrading past the version that introduced the
+    # PDF report needs this system package once, by hand. Caught here
+    # rather than left to surface as a crash loop after this script exits.
+    if ! "$STAGE2_INSTALL_DIR/venv/bin/python" -c "from weasyprint import HTML" &>/dev/null; then
+        warn "WeasyPrint cannot load Pango. Install your distribution's"
+        warn "'pango' (dnf/yum/apk) or 'libpango-1.0-0' (apt) package,"
+        warn "then re-run this script or restart ddos-stage2 by hand."
+    fi
+
+    # State migration: a pre-existing checkout-rooted install (from before
+    # this layout existed) still has its real data sitting in $STAGE2_DIR.
+    # Only files present there and absent from the new location move, so
+    # this is a no-op on a second run. Model files are deliberately not in
+    # this list: joblib.load() deserialises via pickle and can execute
+    # arbitrary code on load, so a .joblib sitting in the checkout,
+    # writable by whichever account ran git clone, must never be
+    # auto-promoted into the path root loads from. See below.
+    install -d -o root -g root -m 700 "$STAGE2_STATE_DIR"
+    for f in stage2.db whitelist.json shared_ips.json victims.json \
+             enforcement_config.json alerts_config.json stage2.log \
+             anomalous_capture.csv; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            mv "$STAGE2_DIR/$f" "$STAGE2_STATE_DIR/$f"
+            info "Migrated existing $f to $STAGE2_STATE_DIR."
+        fi
+    done
+    chown -R root:root "$STAGE2_STATE_DIR"
+
+    for f in ddos_rf_model.joblib ddos_if_model.joblib; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            warn "Found $f in the checkout but did not migrate it:" \
+                 "a model file is loaded with joblib.load(), which can run" \
+                 "arbitrary code, so one sitting in a location the checkout" \
+                 "account can write to is not trusted automatically. Train" \
+                 "a fresh model with 'sudo scripts/train.sh', which writes" \
+                 "directly to $STAGE2_STATE_DIR, or verify $f yourself and" \
+                 "copy it to $STAGE2_STATE_DIR/$f as root."
+        fi
+    done
+
+    info "Updating/migrating administrative database..."
+    DB_PATH="$STAGE2_STATE_DIR/stage2.db" \
+        "$STAGE2_INSTALL_DIR/venv/bin/python" "$STAGE2_INSTALL_DIR/setup_admin.py"
+
+    # Rewrite the unit unconditionally so a pre-existing unit that still
+    # points at the old checkout-rooted layout gets moved onto the new one,
+    # not only a fresh install. Left disabled/stopped units alone otherwise;
+    # only content is refreshed here, enablement state is not touched.
+    if command -v systemctl &>/dev/null; then
+        cat > "$SERVICE_DIR/ddos-stage2.service" << EOF
+# =============================================================================
+# ddos-stage2.service, systemd unit for the DDoS mitigation Stage 2 daemon
+# Regenerated by update.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# =============================================================================
+
+[Unit]
+Description=Adaptive DDoS Mitigation Stage 2 Classifier (Python)
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$STAGE2_INSTALL_DIR
+ExecStart=/bin/bash -c 'source "$STAGE2_INSTALL_DIR/venv/bin/activate" && exec python3 stage2.py'
+Restart=on-failure
+RestartSec=5s
+Environment="PYTHONUNBUFFERED=1"
+Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
+Environment="DB_PATH=$STAGE2_STATE_DIR/stage2.db"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+    fi
+
+    success "Stage 2 updated: code and venv in $STAGE2_INSTALL_DIR, state in $STAGE2_STATE_DIR."
 fi
 
 # =============================================================================
@@ -196,28 +274,28 @@ info "Replacing binary at $INSTALL_DIR/$BINARY_NAME..."
 # Copy to a temp file first, then atomically move it over the old binary.
 # This avoids a race window where the binary is partially written.
 TMP_BINARY="$(mktemp --tmpdir="$INSTALL_DIR" "$BINARY_NAME.XXXXXX")"
-install -m 755 "target/release/$BINARY_NAME" "$TMP_BINARY"
+install -m 755 "$BINARY_PATH" "$TMP_BINARY"
 mv -f "$TMP_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary updated: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
-# Rebuild the eBPF object
+# Install the rebuilt eBPF object
 # =============================================================================
-# Only when one is already installed. A deployment on the libpcap backend has
-# no toolchain and should not start needing one at update time.
+# Already rebuilt above, as the unprivileged build account, only when one was
+# already installed. Root's job here is just to place the result: a
+# deployment on the libpcap backend has no toolchain and should not start
+# needing one at update time.
+EBPF_OBJ="$PROJECT_DIR/src/bpf/ddos-stage1.o"
 if [[ -f "$BPF_OBJECT_DIR/ddos-stage1.o" ]]; then
-    info "Rebuilding the eBPF programs..."
-    if bash "$SCRIPT_DIR/build-ebpf.sh" &>/dev/null; then
-        install -o root -g root -m 644 \
-            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
-            "$BPF_OBJECT_DIR/ddos-stage1.o"
+    if [[ -f "$EBPF_OBJ" ]]; then
+        install -o root -g root -m 644 "$EBPF_OBJ" "$BPF_OBJECT_DIR/ddos-stage1.o"
         success "eBPF object updated."
     else
         # Leaving the old object in place would silently run the previous
         # version against a new binary, so say so loudly.
         warn "eBPF rebuild FAILED. The installed object is now older than the"
-        warn "binary. Run scripts/build-ebpf.sh for the reason, or start with"
-        warn "--capture-mode pcap until it is fixed."
+        warn "binary. Run scripts/build-stage1.sh for the reason, or start"
+        warn "with --capture-mode pcap until it is fixed."
     fi
 fi
 

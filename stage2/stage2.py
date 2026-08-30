@@ -69,18 +69,35 @@ app.include_router(alerts.router)
 # Main Application Launch Hook
 
 def start_api_server():
+    import sys
     import uvicorn
     ssl_kwargs = {}
     if config.tls_enabled():
         ssl_kwargs = {"ssl_certfile": config.TLS_CERT_PATH, "ssl_keyfile": config.TLS_KEY_PATH}
         logging.info(f"[+] Starting Uvicorn API Server on port 8000 (HTTPS, cert: {config.TLS_CERT_PATH})...")
-    else:
+    elif os.environ.get("FLOD_ALLOW_INSECURE_HTTP", "").lower() in ("1", "true", "yes"):
         logging.warning(
             f"[!] No TLS certificate found at {config.TLS_CERT_PATH}/{config.TLS_KEY_PATH}, "
-            "falling back to plain HTTP. Login credentials and session cookies "
-            "will travel unencrypted. Re-run install.sh or provide a cert/key pair."
+            "falling back to plain HTTP because FLOD_ALLOW_INSECURE_HTTP is set. "
+            "Login credentials and session cookies will travel unencrypted."
         )
         logging.info("[+] Starting Uvicorn API Server on port 8000 (HTTP)...")
+    else:
+        # This binds 0.0.0.0, the whole network, not just loopback, and
+        # the dashboard authenticates operators and issues block/unblock
+        # actions, so starting it unencrypted by default is a real
+        # exposure, not a convenience worth defaulting to. Refuse rather
+        # than silently downgrade; an operator who genuinely wants this,
+        # a trusted lab network, local testing, has to say so explicitly.
+        logging.error(
+            f"[-] No TLS certificate found at {config.TLS_CERT_PATH}/{config.TLS_KEY_PATH}. "
+            "Refusing to serve the dashboard over plain HTTP by default, since it "
+            "authenticates operators and issues block/unblock actions on 0.0.0.0. "
+            "Run install.sh to generate a certificate, or set "
+            "FLOD_ALLOW_INSECURE_HTTP=1 to start over HTTP anyway (e.g. a trusted "
+            "lab network)."
+        )
+        sys.exit(1)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", **ssl_kwargs)
 
 def main():

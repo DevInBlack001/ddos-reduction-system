@@ -101,6 +101,11 @@ struct CliArgs {
     /// did before and no drop metrics are reported.
     egress_interface: Option<String>,
     victim_targets: Option<VictimTargets>,
+    /// Addresses carved out of victim_targets, most often the gateway's own
+    /// address when it falls inside --victim-subnet. Checked in addition to,
+    /// not instead of, victim_targets: an address must match the targets and
+    /// not match this list to be treated as protected.
+    exclude_ips:    Vec<std::net::IpAddr>,
     k:              f64,
     alpha:          f64,
     socket:         String,
@@ -133,6 +138,7 @@ struct CliArgs {
     cooldown_windows:         u64,
     cooldown_k_factor:        f64,
     peacetime_ewma_weight:    f64,
+    max_baseline_freeze_windows: u64,
     /// Kernel map capacities. See `kernel::MapSizes`.
     max_sources:          u32,
     max_flows:            u32,
@@ -173,8 +179,10 @@ impl CliArgs {
         let mut cooldown_windows = state::DEFAULT_COOLDOWN_WINDOWS;
         let mut cooldown_k_factor = state::DEFAULT_COOLDOWN_K_FACTOR;
         let mut peacetime_ewma_weight = state::DEFAULT_PEACETIME_EWMA_WEIGHT;
+        let mut max_baseline_freeze_windows = state::DEFAULT_MAX_BASELINE_FREEZE_WINDOWS;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
+        let mut exclude_ips_str: Option<String> = None;
         let mut k         = 2.0_f64;
         let mut alpha     = ewma::DEFAULT_ALPHA;
         let mut socket      = ipc::SOCKET_PATH.to_string();
@@ -281,6 +289,10 @@ impl CliArgs {
                     i += 1;
                     peacetime_ewma_weight = parse_positive(args.get(i), "--peacetime-ewma-weight");
                 }
+                "--max-baseline-freeze-windows" => {
+                    i += 1;
+                    max_baseline_freeze_windows = parse_positive_u64(args.get(i), "--max-baseline-freeze-windows");
+                }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
                     victim_ips = args.get(i).cloned();
@@ -288,6 +300,10 @@ impl CliArgs {
                 "--victim-subnet" => {
                     i += 1;
                     victim_subnet = args.get(i).cloned();
+                }
+                "--exclude-ips" | "--exclude-ip" => {
+                    i += 1;
+                    exclude_ips_str = args.get(i).cloned();
                 }
                 "--k" => {
                     i += 1;
@@ -400,11 +416,30 @@ impl CliArgs {
             None
         };
 
-        Self { interface, egress_interface, victim_targets, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
+        // Addresses excluded from an otherwise matching victim_targets, most
+        // often the gateway's own address falling inside --victim-subnet.
+        // Same comma-separated format as --victim-ips.
+        let exclude_ips = if let Some(ref ip_str) = exclude_ips_str {
+            let mut list = Vec::new();
+            for s in ip_str.split(',') {
+                if let Ok(ip) = s.parse::<std::net::IpAddr>() {
+                    list.push(ip);
+                } else {
+                    eprintln!("Error: Invalid IP address '{s}' in exclude list.");
+                    process::exit(1);
+                }
+            }
+            list
+        } else {
+            Vec::new()
+        };
+
+        Self { interface, egress_interface, victim_targets, exclude_ips, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
                entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
                entropy_min_packets, max_sources, max_flows, max_protected_hosts,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
-               outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight }
+               outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight,
+               max_baseline_freeze_windows }
     }
 }
 
@@ -451,6 +486,7 @@ fn print_usage(bin: &str) {
     eprintln!("                              by comparing what arrived against what was forwarded");
     eprintln!("  --victim-ips <IPs>     BPF filter IP list, comma-separated (alias: --victim-ip)");
     eprintln!("  --victim-subnet <NET>  BPF filter subnet range (e.g. 10.0.0.0/24)");
+    eprintln!("  --exclude-ips <IPs>    Comma-separated addresses carved out of the above, e.g. the gateway's own address");
     eprintln!("  --k          <FLOAT>   Anomaly multiplier k  [default: 2.0]");
     eprintln!("  --alpha      <FLOAT>   EWMA smoothing alpha  [default: 0.125]");
     eprintln!();
@@ -483,6 +519,9 @@ fn print_usage(bin: &str) {
     eprintln!("                               [default: {}]", state::DEFAULT_COOLDOWN_K_FACTOR);
     eprintln!("  --peacetime-ewma-weight <F>  EWMA weight for the slow poisoning-detection");
     eprintln!("                               reference [default: {}]", state::DEFAULT_PEACETIME_EWMA_WEIGHT);
+    eprintln!("  --max-baseline-freeze-windows <N>  Consecutive frozen windows before current");
+    eprintln!("                               traffic is accepted as the new baseline");
+    eprintln!("                               [default: {}]", state::DEFAULT_MAX_BASELINE_FREEZE_WINDOWS);
     eprintln!("  --socket     <PATH>    IPC socket path       [default: /run/ddos_stage1/stage1.sock]");
     eprintln!("  --no-filter            Disable BPF filter (dev/test only)");
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
@@ -564,17 +603,15 @@ fn main() {
             let mut clean = Vec::with_capacity(buf.len());
             let mut i = 0;
             while i < buf.len() {
-                if buf[i] == 0x1b {
-                    if i + 1 < buf.len() && buf[i + 1] == b'[' {
-                        i += 2;
-                        while i < buf.len() && (buf[i] < 0x40 || buf[i] > 0x7E) {
-                            i += 1;
-                        }
-                        if i < buf.len() {
-                            i += 1;
-                        }
-                        continue;
+                if buf[i] == 0x1b && i + 1 < buf.len() && buf[i + 1] == b'[' {
+                    i += 2;
+                    while i < buf.len() && (buf[i] < 0x40 || buf[i] > 0x7E) {
+                        i += 1;
                     }
+                    if i < buf.len() {
+                        i += 1;
+                    }
+                    continue;
                 }
                 clean.push(buf[i]);
                 i += 1;
@@ -635,25 +672,27 @@ fn main() {
 
     // Capture config: BPF filter applied only when --no-filter is not set
     // and victim targets were provided.
-    let cap_cfg = if args.no_filter || args.victim_targets.is_none() {
-        log::warn!("main: BPF filter disabled, all traffic will be processed (dev mode only)");
-        CaptureConfig::for_test(&args.interface)
-    } else {
-        let targets = args.victim_targets.as_ref().unwrap();
+    let cap_cfg = if !args.no_filter
+        && let Some(targets) = args.victim_targets.as_ref()
+    {
         info!("main: BPF filter enabled for targets: {:?}", targets);
         CaptureConfig::for_targets(&args.interface, targets, capture::Direction::Ingress)
+    } else {
+        log::warn!("main: BPF filter disabled, all traffic will be processed (dev mode only)");
+        CaptureConfig::for_test(&args.interface)
     };
 
     // The egress side is optional, and uses the same filter as ingress:
     // what matters is traffic headed to a protected host on either side.
     let egress_cap_cfg = args.egress_interface.as_ref().map(|iface| {
-        if args.no_filter || args.victim_targets.is_none() {
+        if !args.no_filter
+            && let Some(targets) = args.victim_targets.as_ref()
+        {
+            CaptureConfig::for_targets(iface, targets, capture::Direction::Egress)
+        } else {
             let mut c = CaptureConfig::for_test(iface);
             c.direction = capture::Direction::Egress;
             c
-        } else {
-            let targets = args.victim_targets.as_ref().unwrap();
-            CaptureConfig::for_targets(iface, targets, capture::Direction::Egress)
         }
     });
 
@@ -662,6 +701,7 @@ fn main() {
         ewma_alpha:     args.alpha,
         socket_path:    args.socket.clone(),
         victim_targets: args.victim_targets.clone(),
+        exclude_ips:    args.exclude_ips.clone(),
         train_csv:      args.train_csv.clone(),
         train_label:    args.train_label,
         baseline_path:      args.baseline_path.clone(),
@@ -683,6 +723,7 @@ fn main() {
         cooldown_windows:         args.cooldown_windows,
         cooldown_k_factor:        args.cooldown_k_factor,
         peacetime_ewma_weight:    args.peacetime_ewma_weight,
+        max_baseline_freeze_windows: args.max_baseline_freeze_windows,
     };
 
     // Before the interface check, so a configuration mistake is reported even
@@ -708,6 +749,7 @@ fn main() {
             &args.interface,
             args.egress_interface.as_deref(),
             targets,
+            &args.exclude_ips,
             kernel::MapSizes {
                 sources: args.max_sources,
                 flows: args.max_flows,

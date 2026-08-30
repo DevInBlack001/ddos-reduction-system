@@ -90,9 +90,12 @@ llvm_packages_for() {
 # Put cargo and rustup on PATH, wherever they were installed.
 #
 # sudo resets PATH from secure_path, so a toolchain in a home directory is
-# invisible to a script run with sudo even though it is installed. Worse, a
-# rustup installed by `sudo install.sh` lands in root's home, so the invoking
-# user cannot see it either. Both homes are checked.
+# invisible to a script run with plain sudo even though it is installed.
+# install.sh and update.sh avoid this themselves by building as the invoking
+# account via 'sudo -u', never as root, but a script run directly with plain
+# sudo (bypassing them) still needs the fallback: the toolchain lives in
+# whichever account originally ran rustup, root's home included, so every
+# home this process might plausibly mean is checked.
 load_cargo_env() {
     local home_dir
     for home_dir in "$HOME" "/root" "$(getent passwd "${SUDO_USER:-}" 2>/dev/null | cut -d: -f6)"; do
@@ -126,8 +129,8 @@ ensure_rustup() {
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --default-toolchain stable >/dev/null 2>&1 || return 1
 
-    # Puts ~/.cargo/bin on PATH for the rest of this script. Under sudo this is
-    # root's home, which is where the units expect to find it.
+    # Puts ~/.cargo/bin on PATH for the rest of this script, in whichever
+    # home rustup just installed into.
     # shellcheck source=/dev/null
     [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 

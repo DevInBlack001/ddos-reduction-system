@@ -19,7 +19,7 @@
 //! Returns 0.0 when there is at most one source, which avoids dividing by
 //! log2(1).
 
-use std::{collections::HashMap, net::IpAddr};
+use std::{collections::HashMap, hash::Hash, net::IpAddr};
 
 /// Packets a window needs before it is worth closing early rather than
 /// waiting for the time cap.
@@ -31,50 +31,61 @@ pub const MIN_PACKETS_TO_CLOSE: usize = 20;
 
 // EntropyAccumulator
 
-/// Accumulates source IPs over one window and computes Normalized Shannon
-/// Entropy on close.
+/// Accumulates values of type `K` over one window and computes Normalized
+/// Shannon Entropy on close.
+///
+/// Generic over the key being counted so the identical math serves source
+/// address entropy (`K = IpAddr`, the default) and, since V7, source port
+/// entropy (`K = u16`) without a duplicated module. Nothing in the logic is
+/// specific to either key type.
 ///
 /// Lifecycle per window:
-///   1. Call `add_packet(src_ip)` for each arriving packet (no cap).
+///   1. Call `add_packet(key)` for each arriving packet (no cap).
 ///   2. When the analysis loop's close condition fires, call
 ///      `compute_and_reset()`.
 ///   3. The returned `f64` is the normalized entropy scalar `h` ∈ [0, 1].
 ///   4. The HashMap and counter are cleared internally by `compute_and_reset()`.
-#[derive(Debug, Default)]
-pub struct EntropyAccumulator {
-    /// Frequency count of each unique source IP seen in the current window.
+#[derive(Debug)]
+pub struct EntropyAccumulator<K = IpAddr> {
+    /// Frequency count of each unique key seen in the current window.
     /// Cleared after every `compute_and_reset()` call.
-    counts: HashMap<IpAddr, u32>,
+    counts: HashMap<K, u32>,
     /// Number of packets accumulated in the current window (unbounded).
     packet_count: usize,
 }
 
-impl EntropyAccumulator {
+impl<K> Default for EntropyAccumulator<K> {
+    fn default() -> Self {
+        Self { counts: HashMap::new(), packet_count: 0 }
+    }
+}
+
+impl<K: Eq + Hash> EntropyAccumulator<K> {
     /// Create a new, empty accumulator (window not started yet).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Record one packet's source IP in the current window.
+    /// Record one packet's key in the current window.
     ///
     /// Must be called per-packet from the analysis thread's main loop.
     /// The accumulator grows as needed. The close
     /// decision is made by the analysis loop based on elapsed time and
     /// minimum packet count, not by this accumulator.
-    pub fn add_packet(&mut self, src_ip: IpAddr) {
-        self.add_packets(src_ip, 1);
+    pub fn add_packet(&mut self, key: K) {
+        self.add_packets(key, 1);
     }
 
-    /// Record `count` packets from one source at once.
+    /// Record `count` packets for one key at once.
     ///
-    /// The kernel backend arrives with counts already totalled per source, so
+    /// The kernel backend arrives with counts already totalled per key, so
     /// adding them one at a time would put a per packet loop back into user
     /// space, which is the cost the backend exists to remove.
-    pub fn add_packets(&mut self, src_ip: IpAddr, count: u32) {
+    pub fn add_packets(&mut self, key: K, count: u32) {
         if count == 0 {
             return;
         }
-        *self.counts.entry(src_ip).or_insert(0) += count;
+        *self.counts.entry(key).or_insert(0) += count;
         self.packet_count += count as usize;
     }
 
@@ -109,7 +120,7 @@ impl EntropyAccumulator {
 /// Compute Normalized Shannon Entropy from a frequency map and total packet
 /// count.
 ///
-/// H_norm = H(X) / log₂(|unique IPs|)
+/// H_norm = H(X) / log₂(|unique keys|)
 ///
 /// where H(X) = −Σ p(xᵢ) · log₂(p(xᵢ))
 ///       p(xᵢ) = count(xᵢ) / total_packets
@@ -118,12 +129,13 @@ impl EntropyAccumulator {
 /// with crafted frequency maps without needing an `EntropyAccumulator`.
 ///
 /// # Arguments
-/// `counts` maps each address to its frequency, `total_packets` is their sum.
+/// `counts` maps each key (a source address, a source port, ...) to its
+/// frequency, `total_packets` is their sum.
 ///
 /// # Returns
 /// Normalized entropy in [0.0, 1.0].
 /// Returns `0.0` if `total_packets` is 0 or if there is only 1 unique source.
-pub fn compute_normalized_entropy(counts: &HashMap<IpAddr, u32>, total_packets: usize) -> f64 {
+pub fn compute_normalized_entropy<K>(counts: &HashMap<K, u32>, total_packets: usize) -> f64 {
     if total_packets == 0 {
         return 0.0;
     }
@@ -163,6 +175,21 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+
+    #[test]
+    fn a_port_keyed_accumulator_reuses_the_same_entropy_math() {
+        // V7's port entropy is the same accumulator, keyed by u16 instead
+        // of IpAddr. No new math, just a different key type.
+        let mut acc: EntropyAccumulator<u16> = EntropyAccumulator::new();
+        for _ in 0..25 {
+            acc.add_packet(443);
+        }
+        for _ in 0..25 {
+            acc.add_packet(8080);
+        }
+        let h = acc.compute_and_reset();
+        assert!((h - 1.0).abs() < 1e-10, "expected 1.0 for two equally likely ports, got {h}");
+    }
 
     #[test]
     fn adding_in_bulk_matches_adding_one_at_a_time() {
@@ -265,7 +292,7 @@ mod tests {
     /// Empty map → 0.0 (no divide-by-zero).
     #[test]
     fn empty_window_returns_zero() {
-        let counts = HashMap::new();
+        let counts: HashMap<IpAddr, u32> = HashMap::new();
         let h = compute_normalized_entropy(&counts, 0);
         assert_eq!(h, 0.0);
     }

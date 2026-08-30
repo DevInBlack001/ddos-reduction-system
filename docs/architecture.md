@@ -1,5 +1,15 @@
 # Architecture
 
+![FLOD system architecture: Stage 1's eBPF/XDP sensor, the IPC channel, Stage 2's analysis and enforcement, and the end to end packet flow](images/architecture-diagram.png)
+
+A big picture view of the pipeline described in this document. Illustrative
+rather than authoritative on specifics: it predates the V7 map set (drawn
+as generic "Flow/Stats/Protocol/Entropy/Victims/Config" maps rather than
+the eight actual maps in [Map Sizing](#map-sizing)) and the state
+directory move to `/var/lib/flod` (drawn as `/var/lib/ddos_stage2`, see
+[Security](security.md)). Where this diagram and the text disagree, the
+text is current.
+
 ## Why Two Stages
 
 Stage 1 sees every packet. Stage 2 sees one summary per window, roughly one or
@@ -33,6 +43,11 @@ between:
               ingress sensor    block or throttle    egress sensor
               (what arrived)      happens here      (what got through)
 ```
+
+The dashboard's own interfaces page reports which interfaces are up and
+which role, ingress or egress sniffer, each one is currently playing:
+
+![The dashboard's Network Interfaces page, showing each interface's state and its ingress/egress sniffer role](images/dashboard-interfaces.png)
 
 ## The Pipeline
 
@@ -106,13 +121,23 @@ is tracked in [roadmap.md](roadmap.md#known-gaps).
 
 ### Map Sizing
 
-The kernel side holds four maps: protected hosts as a prefix trie, per host
-counters, a per host per source histogram, and a flow table. Their capacities
-are compiled into the object as defaults, but a BPF map's size is fixed when
-the kernel creates it rather than when the object is built, so user space
-overrides them before loading. `--max-sources`, `--max-flows`, and
-`--max-protected-hosts` therefore change them without a rebuild, which matters
-because an object without the eBPF toolchain cannot be rebuilt at all.
+The kernel side holds eight maps: protected hosts as a prefix trie, a second
+trie of addresses excluded from it, per host counters, a per host per source
+histogram, a flow table, and, since V7, a per host per source port histogram,
+a per host per TTL histogram, and a per host per TCP fingerprint bucket
+histogram. Their capacities are compiled into the object as defaults, but a
+BPF map's size is fixed when the kernel creates it rather than when the
+object is built, so user space overrides the first five before loading.
+`--max-sources`, `--max-flows`, and `--max-protected-hosts` therefore change
+them without a rebuild, which matters because an object without the eBPF
+toolchain cannot be rebuilt at all.
+
+The three V7 maps take no such flag. Port space is 16 bit and TTL space is 8
+bit regardless of how many addresses or packets a flood uses, so unlike the
+source histogram, neither can be filled by an attacker spreading across more
+addresses; 65,536 and 256 are the whole space, not a budget. The fingerprint
+histogram is smaller still, a small fixed table of option orderings and
+window size ranges rather than a hash of arbitrary bytes.
 
 `--max-protected-hosts` sizes the counter map and the trie together. The
 counter map binds first, since the trie stores a whole subnet as a single
@@ -156,9 +181,13 @@ described in [detection.md](detection.md). The programs only accumulate:
 | Map | Holds | Default | Sized by |
 |-|-|-|-|
 | `PROTECTED` | Protected hosts, as a prefix trie | 1024 | `--max-protected-hosts` |
+| `EXCLUDED` | Addresses carved out of `PROTECTED`, e.g. the gateway itself | 1024 | `--max-protected-hosts` |
 | `COUNTERS` | Per host packet and protocol counts | 256 | `--max-protected-hosts` |
 | `SOURCES` | Per host, per source counts, which entropy is computed from | 65536 | `--max-sources` |
 | `FLOWS` | The flow table behind the network map | 8192 | `--max-flows` |
+| `PORT_HIST` | V7: per host, per source port counts, source port entropy | 65536 | fixed, whole port space |
+| `TTL_HIST` | V7: per host, per TTL / hop limit counts, TTL variance | 256 | fixed, whole TTL space |
+| `FINGERPRINT_HIST` | V7: per host, per TCP SYN fingerprint bucket counts | 64 | fixed, small bucket table |
 
 `PROTECTED` is a prefix trie so one lookup serves both an address list and a
 subnet, with a list stored as full length prefixes. Addresses are 16 bytes
@@ -297,6 +326,12 @@ the model to predict its own past behaviour.
 Egress capture is optional. Without it the egress fields report as unavailable
 rather than as a zero drop rate, since a genuine zero is a meaningful reading.
 
+The dashboard's traffic flow view draws directly on this: blocked flows are
+rendered stopping short of the protected host, dropped at the gateway,
+rather than fading out or continuing on as if nothing happened.
+
+![The dashboard's Traffic view during an active block, showing normal, rate-limited, and blocked flows, the blocked ones stopping at the gateway](images/dashboard-traffic-flow.png)
+
 ## Dashboard Rendering
 
 The flow and network views draw from the same active flow list the sensor
@@ -316,6 +351,8 @@ silently truncating.
 
 The same bound applies to the attack source table, which is rebuilt on every
 poll and whose length an attacker controls.
+
+![The dashboard's Network Map view, protected hosts as central nodes with sources colour coded by status, victim/blocked, rate-limited, whitelisted, or plain source](images/dashboard-network-map.png)
 
 ## File Layout
 
@@ -349,7 +386,8 @@ stage2/
   state.py         shared in memory state
   reports.py       PDF and CSV export
   alerts.py        Discord and SMTP dispatch
-  train.py         model training
+  train.py         RandomForest training
+  train_isolation_forest.py  Isolation Forest training
   setup_admin.py   first account provisioning
   static/          dashboard pages
   tests/           test suite
@@ -359,6 +397,8 @@ scripts/
   update.sh        rebuild and restart
   uninstall.sh     teardown
   run.sh           run both stages from a working copy, prompting for values
+  train.sh         select a training CSV and train the RandomForest, the
+                    Isolation Forest, or both
   calibrate.py     derive the sigma floors from observed traffic
   build-ebpf.sh    compile the eBPF programs
   test.sh          run every suite
@@ -371,6 +411,16 @@ asks for every value it needs rather than requiring a command line. Stage 2 is
 optional because Stage 1 retries the IPC socket and keeps analysing without it,
 which is what a run for calibration or a backend comparison wants. Deployment
 is `install.sh` and systemd.
+
+This layout is the source tree, not where a deployed Stage 2 actually runs
+from. `install.sh` copies its code and virtual environment into
+`/opt/flod/stage2`, root owned, and points mutable state, the database,
+JSON config, trained models, at `/var/lib/flod`, since Stage 2 runs as
+root and must not execute anything from a directory the checkout's owner
+can still write to. See [Security](security.md) for why. `scripts/run.sh`
+above and a developer's own virtual environment (`CONTRIBUTING.md`) are
+the exception, running straight from this tree deliberately, since
+neither crosses a privilege boundary.
 
 ## Dependencies
 

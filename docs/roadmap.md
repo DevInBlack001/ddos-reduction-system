@@ -44,14 +44,15 @@ flag with a documented default rather than a constant.
 
 ## Planned
 
-**V7, ensemble classification.** A multi model voting layer for evasion and
-stealth attacks, adding source port entropy, TTL variance, and TCP fingerprint
-diversity as features.
+**V7, evasion resistant features and a second model.** On branch `v7`, code
+complete, not yet merged or tagged. Two parts.
 
-Those three are the ones invariant under source address forgery, which is what
-makes them the answer to both randomized source spoofing and large NAT crowds
-reading as single source floods. See [detection.md](detection.md) for why the
-current feature set cannot see either.
+Part one adds source port entropy, TTL variance, and TCP fingerprint
+diversity as features. Those three are invariant under source address
+forgery, which is what makes them the answer to both randomized source
+spoofing and large NAT crowds reading as single source floods. See
+[detection.md](detection.md) for why the pre-V7 feature set cannot see
+either.
 
 Computed from new per window histograms keyed by the field value itself, port
 number, TTL, fingerprint bucket, not by source address. `SOURCES` is capped
@@ -60,6 +61,36 @@ across; port and TTL space are not (16 and 8 bit fields), so a value keyed
 histogram has a fixed ceiling regardless of how many addresses or packets a
 flood uses. Extending `SOURCES` itself instead would inherit its fillability
 problem at exactly the moment a randomized source flood makes it matter most.
+
+Part two adds a second model rather than a voting layer over several: an
+Isolation Forest, unsupervised, trained on the same feature set with the
+label column unused, running in production alongside the existing
+RandomForest rather than replacing or gating it. It answers a different
+question than the RandomForest does, not what class a window looks like but
+whether it looks like anything the training data contained at all, which is
+what closes the gap a supervised model cannot: an attack shaped differently
+from anything captured has no guaranteed reason to trip a classifier trained
+only on what it was shown. Surfaced as a distinct `Anomalous` state; it does
+not drive enforcement in this milestone. See
+[enforcement.md](enforcement.md#classification) and
+[training.md](training.md#the-isolation-forest).
+
+Verified against a real 35,442 row, 12 session capture: RandomForest LOSO
+accuracy 0.989, DDoS precision 0.97 and recall 0.98. The eBPF side has since
+loaded and run on the sensor VM: the verifier accepted both programs, all
+seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
+entropy and 4 to 6% on ingress packet counts. The non-technical explainer is
+written, [docs/explainer.md](explainer.md). Dashboard visibility for the
+three raw features is also done.
+
+A retrain against jittered traffic generators, rather than the scripted,
+mechanically regular timing the original 35,442 row capture used, is
+done: 25,449 new rows across nine fresh sessions, merged with the
+original capture into a 60,891 row, 21 session dataset, real `sigma_r`
+variation confirmed across every label, RandomForest LOSO accuracy
+0.997 on the full merged set. See
+[Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
+recapture made possible.
 
 **V8, automated playbooks.** Granular incident reports and multi stage response
 playbooks executed during severe events.
@@ -200,6 +231,59 @@ runs of a generator that does not repeat exactly.
 
 No throughput comparison has been made. That is a separate question from
 whether detection is preserved, and less important.
+
+**Scripted traffic generators can make the rate look artificially steady,
+fixed by jittering generator timing.** `sigma_r`, the standard deviation
+Stage 1 learns for a target's rate, comes from window to window variation
+in a smoothed EWMA rate. A load testing tool or flood tool that paces every
+request or packet on a fixed, regular interval, rather than the
+independent, uncoordinated timing real clients or a real botnet have,
+produces almost no such variation, so `sigma_r` reads at or near its
+configured floor for the entire capture regardless of how much traffic is
+actually flowing. A training set built this way teaches a model "this
+traffic is mechanically regular" rather than the intended class signature,
+which will not transfer to traffic with natural jitter. Fixed on the
+generator side: randomised inter request wait time, varying the active
+source or user count over the session rather than holding it flat, and
+avoiding an unpaced flood mode in favour of short, randomised bursts.
+Confirmed on a real recapture, real `sigma_r` variation across every label
+rather than a value pinned at the floor. See [training.md](training.md).
+
+## Benchmark: FLOD vs. Fixed Threshold
+
+`scripts/benchmark_fixed_threshold.py` answers the question this
+project's own thesis rests on: does an adaptive boundary actually beat a
+static one, on real captured data, not just in the abstract. Run
+offline against an already-captured training CSV, no live traffic
+needed. Covers both trained models, not the RandomForest alone: the
+RandomForest by Leave-One-Session-Out, the same held-out methodology
+`stage2/train.py`'s own accuracy claims already rest on, and the
+Isolation Forest under the same LOSO standard, which is stricter than
+`stage2/train_isolation_forest.py`'s own self-evaluation (unsupervised,
+so it has no held-out label to score against in production, but a
+benchmark can hold it to a higher bar). Also reports real training
+time, prediction latency and throughput, model size on disk, and this
+process's own CPU time and peak memory, measured directly rather than
+via an external sampler. Full methodology, hardware, and results:
+[Benchmark Results](benchmark-results.md).
+
+Three scenarios: Normal, Flash Crowd, DDoS, the classes the training
+data's label column actually carries. Latest run, against the full
+60,891 row, 21 session corrected dataset: RandomForest LOSO accuracy
+0.997, precision 99.7%, recall 99.2%, false positive rate 0.1%. Fixed
+threshold: precision 43.5%, recall 98.9%, false positive rate 52.5%.
+The number that matters most: of real Flash Crowd traffic, the
+RandomForest correctly left 100.0% alone, the fixed threshold flagged
+all of it as an attack. A threshold set low enough to catch the DDoS
+sessions here catches the legitimate surge too, because both read as an
+elevated rate and rate is the only signal a fixed threshold has. The
+Isolation Forest, evaluated the same way even though this is a narrower
+question than what it is actually for, correctly left 100.0% of Flash
+Crowd alone too.
+
+```bash
+python3 scripts/benchmark_fixed_threshold.py <path-to-training.csv>
+```
 
 ## References
 

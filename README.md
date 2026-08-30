@@ -9,6 +9,8 @@ An adaptive two stage Layer 4 volumetric DDoS mitigation gateway.
 **Project:** Adaptive Two Stage Framework for Near Real Time Layer 4 Volumetric
 DDoS Mitigation Using Behavioral Traffic Analysis
 
+![The FLOD dashboard overview, five protected targets, all reading Normal](docs/images/dashboard-overview.png)
+
 
 ## What It Does
 
@@ -39,7 +41,10 @@ arithmetic, so it stays out of the way of traffic.
 
 **Stage 2** is a Python service. It receives a summary from Stage 1 once per
 window, classifies it with a Random Forest, and issues kernel level enforcement
-through ipset and iptables. It also serves the web dashboard.
+through ipset and iptables. An Isolation Forest runs alongside it on every
+window, flagging traffic unlike anything either model has learned, surfaced as
+a separate `Anomalous` state rather than driving enforcement. Stage 2 also
+serves the web dashboard.
 
 The two are connected by a Unix domain socket.
 
@@ -51,14 +56,20 @@ rate, source IP entropy, protocol mix, and how concentrated traffic is on its
 busiest source. In practice that means floods which are both high volume and
 concentrated, arriving from a bounded set of real addresses.
 
-Two things are explicitly out of scope:
-
-**Randomized source spoofing.** Forging a new source address per packet raises
-entropy instead of lowering it, inverting the signal the detector looks for.
+One thing is explicitly out of scope, and one is partially addressed:
 
 **Application layer attacks.** No request content is parsed, so low and slow
 request floods and connection exhaustion are outside what a header only feature
 set can observe.
+
+**Randomized source spoofing.** Forging a new source address per packet raises
+entropy instead of lowering it, inverting the signal the address based
+features look for. Source port entropy, TTL variance, and TCP SYN
+fingerprint diversity are invariant under address forgery and close this
+detection blind spot, but detecting a spoofed flood is a narrower problem
+than stopping one: blocking a forged address still punishes whoever really
+owns it, so safe enforcement against this class remains open. See
+[Detection](docs/detection.md) and the [Explainer](docs/explainer.md).
 
 
 ## Quick Start
@@ -68,14 +79,22 @@ git clone https://github.com/DevInBlack001/ddos-reduction-system.git
 cd ddos-reduction-system
 sudo bash scripts/install.sh --interface <IFACE> --victim-ips <IP1>,<IP2>
 
-cd stage2 && sudo venv/bin/python3 setup_admin.py
-
 sudo systemctl enable --now ddos-stage2
 sudo systemctl enable --now ddos-stage1
 ```
 
-The dashboard is on port 8000. Full instructions, including the network layout
-this depends on, are in the wiki.
+The installer builds Stage 1, then copies Stage 2's code and virtual
+environment into `/opt/flod/stage2` (root owned) and sets up the
+administrative account there, since Stage 2 runs as root and must not
+execute anything from the checkout an unprivileged account can still
+write to. Mutable state, the database, JSON config, trained models, lives
+in `/var/lib/flod`. The checkout itself is only ever a source from here
+on; re-running `scripts/install.sh` or `scripts/update.sh` refreshes the
+installed copy from it. See [Security](docs/security.md) for why.
+
+The dashboard is on port 8000, over HTTPS once the installer's self signed
+certificate is in place. Full instructions, including the network layout
+this depends on, are in the [wiki](https://github.com/DevInBlack001/ddos-reduction-system/wiki).
 
 The installer also sets up the eBPF build toolchain when it can, matching
 whatever LLVM your distribution ships. That part is optional: without it the
@@ -109,7 +128,7 @@ scripts/test.sh
 
 ## Documentation
 
-**Wiki**, for running the system:
+**[Wiki](https://github.com/DevInBlack001/ddos-reduction-system/wiki)**, for running the system:
 
 | Page | Covers |
 |-|-|
@@ -124,12 +143,15 @@ scripts/test.sh
 |-|-|
 | [Architecture](docs/architecture.md) | The pipeline, threading, capture tuning, egress measurement |
 | [Detection](docs/detection.md) | Welford, EWMA, entropy, anomaly boundaries, baseline persistence |
+| [Explainer](docs/explainer.md) | Every term and every wire format field, explained for a non-technical reader |
 | [IPC](docs/ipc.md) | The feature vector wire format |
 | [Enforcement](docs/enforcement.md) | Classification, the four mitigation tiers, NAT handling |
 | [Training](docs/training.md) | Capturing labelled data and training the model |
 | [Testing](docs/testing.md) | Running both test suites |
 | [Security](docs/security.md) | The hardening pass and the threat model |
 | [Roadmap](docs/roadmap.md) | Completed and planned versions |
+| [Benchmark Results](docs/benchmark-results.md) | FLOD vs. a fixed threshold: hardware, methodology, full output |
+| [Lessons Learned](docs/lessons-learned.md) | Real bugs found during development, kept for what they generalize to |
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers development setup and conventions.
 [SECURITY.md](SECURITY.md) covers reporting vulnerabilities.

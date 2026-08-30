@@ -78,6 +78,38 @@ fn window_is_clean(
         && rate <= rate_ceiling
 }
 
+/// Updates the consecutive-frozen-windows counter for one window and
+/// decides whether this window should be treated as clean: either
+/// naturally, per `window_is_clean`, or because the freeze has now lasted
+/// longer than `max_baseline_freeze_windows`. Returns the counter's new
+/// value and the clean/not-clean decision.
+///
+/// Sustained legitimate growth otherwise freezes the baseline permanently:
+/// each window it stays above the stale boundary re-flags, which re-arms
+/// cooldown, which keeps the gate closed, and nothing in that loop ever
+/// lets the boundary move to catch up. This is the escape hatch, bounded
+/// and configurable rather than indefinite: an attacker can force it open
+/// only by sustaining elevated traffic for longer than
+/// `max_baseline_freeze_windows`, the same tradeoff a target's very first
+/// warm-up already makes for its initial baseline. The entropy-only
+/// exception `window_is_clean` already grants is unaffected, since it
+/// already returns clean well before this bound is ever reached.
+fn apply_freeze_escape(
+    naturally_clean: bool,
+    consecutive_frozen_windows: u64,
+    max_baseline_freeze_windows: u64,
+) -> (u64, bool) {
+    if naturally_clean {
+        return (0, true);
+    }
+    let updated = consecutive_frozen_windows + 1;
+    if updated > max_baseline_freeze_windows {
+        (0, true)
+    } else {
+        (updated, false)
+    }
+}
+
 /// How far the running mean may sit from the peacetime reference before it is
 /// treated as poisoned and reverted.
 const MAX_BASELINE_DRIFT: f64 = 0.50;
@@ -243,7 +275,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     let _ = writeln!(
                         f,
                         "entropy,ewma_rate,mean_h,mean_r,sigma_h,sigma_r,\
-                         proto_ratio,dominant_ip_ratio,timestamp,label"
+                         proto_ratio,dominant_ip_ratio,source_port_entropy,\
+                         ttl_variance,fingerprint_diversity,timestamp,label"
                     );
                 }
                 info!("Analysis: training mode on, writing CSV to '{}' with label={}", path, cfg.train_label);
@@ -294,6 +327,13 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 match capture.drain() {
                     Ok(samples) => {
                         for (victim_ip, sample) in samples {
+                            // The kernel's EXCLUDED trie already keeps an
+                            // excluded host's packets out of every map, this
+                            // is a userspace backstop against a stale eBPF
+                            // object loaded without that trie populated.
+                            if !cfg.is_effectively_protected(&victim_ip) {
+                                continue;
+                            }
                             for ((src, dst, port, proto), count) in &sample.flows {
                                 let key = (*src, *dst, *port, *proto);
                                 let at_capacity = flow_counts.len() >= cfg.max_tracked_flows;
@@ -315,6 +355,22 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                             for (src_ip, count) in &sample.sources {
                                 target_state.entropy.add_packets(*src_ip, *count as u32);
                                 *target_state.ip_counts.entry(*src_ip).or_insert(0) += *count as u32;
+                            }
+                            // V7: port entropy and TTL variance, same bulk
+                            // add shape as the source entropy above. Both
+                            // arrive from the kernel already grouped by
+                            // value, so both feed their accumulator once per
+                            // distinct value with that value's count, rather
+                            // than needing a per packet loop the kernel
+                            // backend exists to avoid.
+                            for (port, count) in &sample.ports {
+                                target_state.port_entropy.add_packets(*port, *count as u32);
+                            }
+                            for (ttl, count) in &sample.ttls {
+                                target_state.welford_ttl.update_batch(*ttl as f64, *count);
+                            }
+                            for (bucket, count) in &sample.fingerprints {
+                                target_state.fingerprint_entropy.add_packets(*bucket, *count as u32);
                             }
                             target_state.window_packet_count += sample.ingress_packets as usize;
                             target_state.egress_packet_count += sample.egress_packets;
@@ -361,13 +417,10 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     }
                 }
 
-                // Check if destination IP is one of our victim targets
-                let is_target = match &cfg.victim_targets {
-                    Some(targets) => targets.contains(&meta.dst_ip),
-                    None => true, // In dev/test mode without a BPF filter, track all up to limits
-                };
-
-                if !is_target {
+                // Check if destination IP is one of our victim targets, and
+                // not one carved back out via --exclude-ips (most often the
+                // gateway's own address falling inside --victim-subnet).
+                if !cfg.is_effectively_protected(&meta.dst_ip) {
                     continue;
                 }
 
@@ -389,6 +442,13 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 target_state.entropy.add_packet(meta.src_ip);
                 *target_state.ip_counts.entry(meta.src_ip).or_insert(0) += 1;
                 target_state.window_packet_count += 1;
+
+                // V7: port entropy, TTL variance, TCP fingerprint diversity.
+                target_state.port_entropy.add_packet(meta.source_port);
+                target_state.welford_ttl.update(meta.ttl as f64);
+                if let Some(bucket) = meta.fingerprint_bucket {
+                    target_state.fingerprint_entropy.add_packet(bucket);
+                }
 
                 // Increment the Layer 4 protocol counter for the current window.
                 match meta.protocol {
@@ -485,6 +545,15 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // This call clears the internal HashMap and resets the packet counter.
             let h = target_state.entropy.compute_and_reset();
 
+            // V7: source port entropy and TCP fingerprint diversity, same
+            // shape as h above, over a different window. TTL variance reads
+            // and then clears separately: WelfordAccumulator has no
+            // combined compute-and-reset, so its reset sits with the other
+            // per-window accumulators below.
+            let source_port_entropy = target_state.port_entropy.compute_and_reset();
+            let fingerprint_diversity = target_state.fingerprint_entropy.compute_and_reset();
+            let ttl_variance = target_state.welford_ttl.variance().unwrap_or(0.0);
+
             // Read the current EWMA rate as a snapshot scalar r.
             // The rate is not reset: it carries memory across windows.
             let r = target_state.ewma.snapshot();
@@ -534,19 +603,22 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // The label file sits in a root owned directory so a local
             // account cannot flip it mid capture and poison the dataset.
             if now_instant.duration_since(last_label_check).as_secs_f64() >= 1.0 {
-                if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label") {
-                    if let Ok(parsed) = content.trim().parse::<u8>() {
-                        if parsed != current_train_label {
-                            info!("Analysis: Live label switch triggered via /run/ddos_stage1/train_label. Changed from {} to {}", current_train_label, parsed);
-                            current_train_label = parsed;
-                        }
-                    }
+                if let Ok(content) = std::fs::read_to_string("/run/ddos_stage1/train_label")
+                    && let Ok(parsed) = content.trim().parse::<u8>()
+                    && parsed != current_train_label
+                {
+                    info!("Analysis: Live label switch triggered via /run/ddos_stage1/train_label. Changed from {} to {}", current_train_label, parsed);
+                    current_train_label = parsed;
                 }
                 last_label_check = now_instant;
             }
 
             // Reset all per-window accumulators for the next window.
             target_state.ip_counts.clear();
+            // V7: TTL variance is a per-window shape descriptor, not a
+            // cross-window baseline like welford_rate/welford_entropy
+            // below, so it resets here rather than persisting.
+            target_state.welford_ttl.reset();
             target_state.window_packet_count = 0;
             target_state.tcp_count  = 0;
             target_state.udp_count  = 0;
@@ -590,8 +662,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     cooldown_counter: target_state.cooldown_counter as f64,
                     egress_rate,
                     drop_ratio,
+                    source_port_entropy,
+                    ttl_variance,
+                    fingerprint_diversity,
+                    is_warmup: 1.0,
                     dominant_ip: IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), // No dominant IP during warmup
-                    victim_ip:   victim_ip,
+                    victim_ip,
                 };
                 // The IPC layer reports the connection going down and coming
                 // back. Repeating it here would be one line per window.
@@ -599,6 +675,14 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     log::debug!("Analysis [victim={victim_ip}]: warm-up window not delivered");
                 }
 
+                // Training capture does not write warm-up windows to the
+                // CSV. sigma_r/sigma_h here are the raw, unclamped Welford
+                // std_dev, not the floored values every post-warmup row
+                // gets at the write below: a warm-up row can read arbitrarily
+                // below --rate-sigma-floor/--entropy-sigma-floor, a range
+                // live production traffic can never produce once warmed up,
+                // so mixing the two into one column silently trains on data
+                // the deployed sensor cannot generate.
                 continue;
             }
 
@@ -653,7 +737,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
 
             // Named because the baseline snapshot below reuses the same
             // condition. A save must never capture mid attack state.
-            let is_clean_window = window_is_clean(
+            let naturally_clean = window_is_clean(
                 anomaly_flags,
                 target_state.cooldown_counter,
                 dominant_ip_ratio,
@@ -661,14 +745,47 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 r,
                 target_state.welford_rate.mean + sigma_r,
             );
+
+            let was_frozen = target_state.consecutive_frozen_windows;
+            let (consecutive_frozen_windows, is_clean_window) = apply_freeze_escape(
+                naturally_clean,
+                target_state.consecutive_frozen_windows,
+                cfg.max_baseline_freeze_windows,
+            );
+            target_state.consecutive_frozen_windows = consecutive_frozen_windows;
+
+            // A window that is clean only because it just escaped a freeze,
+            // not because it looked ordinary on its own merits, is exactly
+            // the sample the outlier checks below would otherwise reject:
+            // it deviates from the stale, pre-freeze mean and sigma by a
+            // huge margin almost by definition, since that gap is the
+            // reason the freeze happened at all. Rejecting it as an
+            // outlier would fire the escape's own warning while silently
+            // leaving Welford exactly as frozen as before, which is what
+            // the first version of this fix actually did: the warning
+            // logged, the update never ran, and `sigma_r` never moved.
+            // Confirmed on the VM on 2026-08-30 before this line existed:
+            // the escape fired ten times across a real DDoS-shaped session
+            // and `sigma_r` still read the floor on every single row.
+            let escaped_freeze = is_clean_window && !naturally_clean;
+
+            if escaped_freeze {
+                warn!(
+                    "Analysis [victim={}]: baseline was frozen for {} consecutive windows, \
+                     past the configured cap ({}); accepting current traffic as the new baseline.",
+                    victim_ip, was_frozen + 1, cfg.max_baseline_freeze_windows
+                );
+            }
             if is_clean_window {
-                let is_rate_outlier = sigma_r > 0.0
+                let is_rate_outlier = !escaped_freeze
+                    && sigma_r > 0.0
                     && (r - target_state.welford_rate.mean).abs() > cfg.outlier_sigma * sigma_r;
                 if !is_rate_outlier && target_state.welford_rate.mean < cfg.rate_mean_cap {
                     target_state.welford_rate.update(r);
                 }
 
-                let is_entropy_outlier = sigma_h > 0.0
+                let is_entropy_outlier = !escaped_freeze
+                    && sigma_h > 0.0
                     && (h - target_state.welford_entropy.mean).abs() > cfg.outlier_sigma * sigma_h;
                 if !is_entropy_outlier {
                     target_state.welford_entropy.update(h);
@@ -755,8 +872,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                     cooldown_counter: target_state.cooldown_counter as f64,
                     egress_rate,
                     drop_ratio,
+                    source_port_entropy,
+                    ttl_variance,
+                    fingerprint_diversity,
+                    is_warmup: 0.0,
                     dominant_ip,
-                    victim_ip:   victim_ip,
+                    victim_ip,
                 };
 
                 if ipc.send(&fv) {
@@ -778,11 +899,12 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             if let Some(ref mut f) = csv_writer {
                 let _ = writeln!(
                     f,
-                    "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
+                    "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{}",
                     h, r,
                     target_state.welford_entropy.mean, target_state.welford_rate.mean,
                     sigma_h, sigma_r,
                     proto_ratio, dominant_ip_ratio,
+                    source_port_entropy, ttl_variance, fingerprint_diversity,
                     timestamp,
                     current_train_label
                 );
@@ -931,6 +1053,76 @@ mod tests {
             10.0,
             100.0
         ));
+    }
+
+    #[test]
+    fn a_naturally_clean_window_resets_the_freeze_counter() {
+        let (counter, is_clean) = apply_freeze_escape(true, 87, 400);
+        assert_eq!(counter, 0);
+        assert!(is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_under_the_cap_stays_frozen_and_counts_up() {
+        let (counter, is_clean) = apply_freeze_escape(false, 5, 400);
+        assert_eq!(counter, 6);
+        assert!(!is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_exactly_at_the_cap_still_stays_frozen() {
+        // The bound is "past the cap", not "at it": a target configured
+        // for 400 windows gets the full 400, not 399.
+        let (counter, is_clean) = apply_freeze_escape(false, 399, 400);
+        assert_eq!(counter, 400);
+        assert!(!is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_past_the_cap_is_accepted_as_the_new_baseline() {
+        let (counter, is_clean) = apply_freeze_escape(false, 400, 400);
+        assert_eq!(counter, 0);
+        assert!(is_clean);
+    }
+
+    #[test]
+    fn sustained_growth_escapes_the_freeze_at_exactly_the_configured_bound() {
+        // Simulates a target whose rate keeps climbing past its stale
+        // boundary for longer than any real poisoning attempt this defence
+        // is meant to catch: this is the actual bug this escape hatch
+        // fixes, reproduced with a small cap instead of the real one so
+        // the test does not need hundreds of iterations.
+        let cap = 5;
+        let mut counter = 0u64;
+        let mut escaped_at = None;
+        for window in 1..=(cap + 2) {
+            let (new_counter, is_clean) = apply_freeze_escape(false, counter, cap);
+            counter = new_counter;
+            if is_clean {
+                escaped_at = Some(window);
+                break;
+            }
+        }
+        assert_eq!(escaped_at, Some(cap + 1));
+    }
+
+    #[test]
+    fn an_attacker_cannot_shorten_the_freeze_by_alternating_clean_and_flagged_windows() {
+        // A window that is naturally clean resets the counter to zero, so
+        // flickering between "flagged" and "clean" never accumulates
+        // toward the escape bound. Only a genuinely sustained elevation,
+        // one that never lets a window read as naturally clean, can reach
+        // it.
+        let cap = 5;
+        let mut counter = 0u64;
+        for _ in 0..20 {
+            let (c1, clean1) = apply_freeze_escape(false, counter, cap);
+            assert!(!clean1, "a single flagged window must never itself escape the freeze");
+            let (c2, clean2) = apply_freeze_escape(true, c1, cap);
+            assert!(clean2);
+            counter = c2;
+        }
+        assert_eq!(counter, 0);
     }
 
     #[test]
@@ -1116,6 +1308,9 @@ mod tests {
             arrived_at: Instant::now(),
             protocol: Protocol::Tcp,
             dst_port: 80,
+            source_port: 51234,
+            ttl: 64,
+            fingerprint_bucket: None,
         }
     }
 

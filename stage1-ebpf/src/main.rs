@@ -26,7 +26,7 @@ use aya_ebpf::{
     programs::{TcContext, XdpContext},
 };
 use core::mem;
-use ddos_stage1_common::{v4_mapped, Addr, Counters, FlowKey, SourceKey};
+use ddos_stage1_common::{v4_mapped, Addr, Counters, FingerprintKey, FlowKey, PortKey, SourceKey, TtlKey};
 use network_types::{
     eth::EthHdr,
     ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
@@ -51,6 +51,31 @@ const VLAN_HDR_LEN: usize = 4;
 /// bound is what lets the verifier accept this at all.
 const MAX_VLAN_DEPTH: usize = 2;
 
+/// V7: TCP option kind numbers this program weighs for the fingerprint
+/// bucket. Matches `stage1/src/capture.rs`'s pcap side exactly, so both
+/// backends mean the same thing by the same bucket number.
+const TCP_OPT_EOL: u8 = 0;
+const TCP_OPT_NOP: u8 = 1;
+const TCP_OPT_MSS: u8 = 2;
+const TCP_OPT_WSCALE: u8 = 3;
+const TCP_OPT_SACK_PERM: u8 = 4;
+const TCP_OPT_SACK: u8 = 5;
+const TCP_OPT_TIMESTAMP: u8 = 8;
+
+const OPT_MSS: u8 = 1 << 0;
+const OPT_WSCALE: u8 = 1 << 1;
+const OPT_SACK: u8 = 1 << 2;
+const OPT_TIMESTAMP: u8 = 1 << 3;
+
+/// How many TCP option entries to walk. A SYN's data offset caps total
+/// option bytes at 40 (max data offset 15 x 4 minus the 20 byte fixed
+/// header), and every common OS stack's SYN carries at most 5 to 7 options,
+/// so this covers every real signature with headroom, the same
+/// "as deep as this needs to go" reasoning `MAX_VLAN_DEPTH` above already
+/// uses. Only the iteration count needs to be compile time bounded for the
+/// verifier; each read still goes through `ptr_at`'s checked access.
+const MAX_TCP_OPTION_STEPS: usize = 10;
+
 // The sizes below are compiled in defaults, not fixed limits. User space
 // overrides each one at load time from a CLI flag (see kernel.rs), so a
 // deployment with more hosts, more sources, or more memory does not need a
@@ -63,6 +88,18 @@ const MAX_VLAN_DEPTH: usize = 2;
 /// Sized by `--max-protected-hosts`.
 #[map]
 static PROTECTED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
+
+/// Addresses carved out of PROTECTED, most often the gateway's own address
+/// falling inside a --victim-subnet range. Checked in addition to PROTECTED,
+/// never instead of it: a destination must match PROTECTED and not match
+/// this trie to be treated as protected. Empty, and therefore free, when no
+/// exclusion is configured.
+///
+/// Sized by `--max-protected-hosts`, the same knob PROTECTED uses: an
+/// exclusion list is always a small subset of the hosts it carves an
+/// address out of, so it does not need a flag of its own.
+#[map]
+static EXCLUDED: LpmTrie<Addr, u8> = LpmTrie::with_max_entries(1024, 0);
 
 /// Per host counters for the current window.
 /// Per CPU so concurrent receive queues cannot lose an increment. Each CPU
@@ -91,6 +128,28 @@ static SOURCES: PerCpuHashMap<SourceKey, u64> = PerCpuHashMap::with_max_entries(
 /// Sized by `--max-flows`.
 #[map]
 static FLOWS: PerCpuHashMap<FlowKey, u64> = PerCpuHashMap::with_max_entries(8192, 0);
+
+/// V7: per host, per source port packet counts. User space computes source
+/// port entropy from this, invariant under source address forgery unlike
+/// `SOURCES` above.
+///
+/// Port space is 16 bit and fixed regardless of how many addresses or
+/// packets a flood uses, so unlike `SOURCES` this needs no operator
+/// configurable cap: 65,536 is the whole space, not a budget.
+#[map]
+static PORT_HIST: PerCpuHashMap<PortKey, u64> = PerCpuHashMap::with_max_entries(65_536, 0);
+
+/// V7: per host, per TTL / hop limit packet counts. User space computes TTL
+/// variance from this. TTL is 8 bit, so 256 is the whole space.
+#[map]
+static TTL_HIST: PerCpuHashMap<TtlKey, u64> = PerCpuHashMap::with_max_entries(256, 0);
+
+/// V7: per host, per TCP fingerprint bucket SYN counts. User space computes
+/// fingerprint diversity from this. The bucket is a small fixed table index
+/// (option ordering plus a window size range, p0f style), not a hash of
+/// arbitrary bytes, so it needs no larger a key space than `TTL_HIST`.
+#[map]
+static FINGERPRINT_HIST: PerCpuHashMap<FingerprintKey, u64> = PerCpuHashMap::with_max_entries(64, 0);
 
 /// A single zeroed `Counters`, used only to seed a new entry.
 ///
@@ -133,6 +192,8 @@ struct Parsed {
     proto: IpProto,
     /// Offset of the transport header, if the packet has one to read.
     l4_offset: usize,
+    /// V7: IPv4 TTL or IPv6 hop limit.
+    ttl: u8,
 }
 
 /// Parse Ethernet, any VLAN tags, and IP.
@@ -169,6 +230,7 @@ unsafe fn parse(start: usize, end: usize) -> Option<Parsed> {
                 dest: v4_mapped((*ip).dst_addr.to_ne_bytes()),
                 proto: (*ip).proto,
                 l4_offset: offset + Ipv4Hdr::LEN,
+                ttl: (*ip).ttl,
             })
         }
         ETH_P_IPV6 => {
@@ -178,6 +240,7 @@ unsafe fn parse(start: usize, end: usize) -> Option<Parsed> {
                 dest: (*ip).dst_addr.in6_u.u6_addr8,
                 proto: (*ip).next_hdr,
                 l4_offset: offset + Ipv6Hdr::LEN,
+                ttl: (*ip).hop_limit,
             })
         }
         _ => None,
@@ -200,11 +263,113 @@ unsafe fn dest_port(start: usize, end: usize, p: &Parsed) -> u16 {
     }
 }
 
+/// V7: source port, or 0 for protocols that have none. Mirrors `dest_port`
+/// exactly, reading `.source` instead of `.dest` on the same already parsed
+/// header.
+#[inline(always)]
+unsafe fn source_port(start: usize, end: usize, p: &Parsed) -> u16 {
+    match p.proto {
+        IpProto::Tcp => match ptr_at::<TcpHdr>(start, end, p.l4_offset) {
+            Some(h) => u16::from_be((*h).source),
+            None => 0,
+        },
+        IpProto::Udp => match ptr_at::<UdpHdr>(start, end, p.l4_offset) {
+            Some(h) => u16::from_be((*h).source),
+            None => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// V7: reduce a TCP SYN's options and window size to one of
+/// `FINGERPRINT_HIST`'s 64 buckets. `None` for anything that is not a TCP
+/// SYN, or too short to hold a full TCP header: fingerprinting is a SYN
+/// only technique, and forcing every other packet into some bucket would
+/// mix "not applicable" with a real, if unusual, all zero fingerprint.
+///
+/// Matches `stage1/src/capture.rs`'s `fingerprint_bucket` exactly: 4 bits of
+/// option presence (MSS, window scale, SACK permitted or SACK, timestamp;
+/// NOP is padding, not counted), 2 bits of window size range.
+#[inline(always)]
+unsafe fn fingerprint_bucket(start: usize, end: usize, p: &Parsed) -> Option<u8> {
+    if p.proto != IpProto::Tcp {
+        return None;
+    }
+    let tcp: *const TcpHdr = ptr_at(start, end, p.l4_offset)?;
+    if (*tcp).syn() == 0 {
+        return None;
+    }
+
+    let opts_start = p.l4_offset + TcpHdr::LEN;
+    let opts_end = p.l4_offset + (*tcp).doff() as usize * 4;
+
+    let mut presence: u8 = 0;
+    let mut pos = opts_start;
+    for _ in 0..MAX_TCP_OPTION_STEPS {
+        if pos >= opts_end {
+            break;
+        }
+        let kind = match ptr_at::<u8>(start, end, pos) {
+            Some(k) => *k,
+            None => break,
+        };
+        match kind {
+            TCP_OPT_EOL => break,
+            TCP_OPT_NOP => pos += 1,
+            TCP_OPT_MSS => {
+                presence |= OPT_MSS;
+                pos += 4;
+            }
+            TCP_OPT_WSCALE => {
+                presence |= OPT_WSCALE;
+                pos += 3;
+            }
+            TCP_OPT_SACK_PERM => {
+                presence |= OPT_SACK;
+                pos += 2;
+            }
+            TCP_OPT_TIMESTAMP => {
+                presence |= OPT_TIMESTAMP;
+                pos += 10;
+            }
+            _ => {
+                // TCP_OPT_SACK or anything unrecognised: kind then a length
+                // byte then data, the general TCP option shape. Reading the
+                // length is what lets the walk skip it correctly rather
+                // than desyncing on whatever comes after.
+                let len = match ptr_at::<u8>(start, end, pos + 1) {
+                    Some(l) => *l as usize,
+                    None => break,
+                };
+                if kind == TCP_OPT_SACK {
+                    presence |= OPT_SACK;
+                }
+                pos += len.max(2);
+            }
+        }
+    }
+
+    let window = u16::from_be((*tcp).window);
+    let window_bucket: u8 = match window {
+        0 => 0,
+        1..=8192 => 1,
+        8193..=32768 => 2,
+        _ => 3,
+    };
+
+    Some(presence | (window_bucket << 4))
+}
+
 /// Whether this address is one of the hosts being protected.
+///
+/// Excluded addresses are checked here rather than left out of PROTECTED at
+/// load time, because PROTECTED's subnet entry is one trie node covering the
+/// whole range; there is no way to carve a single host back out of a prefix
+/// match without a second, separate check.
 #[inline(always)]
 fn is_protected(addr: &Addr) -> bool {
     let key = aya_ebpf::maps::lpm_trie::Key::new(128, *addr);
-    PROTECTED.get(&key).is_some()
+    PROTECTED.get(&key).is_some() && EXCLUDED.get(&key).is_none()
 }
 
 #[inline(always)]
@@ -258,6 +423,37 @@ fn bump_flow(key: &FlowKey) {
     let _ = FLOWS.insert(key, &next, 0);
 }
 
+/// V7: same shape as `bump`/`bump_flow`, kept as three separate, fully
+/// concrete functions rather than one generalised over the key type, so a
+/// mistake in the new maps' wiring cannot touch the already proven ingress
+/// path for `SOURCES`/`FLOWS`.
+#[inline(always)]
+fn bump_port(key: &PortKey) {
+    let next = match unsafe { PORT_HIST.get(key) } {
+        Some(n) => *n + 1,
+        None => 1,
+    };
+    let _ = PORT_HIST.insert(key, &next, 0);
+}
+
+#[inline(always)]
+fn bump_ttl(key: &TtlKey) {
+    let next = match unsafe { TTL_HIST.get(key) } {
+        Some(n) => *n + 1,
+        None => 1,
+    };
+    let _ = TTL_HIST.insert(key, &next, 0);
+}
+
+#[inline(always)]
+fn bump_fingerprint(key: &FingerprintKey) {
+    let next = match unsafe { FINGERPRINT_HIST.get(key) } {
+        Some(n) => *n + 1,
+        None => 1,
+    };
+    let _ = FINGERPRINT_HIST.insert(key, &next, 0);
+}
+
 fn observe_ingress(ctx: &XdpContext) -> Option<()> {
     let start = ctx.data();
     let end = ctx.data_end();
@@ -282,6 +478,24 @@ fn observe_ingress(ctx: &XdpContext) -> Option<()> {
         proto: parsed.proto as u8,
         _pad: 0,
     });
+
+    // V7: port entropy and TTL variance are computed on every ingress
+    // packet, matching the pcap backend, where a protocol with no port
+    // reads as 0. Fingerprint diversity is SYN only.
+    bump_port(&PortKey {
+        victim: parsed.dest,
+        port: unsafe { source_port(start, end, &parsed) },
+    });
+    bump_ttl(&TtlKey {
+        victim: parsed.dest,
+        ttl: parsed.ttl,
+    });
+    if let Some(bucket) = unsafe { fingerprint_bucket(start, end, &parsed) } {
+        bump_fingerprint(&FingerprintKey {
+            victim: parsed.dest,
+            bucket,
+        });
+    }
 
     Some(())
 }

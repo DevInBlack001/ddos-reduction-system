@@ -28,8 +28,9 @@ cd stage1
 cargo test
 ```
 
-51 tests across the online variance accumulator, the smoothed rate, entropy,
-IPC serialisation, baseline persistence, the kernel backend's address
+68 tests across the online variance accumulator, the smoothed rate, entropy,
+IPC serialisation, baseline persistence, victim target and exclusion
+matching, the kernel backend's address
 handling, and the analysis loop.
 
 Building needs libpcap headers, `libpcap-dev` on Debian and Ubuntu or
@@ -54,8 +55,9 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-196 tests across storage, configuration, request models, the database schema,
-the audit writers, enforcement, and authentication.
+240 tests across storage, configuration, request models, the database schema,
+the audit writers, enforcement, authentication, the Anomalous review CSV,
+the deterministic safety overrides, and IPC peer verification.
 
 Written against the standard library's `unittest`. Keep it that way: the suite
 runs anywhere the service runs, with no extra dependency to install.

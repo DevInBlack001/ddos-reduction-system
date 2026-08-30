@@ -63,6 +63,22 @@ class LoadJsonFileTests(unittest.TestCase):
             json.dump(payload, handle)
         self.assertEqual(storage.load_json_file(self.path, {}), payload)
 
+    def test_does_not_follow_a_symlink_planted_at_the_path(self):
+        real_target = temp_path()
+        with open(real_target, "w") as handle:
+            json.dump(["should not be read"], handle)
+        os.symlink(real_target, self.path)
+        try:
+            self.assertEqual(storage.load_json_file(self.path, ["default"]), ["default"])
+        finally:
+            unlink(real_target)
+
+    def test_no_temp_file_is_left_behind_after_creating_a_missing_file(self):
+        storage.load_json_file(self.path, [])
+        leftovers = [f for f in os.listdir(os.path.dirname(self.path))
+                     if f.startswith(os.path.basename(self.path) + ".tmp")]
+        self.assertEqual(leftovers, [])
+
 
 class SaveJsonFileTests(unittest.TestCase):
     def setUp(self):
@@ -96,6 +112,24 @@ class SaveJsonFileTests(unittest.TestCase):
         payload = {"victims": [{"ip": "192.0.2.4", "active": True}]}
         storage.save_json_file(self.path, payload)
         self.assertEqual(storage.load_json_file(self.path, {}), payload)
+
+    def test_no_temp_file_is_left_behind_after_a_save(self):
+        storage.save_json_file(self.path, ["a"])
+        leftovers = [f for f in os.listdir(os.path.dirname(self.path))
+                     if f.startswith(os.path.basename(self.path) + ".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_a_reader_never_sees_a_half_written_file(self):
+        # The atomic rename means an existing file is either the old
+        # complete content or the new complete content, never a partial
+        # write in between. Saving twice and reading after each call
+        # exercises the rename path directly.
+        storage.save_json_file(self.path, ["first"])
+        first_read = storage.load_json_file(self.path, None)
+        storage.save_json_file(self.path, ["second"])
+        second_read = storage.load_json_file(self.path, None)
+        self.assertEqual(first_read, ["first"])
+        self.assertEqual(second_read, ["second"])
 
 
 if __name__ == "__main__":

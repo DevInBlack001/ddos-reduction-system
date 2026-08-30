@@ -97,10 +97,11 @@ This is optional. Without it, Stage 1 still builds and runs on libpcap, and
 
 ### Full Install
 
-`scripts/install.sh` builds Stage 1, installs the binary, creates the Python
-virtual environment, generates a TLS certificate, and writes systemd units.
-Use it on a disposable virtual machine, not your workstation. It is documented
-in the wiki.
+`scripts/install.sh` builds Stage 1, installs the binary, copies Stage 2's
+code and a fresh virtual environment into a root owned `/opt/flod/stage2`
+(never the checkout, see [Security](docs/security.md)), generates a TLS
+certificate, and writes systemd units. Use it on a disposable virtual
+machine, not your workstation. It is documented in the wiki.
 
 ## Testing Expectations
 

@@ -23,6 +23,7 @@
 #   --interface  <IFACE>     Default capture interface written into the service unit
 #   --victim-ips <IPs>       Default list of victim IPs (comma-separated, alias: --victim-ip)
 #   --victim-subnet <SUBNET> Default victim subnet CIDR (e.g. 10.0.0.0/24)
+#   --exclude-ips <IPs>      Addresses carved out of the above, comma-separated (alias: --exclude-ip)
 #   --capture-mode <MODE>    pcap (default) or kernel. 'kernel' uses XDP and TC
 #                            and is written into the service unit
 #   --no-service             Skip systemd unit installation
@@ -37,10 +38,16 @@
 #
 # Notes:
 #   • Must be run as root (or with sudo) because pcap and systemd require it.
-#   • The Rust toolchain is installed into ~/.cargo for the current user.
-#     If running as root via sudo, the toolchain lands in /root/.cargo.
+#   • Building Stage 1 is not: it runs as the account sudo was invoked from
+#     (via 'sudo -u'), never as root, so cargo, rustup, and every
+#     dependency's build code run with that account's privileges. The Rust
+#     toolchain is installed into that account's own ~/.cargo, not root's.
+#     Only the resulting binary and eBPF object are then installed as root.
 #   • Use `sudo setcap cap_net_raw+ep /usr/local/bin/ddos_stage1` after install
 #     to run the binary WITHOUT root in production.
+#
+# Full instructions, including network placement and first login, are in
+# the wiki: https://github.com/DevInBlack001/ddos-reduction-system/wiki
 # =============================================================================
 
 set -euo pipefail
@@ -57,6 +64,7 @@ INTERFACE="br0"
 VICTIM_IP=""
 VICTIM_IPS=""
 VICTIM_SUBNET=""
+EXCLUDE_IPS=""
 # Which backend the generated unit starts with. pcap by default because it
 # works on any interface; the kernel backend additionally needs the compiled
 # object and a driver the verifier will attach to.
@@ -76,11 +84,17 @@ INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")/stage1"
-
-# Toolchain discovery, used by both the Rust and eBPF steps below.
-# shellcheck source=/dev/null
-source "$SCRIPT_DIR/lib-toolchain.sh"
-load_cargo_env
+# Stage 2 runs as root, so its code and venv must not live somewhere the
+# operator's own login account can still write to: anyone who can modify
+# the checkout would otherwise get root the next time the service
+# restarts, updates, or training reruns. The checkout is a source from
+# here on, copied into these root-owned locations, never executed from
+# directly by the systemd unit. scripts/run.sh and a developer's own venv
+# (see CONTRIBUTING.md) still run straight from the checkout, deliberately:
+# that path never crosses a privilege boundary, the operator only ever
+# runs it as themselves.
+STAGE2_INSTALL_DIR="/opt/flod/stage2"
+STAGE2_STATE_DIR="/var/lib/flod"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -88,6 +102,7 @@ while [[ $# -gt 0 ]]; do
         --interface)               INTERFACE="$2"; shift 2 ;;
         --victim-ip|--victim-ips)  VICTIM_IPS="$2"; shift 2 ;;
         --victim-subnet)           VICTIM_SUBNET="$2"; shift 2 ;;
+        --exclude-ip|--exclude-ips) EXCLUDE_IPS="$2"; shift 2 ;;
         --capture-mode)
             case "$2" in
                 pcap|kernel) CAPTURE_MODE="$2" ;;
@@ -146,6 +161,16 @@ if [[ -t 0 ]]; then
         else
             VICTIM_IPS="$input_target"
             VICTIM_SUBNET=""
+        fi
+    fi
+
+    echo -ne "${YELLOW}[INPUT]${NC} Enter any IP(s) to exclude from monitoring, comma-separated (e.g. the gateway's own address, if it falls inside a subnet above) [default: ${EXCLUDE_IPS:-none}]: "
+    read -r input_exclude
+    if [[ -n "$input_exclude" ]]; then
+        if [[ "$input_exclude" == "none" ]]; then
+            EXCLUDE_IPS=""
+        else
+            EXCLUDE_IPS="$input_exclude"
         fi
     fi
     echo ""
@@ -268,107 +293,57 @@ esac
 success "System dependencies installed."
 
 # =============================================================================
-# Install Rust toolchain via rustup
+# Build Stage 1 and its eBPF backend
 # =============================================================================
-info "Checking for Rust toolchain..."
+# Compiling means running cargo against this checkout: build.rs and proc
+# macros in any dependency run arbitrary code as whoever invokes cargo, and
+# rustup, cargo install, and the eBPF build all touch the checkout the same
+# way. Done as the account that ran git clone, never as root, so a checkout
+# that account can write to cannot use a poisoned dependency or a modified
+# build script to run code as root. This script itself never sources
+# lib-toolchain.sh or touches cargo directly; scripts/build-stage1.sh does,
+# entirely as that unprivileged account. Root's job starts only once real
+# files exist on disk to install.
+info "Building Stage 1..."
 
-if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
-    success "Rust already installed: $(rustc --version)"
+if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
+    # An install from before this script stopped building as root can have
+    # left root-owned files inside the checkout, most visibly the compiled
+    # eBPF object under stage1/src/bpf: the unprivileged build below cannot
+    # even remove or overwrite those, since deleting a file needs write
+    # access to its directory, not just the file. Reclaiming the checkout
+    # for the invoking account first is a one-time fix on such a system; on
+    # one that was always built this way, every path here is already that
+    # account's own, so this is a fast no-op.
+    chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" \
+        "$PROJECT_DIR" "$(dirname "$SCRIPT_DIR")/stage1-ebpf" 2>/dev/null || true
+    sudo -u "$SUDO_USER" -H bash "$SCRIPT_DIR/build-stage1.sh"
 else
-    info "Rust not found. Installing via rustup..."
-    if ! ensure_rustup; then
-        error "Could not install the Rust toolchain. Install cargo and rustc"
-        error "from your distribution, or rustup from https://rustup.rs, then"
-        error "re-run this script."
-        exit 1
-    fi
-    success "Rust toolchain installed: $(rustc --version)"
+    warn "No non-root account to build as: this script was not invoked with"
+    warn "sudo from a normal login. Building as root instead, which trusts"
+    warn "this checkout's build scripts and every dependency's build code."
+    warn "Prefer 'sudo bash scripts/install.sh' from a normal account."
+    bash "$SCRIPT_DIR/build-stage1.sh"
 fi
 
-# Only meaningful when rustup is managing the toolchain. A distribution
-# install has no notion of a default and the call is a harmless no-op.
-if command -v rustup &>/dev/null; then
-    rustup default stable &>/dev/null || true
-fi
-
-# =============================================================================
-# eBPF build toolchain (optional)
-# =============================================================================
-# The XDP capture backend is compiled separately: it targets BPF bytecode on
-# nightly, while the sensor targets the host on stable. This is best effort.
-# A machine without it still builds and runs Stage 1 on the libpcap backend.
-info "Setting up the eBPF build toolchain..."
-
-EBPF_READY=false
-
-# cargo can come from a distribution package with no rustup alongside it. That
-# builds the sensor fine but cannot add nightly or rust-src, so rustup is
-# installed here rather than assumed.
-if ! command -v rustup &>/dev/null; then
-    info "rustup not found. Installing it so a nightly toolchain can be added..."
-    if ensure_rustup; then
-        success "rustup installed: $(rustup --version 2>/dev/null | head -1)"
-    else
-        warn "Could not install rustup. Skipping the kernel capture backend."
-        warn "Stage 1 will still build and run on the libpcap backend."
-    fi
-fi
-
-if command -v rustup &>/dev/null && ! nightly_ready; then
-    info "Installing the nightly toolchain and rust-src (needed to build core)..."
-    rustup toolchain install nightly --component rust-src --profile minimal &>/dev/null || true
-fi
-
-if nightly_ready; then
-    if command -v bpf-linker &>/dev/null; then
-        success "bpf-linker already present: $(bpf-linker --version 2>/dev/null || echo unknown)"
-        EBPF_READY=true
-    elif detect_llvm; then
-        info "Found LLVM $LLVM_MAJOR at $LLVM_PREFIX. Installing a matching bpf-linker..."
-        # Version is chosen from the LLVM actually installed, not pinned here:
-        # bpf-linker links against LLVM, and which LLVM a machine has is its
-        # distribution's decision. Candidates are tried until one builds.
-        if CHOSEN=$(install_bpf_linker "$LLVM_MAJOR" "$LLVM_PREFIX"); then
-            success "bpf-linker installed ($CHOSEN, built against LLVM $LLVM_MAJOR)."
-            EBPF_READY=true
-        else
-            warn "Could not build bpf-linker against LLVM $LLVM_MAJOR."
-            warn "Stage 1 will still build and run on the libpcap backend."
-        fi
-    else
-        warn "No LLVM installation found, so bpf-linker cannot be built."
-        warn "Install your distribution's llvm and clang packages, then re-run."
-    fi
-else
-    warn "Nightly toolchain unavailable. Skipping the eBPF backend."
-fi
+BINARY_PATH="$PROJECT_DIR/target/release/$BINARY_NAME"
+[[ -f "$BINARY_PATH" ]] || error "Stage 1 build did not produce $BINARY_PATH."
+success "Build complete: $BINARY_PATH"
 
 BPF_OBJECT_DIR="/usr/local/lib/ddos_stage1"
+EBPF_OBJ="$PROJECT_DIR/src/bpf/ddos-stage1.o"
+EBPF_READY=false
 
-if $EBPF_READY; then
-    info "Building the eBPF programs..."
-    EBPF_LOG="$(mktemp)"
-    if bash "$SCRIPT_DIR/build-ebpf.sh" >"$EBPF_LOG" 2>&1; then
-        # The sensor loads this into the kernel as a privileged process, so a
-        # non root account able to replace it would be running its own kernel
-        # code. Root owned directory, not writable by anyone else.
-        install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
-        install -o root -g root -m 644 \
-            "$PROJECT_DIR/src/bpf/ddos-stage1.o" \
-            "$BPF_OBJECT_DIR/ddos-stage1.o"
-        success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
-        rm -f "$EBPF_LOG"
-    else
-        EBPF_READY=false
-        warn "eBPF build failed. The reason follows; the installation continues"
-        warn "and Stage 1 will run on the libpcap backend."
-        echo
-        # Showing the reason here saves a second run just to find out what
-        # went wrong.
-        sed 's/^/    /' "$EBPF_LOG" | tail -n 25
-        echo
-        warn "Full output kept at $EBPF_LOG"
-    fi
+if [[ -f "$EBPF_OBJ" ]]; then
+    # The sensor loads this into the kernel as a privileged process, so a
+    # non root account able to replace it would be running its own kernel
+    # code. Root owned directory, not writable by anyone else.
+    install -d -o root -g root -m 755 "$BPF_OBJECT_DIR"
+    install -o root -g root -m 644 "$EBPF_OBJ" "$BPF_OBJECT_DIR/ddos-stage1.o"
+    success "eBPF object installed to $BPF_OBJECT_DIR/ddos-stage1.o"
+    EBPF_READY=true
+else
+    warn "No eBPF object was built. Stage 1 will run on the libpcap backend."
 fi
 
 # The kernel backend cannot start without the object, so a unit asking for it
@@ -381,40 +356,10 @@ if [[ "$CAPTURE_MODE" == "kernel" ]] && ! $EBPF_READY; then
 fi
 
 # =============================================================================
-# Compile Stage 1 in release mode
-# =============================================================================
-info "Building Stage 1 (release mode, this may take a few minutes on first build)..."
-
-if [[ ! -d "$PROJECT_DIR" ]]; then
-    error "Stage 1 source directory not found at: $PROJECT_DIR"
-fi
-
-cd "$PROJECT_DIR"
-
-# RUSTFLAGS: target-cpu=native enables CPU-specific optimisations (AVX2, etc.)
-# on the gateway host. Remove this flag if building for distribution to other
-# machines (use target-cpu=x86-64-v2 or omit entirely).
-RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
-
-success "Build complete: target/release/$BINARY_NAME"
-
-# This script runs as root, so everything it just wrote under target/ is root
-# owned. Building from a working copy would then break every later non root
-# cargo build with a permission error. Hand the tree back to whoever invoked
-# sudo. Only applies when running from a checkout, not from an unpacked copy.
-if [[ -n "${SUDO_USER:-}" ]] && id -u "$SUDO_USER" &>/dev/null; then
-    for tree in "$PROJECT_DIR/target" "$(dirname "$SCRIPT_DIR")/stage1-ebpf/target"; do
-        [[ -d "$tree" ]] || continue
-        chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$tree" 2>/dev/null || true
-    done
-    info "Build artefacts returned to $SUDO_USER."
-fi
-
-# =============================================================================
 # Install the binary
 # =============================================================================
 info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
-install -m 755 "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+install -m 755 "$BINARY_PATH" "$INSTALL_DIR/$BINARY_NAME"
 success "Binary installed: $INSTALL_DIR/$BINARY_NAME"
 
 # =============================================================================
@@ -509,29 +454,89 @@ install -d -m 700 -o ddos-stage1 -g ddos-stage1 /var/lib/ddos_stage1
 success "Baseline persistence directory ready: /var/lib/ddos_stage1"
 
 # =============================================================================
-# Setup Stage 2 Python Virtual Environment
+# Install Stage 2 into a root-owned runtime location
 # =============================================================================
-info "Setting up Stage 2 Python virtual environment..."
+info "Installing Stage 2 into $STAGE2_INSTALL_DIR (root owned)..."
 STAGE2_DIR="$(dirname "$PROJECT_DIR")/stage2"
 if [[ -d "$STAGE2_DIR" ]]; then
     if ! command -v python3 &>/dev/null; then
         error "python3 is not installed."
     fi
-    info "Creating virtual environment at $STAGE2_DIR/venv..."
-    if [[ "$PKG_MANAGER" == "apk" ]]; then
-        python3 -m venv --clear --system-site-packages "$STAGE2_DIR/venv"
-    else
-        python3 -m venv --clear "$STAGE2_DIR/venv"
+
+    # Code only: *.py at the top level, static/, requirements.txt. An
+    # explicit allowlist rather than "copy everything except", so a stray
+    # capture CSV or leftover state file sitting in the checkout never
+    # rides along into the runtime copy.
+    install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR"
+    for f in "$STAGE2_DIR"/*.py "$STAGE2_DIR/requirements.txt"; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
+    done
+    if [[ -d "$STAGE2_DIR/static" ]]; then
+        install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR/static"
+        while IFS= read -r -d '' f; do
+            rel="${f#"$STAGE2_DIR"/static/}"
+            install -D -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/static/$rel"
+        done < <(find "$STAGE2_DIR/static" -type f -print0)
     fi
-    
+    success "Stage 2 source copied to $STAGE2_INSTALL_DIR."
+
+    info "Creating the Stage 2 virtual environment..."
+    if [[ "$PKG_MANAGER" == "apk" ]]; then
+        python3 -m venv --clear --system-site-packages "$STAGE2_INSTALL_DIR/venv"
+    else
+        python3 -m venv --clear "$STAGE2_INSTALL_DIR/venv"
+    fi
+    chown -R root:root "$STAGE2_INSTALL_DIR/venv"
+
     info "Installing dependencies from requirements.txt..."
-    "$STAGE2_DIR/venv/bin/pip" install --upgrade pip
-    "$STAGE2_DIR/venv/bin/pip" install -r "$STAGE2_DIR/requirements.txt"
-    
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install --upgrade pip
+    "$STAGE2_INSTALL_DIR/venv/bin/pip" install -r "$STAGE2_INSTALL_DIR/requirements.txt"
+
+    # Mutable state: database, JSON config, models, logs, the anomalous
+    # traffic review CSV. Never under $STAGE2_INSTALL_DIR: everything
+    # there should be safely re-derivable from a fresh install, this
+    # directory is not. Root owned since Stage 2 itself runs as root.
+    install -d -o root -g root -m 700 "$STAGE2_STATE_DIR"
+
+    # Upgrading a pre-existing checkout-rooted install: carry real state
+    # forward instead of silently starting over. Only files present in the
+    # old location and absent from the new one move, so re-running this
+    # after the state directory exists is a no-op here. Model files are
+    # deliberately not in this list: joblib.load() deserialises via
+    # pickle and can execute arbitrary code on load, so a .joblib sitting
+    # in the checkout, writable by whichever account ran git clone, must
+    # never be auto-promoted into the path root loads from. See below.
+    for f in stage2.db whitelist.json shared_ips.json victims.json \
+             enforcement_config.json alerts_config.json stage2.log \
+             anomalous_capture.csv; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            mv "$STAGE2_DIR/$f" "$STAGE2_STATE_DIR/$f"
+            info "Migrated existing $f to $STAGE2_STATE_DIR."
+        fi
+    done
+    chown -R root:root "$STAGE2_STATE_DIR"
+
+    for f in ddos_rf_model.joblib ddos_if_model.joblib; do
+        if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
+            warn "Found $f in the checkout but did not migrate it:" \
+                 "a model file is loaded with joblib.load(), which can run" \
+                 "arbitrary code, so one sitting in a location the checkout" \
+                 "account can write to is not trusted automatically. Train" \
+                 "a fresh model with 'sudo scripts/train.sh', which writes" \
+                 "directly to $STAGE2_STATE_DIR, or verify $f yourself and" \
+                 "copy it to $STAGE2_STATE_DIR/$f as root."
+        fi
+    done
+
     info "Setting up administrative database and user..."
-    "$STAGE2_DIR/venv/bin/python" "$STAGE2_DIR/setup_admin.py"
-    
-    success "Stage 2 Python environment setup complete."
+    # setup_admin.py resolves its own DB_PATH independently of config.py's
+    # FLOD_STATE_DIR, it predates that mechanism, so it needs the specific
+    # file path, not the directory.
+    DB_PATH="$STAGE2_STATE_DIR/stage2.db" \
+        "$STAGE2_INSTALL_DIR/venv/bin/python" "$STAGE2_INSTALL_DIR/setup_admin.py"
+
+    success "Stage 2 installed: code and venv in $STAGE2_INSTALL_DIR, state in $STAGE2_STATE_DIR."
 else
     warn "Stage 2 directory not found at $STAGE2_DIR. Skipping."
 fi
@@ -581,6 +586,9 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
         warn "No --victim-ips or --victim-subnet specified. Service will run without a BPF filter (dev mode)."
         EXEC_START+=" --no-filter"
     fi
+    if [[ -n "$EXCLUDE_IPS" ]]; then
+        EXEC_START+=" --exclude-ips $EXCLUDE_IPS"
+    fi
 
     if [[ "$CAPTURE_MODE" == "kernel" ]]; then
         EXEC_START+=" --capture-mode kernel"
@@ -607,7 +615,7 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
 
 [Unit]
 Description=Adaptive DDoS Pre-Filter Stage 1 (Rust)
-Documentation=https://github.com/your-repo/ddos-reduction
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
 # Start after network is up and Stage 2 classification engine is running
 After=network-online.target ddos-stage2.service
 Wants=network-online.target
@@ -654,17 +662,24 @@ EOF
 
 [Unit]
 Description=Adaptive DDoS Mitigation Stage 2 Classifier (Python)
+Documentation=https://github.com/DevInBlack001/ddos-reduction-system/wiki
 After=network-online.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$STAGE2_DIR
-ExecStart=/bin/bash -c 'source "$STAGE2_DIR/venv/bin/activate" && exec python3 stage2.py'
+WorkingDirectory=$STAGE2_INSTALL_DIR
+ExecStart=/bin/bash -c 'source "$STAGE2_INSTALL_DIR/venv/bin/activate" && exec python3 stage2.py'
 Restart=on-failure
 RestartSec=5s
 Environment="PYTHONUNBUFFERED=1"
+# Everything mutable (database, JSON config, models, logs, the anomalous
+# traffic review CSV) lives outside $STAGE2_INSTALL_DIR on purpose: see
+# config.py's FLOD_STATE_DIR comment. DB_PATH is set explicitly alongside
+# it because setup_admin.py and config.py resolve it independently.
+Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
+Environment="DB_PATH=$STAGE2_STATE_DIR/stage2.db"
 
 [Install]
 WantedBy=multi-user.target
@@ -699,8 +714,9 @@ fi
 info "========================================================================"
 info "   CRITICAL ACTION REQUIRED: MACHINE LEARNING MODEL TRAINING"
 info "========================================================================"
-info "The Random Forest classifier must be trained on network traffic baselines"
-info "before starting the detection services."
+info "Both the Random Forest classifier and the Isolation Forest anomaly"
+info "detector must be trained on network traffic baselines before starting"
+info "the detection services. Both models run in production together."
 info ""
 info "Step 1: Generate Training Data (Capture on your gateway interface):"
 info ""
@@ -713,10 +729,13 @@ info ""
 info "  c) Capture DDoS attack traffic (Label 2) for ~5 minutes (until warm-up completes):"
 info "     sudo ddos_stage1 --interface \$INTERFACE --victim-ips <VICTIM_IPS> --train-csv stage1/training_data.csv --train-label 2"
 info ""
-info "Step 2: Train the Random Forest Classifier Model:"
-info "  Run the training script (this cleans transient rows, balances classes,"
-info "  and saves the model inside the stage2 directory):"
-info "     stage2/venv/bin/python stage2/train.py"
+info "Step 2: Train Both Classifier Models:"
+info "  Run the interactive training selector, which trains the Random Forest,"
+info "  the Isolation Forest, or both against a chosen CSV:"
+info "     scripts/train.sh"
+info "  This install's running service loads models from $STAGE2_STATE_DIR,"
+info "  not the checkout, so scripts/train.sh saves there when it detects"
+info "  this install (see the script's own output for where it wrote them)."
 info ""
 info "Step 3: Launch System Daemons:"
 info "  Once trained, start and enable the systemd services:"

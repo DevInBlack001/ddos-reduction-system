@@ -41,6 +41,12 @@ pub const DEFAULT_RATE_MEAN_CAP: f64 = 10000.0;
 pub const DEFAULT_COOLDOWN_WINDOWS: u64 = 10;
 pub const DEFAULT_COOLDOWN_K_FACTOR: f64 = 0.5;
 pub const DEFAULT_PEACETIME_EWMA_WEIGHT: f64 = 0.001;
+/// Roughly double `WARMUP_WINDOWS`: a target whose baseline has been
+/// frozen this long has been elevated for longer than a brand new target's
+/// own first look at its traffic would take to trust, so treating it as a
+/// fresh baseline at that point costs nothing a fresh target's warm-up
+/// does not already cost.
+pub const DEFAULT_MAX_BASELINE_FREEZE_WINDOWS: u64 = 400;
 
 /// Runtime parameters for the analysis thread.
 #[derive(Debug, Clone)]
@@ -54,6 +60,10 @@ pub struct AnalysisConfig {
     pub socket_path: String,
     /// Monitored victim targets.
     pub victim_targets: Option<crate::VictimTargets>,
+    /// Addresses carved out of victim_targets, most often the gateway's own
+    /// address falling inside --victim-subnet. An address must match
+    /// victim_targets and not appear here to be treated as protected.
+    pub exclude_ips: Vec<IpAddr>,
     /// If Some, write every post-warmup feature vector to this CSV file.
     /// The file is created (or appended) at thread start.
     pub train_csv: Option<String>,
@@ -132,6 +142,18 @@ pub struct AnalysisConfig {
     /// smaller than `ewma_alpha`: the reference needs to move slower than
     /// the mean it guards, or it cannot tell drift from ordinary variation.
     pub peacetime_ewma_weight: f64,
+    /// How many consecutive frozen windows a target's rate or entropy
+    /// baseline may sit through before the current traffic is accepted as
+    /// the new baseline regardless. Sustained legitimate growth otherwise
+    /// freezes the baseline permanently: each window it stays above the
+    /// stale boundary re-flags, which re-arms cooldown, which keeps the
+    /// gate closed indefinitely, since nothing in that loop ever lets the
+    /// boundary move to catch up. Bounded and configurable rather than
+    /// indefinite: an attacker can force this open only by sustaining
+    /// elevated traffic for at least this many windows, the same tradeoff
+    /// a target's very first warm-up already makes for its initial
+    /// baseline.
+    pub max_baseline_freeze_windows: u64,
 }
 
 impl Default for AnalysisConfig {
@@ -141,6 +163,7 @@ impl Default for AnalysisConfig {
             ewma_alpha:  crate::ewma::DEFAULT_ALPHA,
             socket_path: crate::ipc::SOCKET_PATH.to_string(),
             victim_targets: None,
+            exclude_ips: Vec::new(),
             train_csv:   None,
             train_label: 0,
             baseline_path: persistence::DEFAULT_BASELINE_PATH.to_string(),
@@ -161,7 +184,78 @@ impl Default for AnalysisConfig {
             cooldown_windows:       DEFAULT_COOLDOWN_WINDOWS,
             cooldown_k_factor:      DEFAULT_COOLDOWN_K_FACTOR,
             peacetime_ewma_weight:  DEFAULT_PEACETIME_EWMA_WEIGHT,
+            max_baseline_freeze_windows: DEFAULT_MAX_BASELINE_FREEZE_WINDOWS,
         }
+    }
+}
+
+impl AnalysisConfig {
+    /// Whether `addr` should be tracked as a protected host: matching
+    /// `victim_targets` (or nothing configured at all, meaning track
+    /// everything, the dev/test mode without a BPF filter) and not carved
+    /// back out via `exclude_ips`. The one place both backends decide this,
+    /// so a kernel side trie and a pcap side check cannot drift apart.
+    pub fn is_effectively_protected(&self, addr: &IpAddr) -> bool {
+        let matches_targets = match &self.victim_targets {
+            Some(targets) => targets.contains(addr),
+            None => true,
+        };
+        matches_targets && !self.exclude_ips.contains(addr)
+    }
+}
+
+#[cfg(test)]
+mod exclude_ips_tests {
+    use super::*;
+    use crate::VictimTargets;
+
+    fn subnet_cfg(exclude: Vec<IpAddr>) -> AnalysisConfig {
+        AnalysisConfig {
+            victim_targets: Some(VictimTargets::Subnet {
+                ip: "192.0.2.0".parse().unwrap(),
+                prefix: 24,
+            }),
+            exclude_ips: exclude,
+            ..AnalysisConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_host_inside_the_subnet_is_protected_when_nothing_is_excluded() {
+        let cfg = subnet_cfg(vec![]);
+        assert!(cfg.is_effectively_protected(&"192.0.2.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn the_gateways_address_stops_being_protected_once_excluded() {
+        let gateway: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = subnet_cfg(vec![gateway]);
+        assert!(!cfg.is_effectively_protected(&gateway));
+    }
+
+    #[test]
+    fn excluding_the_gateway_does_not_affect_other_hosts_in_the_subnet() {
+        let gateway: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = subnet_cfg(vec![gateway]);
+        assert!(cfg.is_effectively_protected(&"192.0.2.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_host_outside_the_subnet_is_never_protected_exclusion_or_not() {
+        let cfg = subnet_cfg(vec!["203.0.113.5".parse().unwrap()]);
+        assert!(!cfg.is_effectively_protected(&"203.0.113.5".parse().unwrap()));
+    }
+
+    #[test]
+    fn with_no_victim_targets_configured_everything_is_tracked_except_exclusions() {
+        let excluded: IpAddr = "192.0.2.1".parse().unwrap();
+        let cfg = AnalysisConfig {
+            victim_targets: None,
+            exclude_ips: vec![excluded],
+            ..AnalysisConfig::default()
+        };
+        assert!(!cfg.is_effectively_protected(&excluded));
+        assert!(cfg.is_effectively_protected(&"198.51.100.7".parse().unwrap()));
     }
 }
 
@@ -184,6 +278,21 @@ pub struct TargetState {
     pub(crate) peacetime_entropy_ref: Option<f64>,
     pub(crate) window_id: u64,
     pub(crate) ip_counts: HashMap<IpAddr, u32>,
+    /// V7: source port entropy. Same lifecycle as `entropy` above, reset
+    /// every window: it describes this window's port distribution, not a
+    /// trend, so it is not persisted across restarts either.
+    pub(crate) port_entropy: EntropyAccumulator<u16>,
+    /// V7: TTL variance within the current window. A per-window shape
+    /// descriptor, not a cross-window baseline, unlike `welford_rate` and
+    /// `welford_entropy` below: there is no meaningful "baseline TTL
+    /// variance" to carry across a restart, so this resets every window via
+    /// `WelfordAccumulator::reset()` rather than persisting.
+    pub(crate) welford_ttl: WelfordAccumulator,
+    /// V7: TCP fingerprint bucket entropy for the current window. Same
+    /// shape as `port_entropy` above: diversity across buckets, not a
+    /// count, so it reuses the identical entropy math rather than a raw
+    /// histogram this file would then have to reduce to entropy itself.
+    pub(crate) fingerprint_entropy: EntropyAccumulator<u8>,
     pub(crate) window_packet_count: usize,
     /// V5: packets seen on the egress side for this victim in the current
     /// window, i.e. what survived filtering. Reset at every window close.
@@ -194,6 +303,11 @@ pub struct TargetState {
     pub(crate) cooldown_counter: usize,
     pub(crate) last_sent_time: f64,
     pub(crate) warmup_completed_logged: bool,
+    /// How many consecutive windows this target's baseline has sat frozen.
+    /// Not persisted: `to_persisted()` only snapshots from a clean window
+    /// by construction, so a restored baseline was never mid-freeze, and a
+    /// restart already gives warm-up its own fresh look regardless.
+    pub(crate) consecutive_frozen_windows: u64,
 }
 
 impl TargetState {
@@ -241,12 +355,16 @@ impl TargetState {
             peacetime_entropy_ref,
             window_id: 0,
             ip_counts: HashMap::new(),
+            port_entropy: EntropyAccumulator::new(),
+            welford_ttl: WelfordAccumulator::default(),
+            fingerprint_entropy: EntropyAccumulator::new(),
             window_packet_count: 0,
             egress_packet_count: 0,
             last_window_close: Instant::now(),
             cooldown_counter,
             last_sent_time: 0.0,
             warmup_completed_logged: false,
+            consecutive_frozen_windows: 0,
         }
     }
 

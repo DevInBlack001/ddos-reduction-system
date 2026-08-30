@@ -8,6 +8,7 @@ trains a Random Forest classifier, and saves the trained model.
 
 import os
 import sys
+import warnings
 import joblib
 import pandas as pd
 import numpy as np
@@ -15,9 +16,25 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils import resample
 
+# n_jobs=-1 below fans RandomForestClassifier's fit/predict out to joblib
+# workers; this specific sklearn/joblib version pairing warns on every such
+# call that the current thread's sklearn config isn't propagated to those
+# workers. Nothing here reads sklearn.get_config() or calls set_config(),
+# so there is no config for a worker to miss. Cosmetic, not suppressed
+# globally so an unrelated warning still surfaces.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
+    category=UserWarning,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
-MODEL_PATH = os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib")
+# Same MODEL_PATH environment variable config.py honours, so training run
+# against a production install can be pointed at the root-owned model
+# directory Stage 2 actually loads from, rather than silently writing a
+# new model into the checkout that nothing running in production reads.
+MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib"))
 FEATURE_COLS = [
     "entropy",
     "ewma_rate",
@@ -29,7 +46,10 @@ FEATURE_COLS = [
     "dominant_ip_ratio",
     "delta_rate",
     "delta_entropy",
-    "dominant_rate"
+    "dominant_rate",
+    "source_port_entropy",
+    "ttl_variance",
+    "fingerprint_diversity"
 ]
 LABEL_COL = "label"
 
@@ -72,7 +92,23 @@ def main():
     print(f"[+] Loading dataset from: {csv_file}")
     df = pd.read_csv(csv_file)
     print(f"[+] Loaded {len(df)} raw rows.")
-    
+
+    # V7 added three raw columns (source_port_entropy, ttl_variance,
+    # fingerprint_diversity) to the CSV Stage 1 writes. A CSV captured
+    # before that change has no way to hold them: fail loudly here rather
+    # than silently training on NaNs (dropna below would just delete every
+    # row) or a raw pandas KeyError deep in a later step. delta_rate,
+    # delta_entropy, and dominant_rate are computed below, not raw columns,
+    # so they are not part of this check.
+    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate"}
+    required_raw_cols = [c for c in FEATURE_COLS if c not in derived_cols] + [LABEL_COL, "timestamp"]
+    missing_cols = [c for c in required_raw_cols if c not in df.columns]
+    if missing_cols:
+        print(f"[-] Error: '{csv_file}' is missing column(s): {', '.join(missing_cols)}")
+        print("    This looks like a pre-V7 capture. Recapture with the current sensor")
+        print("    before training, or point this script at a CSV that already has them.")
+        sys.exit(1)
+
     # Drop rows with NaN or infinite values
     df = df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
 

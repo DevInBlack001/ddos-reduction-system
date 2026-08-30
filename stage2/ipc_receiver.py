@@ -7,12 +7,14 @@ the adaptive safety overrides, updates shared state, and dispatches the
 """
 
 import os
+import csv
 import json
 import socket
 import struct
 import ipaddress
 import logging
 import grp
+import pwd
 import time
 
 import joblib
@@ -38,6 +40,85 @@ def _maybe_alert_block(ip, victim_ip, rate, cfg):
         "FLOD System: IP Blocked",
         f"Blocked {ip} targeting {victim_ip} (sustained ~{rate:.1f} pps)."
     )
+
+
+def apply_safety_overrides(pred_class, ewma_rate, mean_r, sigma_r, mean_h, sigma_h,
+                            dominant_rate, entropy, dominant_ip_ratio, k_multiplier, cfg):
+    """Deterministic, non-ML threshold checks that can force pred_class to
+    Flash Crowd (1) or DDoS (2). Never skipped, including during Stage 1's
+    warm-up: unlike the RandomForest and Isolation Forest, nothing here
+    depends on training data, only on mean_r/sigma_r/mean_h/sigma_h, which
+    are meaningful, if noisier, from a target's very first window. Skipping
+    this during warm-up used to leave a target fully unenforced for its
+    first 200 windows after every restart, newly added victim, or
+    --clear-baseline recovery, a real, repeatedly reachable gap rather
+    than a one-time startup blip.
+
+    Returns (pred_class, extreme_dominant_rate_boundary). The second value
+    is also Tier 2's own per-source block bar further down in the caller,
+    same formula, same inputs; returned rather than recomputed there so
+    the two can never drift apart from each other.
+    """
+    rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
+    extreme_dominant_rate_boundary = max(
+        cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+    )
+    entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
+
+    if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
+        if dominant_rate > extreme_dominant_rate_boundary:
+            return 2, extreme_dominant_rate_boundary
+        elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
+            return 2, extreme_dominant_rate_boundary
+        else:
+            return 1, extreme_dominant_rate_boundary
+    return pred_class, extreme_dominant_rate_boundary
+
+
+ANOMALOUS_CSV_HEADER = [
+    "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+    "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
+    "fingerprint_diversity", "timestamp", "label", "victim_ip", "if_score", "rf_verdict",
+]
+
+
+def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
+    """Append one Anomalous window to config.ANOMALOUS_CSV_PATH for later
+    review. label is left blank: nothing here knows what this traffic
+    actually is, only that it looked unlike anything in training. The
+    first 13 columns match training.csv's own order exactly, so a row
+    can be copied straight across once a human fills in the label and
+    drops the victim_ip/if_score/rf_verdict columns on the end."""
+    write_header = not os.path.exists(config.ANOMALOUS_CSV_PATH)
+    try:
+        with open(config.ANOMALOUS_CSV_PATH, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(ANOMALOUS_CSV_HEADER)
+            w.writerow([
+                f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
+                f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
+                f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
+                f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
+                f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
+                f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
+                "", victim_ip, f"{if_score:+.4f}", rf_verdict,
+            ])
+    except OSError as e:
+        logging.error(f"[-] Failed to write anomalous_capture.csv row: {e}")
+
+
+def _peer_uid(conn):
+    """The connecting process's real UID, via SO_PEERCRED. Linux only,
+    which is the only platform this project targets (systemd, ipset,
+    iptables). Returns None if the kernel can't report it, rather than
+    raising, so a caller can fail closed on that too."""
+    try:
+        creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", creds)
+        return uid
+    except OSError:
+        return None
 
 
 def decode_ip(ip_bytes):
@@ -71,6 +152,26 @@ def run_ipc_receiver():
             logging.error(f"[-] Failed to load classifier: {e}")
             clf = None
 
+    # V7: the Isolation Forest, trained separately
+    # (train_isolation_forest.py) from the RandomForest above, runs
+    # alongside it every window rather than as a fallback. The RF says
+    # what class a window looks like; the IF says whether it looks like
+    # anything either model has seen at all, catching evasive traffic the
+    # RF was never trained to recognise. Missing is not fatal, the same as
+    # a missing RF model: this just means no Anomalous state gets raised.
+    if not os.path.exists(config.IF_MODEL_PATH):
+        logging.warning(f"[!] Isolation Forest not found at '{config.IF_MODEL_PATH}'. "
+                         "Running without it: Anomalous will never be raised until one is trained.")
+        if_clf = None
+    else:
+        try:
+            if_clf = joblib.load(config.IF_MODEL_PATH)
+            if_clf.n_jobs = 1
+            logging.info("[+] Isolation Forest loaded successfully.")
+        except Exception as e:
+            logging.error(f"[-] Failed to load Isolation Forest: {e}")
+            if_clf = None
+
     # /run is tmpfs and cleared on every boot, so this can't be assumed to
     # already exist, create it fresh each startup. If the ddos-ipc group
     # exists (install.sh creates it so the de-rooted Stage 1 service
@@ -80,6 +181,18 @@ def run_ipc_receiver():
     ipc_gid = None
     try:
         ipc_gid = grp.getgrnam("ddos-ipc").gr_gid
+    except KeyError:
+        pass
+
+    # Defence in depth alongside the socket permission bits above: even a
+    # process that is somehow able to connect (group membership broader
+    # than intended, a permission bug) gets its actual UID checked against
+    # who is expected to be on the other end, root, or the de-rooted
+    # Stage 1 service account install.sh creates, rather than trusted
+    # purely because the connection was accepted at all.
+    expected_uids = {0}
+    try:
+        expected_uids.add(pwd.getpwnam("ddos-stage1").pw_uid)
     except KeyError:
         pass
 
@@ -121,6 +234,14 @@ def run_ipc_receiver():
     while True:
         try:
             conn, _ = server.accept()
+            peer_uid = _peer_uid(conn)
+            if peer_uid not in expected_uids:
+                logging.warning(
+                    f"[!] Rejected an IPC connection from uid={peer_uid}, "
+                    f"expected one of {expected_uids}."
+                )
+                conn.close()
+                continue
             while True:
                 data = conn.recv(config.PAYLOAD_SIZE)
                 if not data:
@@ -158,8 +279,26 @@ def run_ipc_receiver():
                 # dropped".
                 egress_rate = unpacked[17] if unpacked[17] >= 0 else None
                 drop_ratio = unpacked[18] if unpacked[18] >= 0 else None
-                ip_str = decode_ip(unpacked[19])
-                victim_ip_str = decode_ip(unpacked[20])
+                # V7: invariant under source address forgery, unlike entropy
+                # above. See docs/detection.md for why that matters against
+                # a randomized source flood.
+                source_port_entropy = unpacked[19]
+                ttl_variance = unpacked[20]
+                fingerprint_diversity = unpacked[21]
+                # V7: whether this window's mean/sigma came from Stage 1's
+                # warm-up period rather than a converged baseline. Warm-up
+                # windows are sent so the dashboard updates immediately, but
+                # their mean/sigma-derived features (delta_rate, delta_entropy,
+                # dominant_rate, and mean_r/sigma_r/mean_h/sigma_h themselves)
+                # come from too few samples to mean anything: sigma_r can read
+                # far below its own configured floor, something a converged
+                # baseline can never produce. The classifiers were trained
+                # entirely on converged-baseline data and have never seen
+                # values like that, so they read "unfamiliar" as "anomalous"
+                # rather than "still warming up". See docs/detection.md.
+                is_warmup = unpacked[22] != 0.0
+                ip_str = decode_ip(unpacked[23])
+                victim_ip_str = decode_ip(unpacked[24])
                 victim_ip_str = enforcement.resolve_victim_ip(victim_ip_str)
 
                 # Calculate delta features
@@ -185,48 +324,72 @@ def run_ipc_receiver():
                 cfg = config.get_enforcement_config()
 
                 pred_class = 0
-                if clf:
+                features_df = None
+                if clf or if_clf:
                     import pandas as pd
                     features_df = pd.DataFrame([[
                         entropy, ewma_rate, mean_h, mean_r, sigma_h, sigma_r,
                         proto_ratio, dominant_ip_ratio, delta_rate, delta_entropy,
-                        dominant_rate
+                        dominant_rate, source_port_entropy, ttl_variance,
+                        fingerprint_diversity
                     ]], columns=[
                         "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
                         "proto_ratio", "dominant_ip_ratio", "delta_rate", "delta_entropy",
-                        "dominant_rate"
+                        "dominant_rate", "source_port_entropy", "ttl_variance",
+                        "fingerprint_diversity"
                     ])
+                # The RandomForest does not run on a warm-up window: see the
+                # is_warmup unpack comment above for why its mean/sigma
+                # derived inputs can't be trusted by a model trained
+                # entirely on converged-baseline data. pred_class stays its
+                # default (0, Normal) as this model's own opinion.
+                if not is_warmup and clf:
                     pred_class = int(clf.predict(features_df)[0])
 
-                # Adaptive Safety overrides
-                # 1. Rate anomaly trigger: mean_r + k_multiplier * sigma_r (mirrors Stage 1's live k)
-                #    Aggregate rate is fine as the outer "is this worth a second
-                #    look" gate, it doesn't decide Flash-Crowd vs DDoS by itself.
-                rate_anomaly_boundary = mean_r + k_multiplier * sigma_r
-                # 2. Extreme SINGLE-SOURCE rate trigger, based on dominant_rate
-                #    (busiest source's estimated pps), NOT raw aggregate ewma_rate.
-                #    Aggregate rate can't distinguish one attacker at extreme
-                #    volume from many genuine users each at a normal trickle,
-                #    a legitimate flash crowd's aggregate scales with participant
-                #    count the same way an attacker's does. Threshold matches
-                #    Tier 2's block_threshold below (computed once here as
-                #    extreme_dominant_rate_boundary and reused there).
-                extreme_dominant_rate_boundary = max(
-                    cfg["block_rate_floor_pps"], mean_r + cfg["block_sigma_multiplier"] * sigma_r
+                # Adaptive safety overrides. Deliberately NOT gated on
+                # is_warmup, see apply_safety_overrides' own docstring.
+                # extreme_dominant_rate_boundary is Tier 2's own block bar
+                # further down, same value, not recomputed there.
+                pred_class, extreme_dominant_rate_boundary = apply_safety_overrides(
+                    pred_class, ewma_rate, mean_r, sigma_r, mean_h, sigma_h,
+                    dominant_rate, entropy, dominant_ip_ratio, k_multiplier, cfg,
                 )
-                # 3. Entropy anomaly trigger: mean_h - k_multiplier * sigma_h (mirrors Stage 1's live k)
-                entropy_anomaly_boundary = mean_h - k_multiplier * sigma_h
-
-                if pred_class in (0, 1) and ewma_rate > rate_anomaly_boundary:
-                    if dominant_rate > extreme_dominant_rate_boundary:
-                        pred_class = 2
-                    elif entropy < entropy_anomaly_boundary or dominant_ip_ratio > cfg["dominant_ip_ratio_extreme_threshold"]:
-                        pred_class = 2
-                    else:
-                        pred_class = 1
 
                 class_names = {0: "Normal", 1: "Flash Crowd", 2: "DDoS"}
                 pred_name = class_names.get(pred_class, "Normal")
+                rf_verdict_name = pred_name
+
+                # V7: the Isolation Forest's opinion, independent of the
+                # RandomForest's class. Only checked when the RF already
+                # waved the window through (Normal or Flash Crowd): a DDoS
+                # verdict is already escalated, so the IF's opinion would be
+                # redundant for enforcement purposes, though it still rides
+                # along in features_df/pred_class untouched, both continue
+                # to drive every enforcement branch below exactly as before.
+                # Anomalous is reporting only in this pass, matching this
+                # project's enforcement philosophy of a deterministic,
+                # auditable, operator tunable rule rather than an action
+                # baked into a classifier: see docs/detection.md.
+                is_anomalous = False
+                if not is_warmup and if_clf and pred_class in (0, 1):
+                    # -1 = outlier, 1 = inlier, IsolationForest's own convention.
+                    is_anomalous = int(if_clf.predict(features_df)[0]) == -1
+                    if is_anomalous:
+                        pred_name = "Anomalous"
+                        if_score = if_clf.decision_function(features_df)[0]
+                        logging.debug(
+                            f"[V7] Anomalous flagged for victim={victim_ip_str}: "
+                            f"score={if_score:+.4f} "
+                            f"features={features_df.iloc[0].to_dict()}"
+                        )
+                        _write_anomalous_row(
+                            victim_ip_str, if_score, rf_verdict_name,
+                            entropy=entropy, ewma_rate=ewma_rate, mean_h=mean_h, mean_r=mean_r,
+                            sigma_h=sigma_h, sigma_r=sigma_r, proto_ratio=proto_ratio,
+                            dominant_ip_ratio=dominant_ip_ratio, source_port_entropy=source_port_entropy,
+                            ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
+                            timestamp=timestamp,
+                        )
 
                 # Alert on DDoS classification transitions only (not every
                 # window a victim stays classified DDoS, and not on
@@ -266,7 +429,10 @@ def run_ipc_receiver():
                     "proto_icmp": proto_icmp,
                     "proto_sctp": proto_sctp,
                     "proto_gre": proto_gre,
-                    "proto_esp": proto_esp
+                    "proto_esp": proto_esp,
+                    "source_port_entropy": source_port_entropy,
+                    "ttl_variance": ttl_variance,
+                    "fingerprint_diversity": fingerprint_diversity
                 }
                 state.last_metrics_by_target[victim_ip_str] = state.last_metrics.copy()
 
@@ -387,12 +553,13 @@ def run_ipc_receiver():
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
-                    # Log flash crowd incident. The row names the dominant
+                    # Log flash crowd (or, if the Isolation Forest flagged
+                    # it, Anomalous) incident. The row names the dominant
                     # source, so a window with none isn't a source-attributed
                     # event to log; the window itself is already captured,
                     # source-independent, in metrics_history above.
                     if dominant_ip_known:
-                        db.log_incident(timestamp, ip_str, "Flash Crowd", victim_ip_str,
+                        db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
                     # If the dominant IP rate is highly elevated during a flash crowd, apply rate-limit (not block)
                     # (dominant_rate computed once above, alongside the classifier features.)
@@ -414,11 +581,11 @@ def run_ipc_receiver():
                             entropy=entropy,
                         )
                 elif pred_class == 0:
-                    # Log normal traffic. Same reasoning as Flash Crowd above:
-                    # no dominant source means nothing source-attributed to
-                    # log, not an unnamed one.
+                    # Log normal (or Anomalous) traffic. Same reasoning as
+                    # Flash Crowd above: no dominant source means nothing
+                    # source-attributed to log, not an unnamed one.
                     if dominant_ip_known:
-                        db.log_incident(timestamp, ip_str, "Normal", victim_ip_str,
+                        db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
 
             conn.close()

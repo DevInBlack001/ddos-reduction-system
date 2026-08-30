@@ -11,7 +11,7 @@
 //! Only header fields are read. The payload is never copied into user space.
 
 use crossbeam_channel::Sender;
-use etherparse::{LaxNetSlice, LaxSlicedPacket, TransportSlice};
+use etherparse::{LaxNetSlice, LaxSlicedPacket, TcpOptionElement, TcpSlice, TransportSlice};
 use log::{debug, error, info, warn};
 use pcap::{Capture, Device};
 use std::{net::IpAddr, time::Instant};
@@ -58,6 +58,63 @@ pub struct PacketMeta {
     pub protocol: Protocol,
     /// Destination port, 0 when the protocol has none.
     pub dst_port: u16,
+    /// Source port, 0 when the protocol has none. V7's port entropy feature.
+    pub source_port: u16,
+    /// IPv4 TTL or IPv6 hop limit. V7's TTL variance feature.
+    pub ttl: u8,
+    /// V7's TCP fingerprint diversity feature. `None` for anything that
+    /// is not a TCP SYN: fingerprinting is a SYN only technique (p0f
+    /// style), and forcing every other packet into some bucket would mix
+    /// "not applicable" with a real, if unusual, all zero fingerprint.
+    pub fingerprint_bucket: Option<u8>,
+}
+
+/// Number of buckets in `FINGERPRINT_HIST` / `stage1-ebpf`'s
+/// `FINGERPRINT_HIST` map. Matched on both backends so a fingerprint
+/// bucket means the same thing regardless of which one produced it.
+pub const FINGERPRINT_BUCKETS: usize = 64;
+
+/// Which non padding TCP options were present on a SYN, order insensitive.
+///
+/// Order alone would need a much larger table for a modest diversity gain
+/// over presence, and this codebase's own precedent (the sigma floor, the
+/// entropy floor) is to start with the simplest thing that is not obviously
+/// wrong and revisit once there is real data to justify more. NOP is
+/// padding, not a distinguishing option, and is not counted.
+const OPT_MSS: u8 = 1 << 0;
+const OPT_WSCALE: u8 = 1 << 1;
+const OPT_SACK: u8 = 1 << 2;
+const OPT_TIMESTAMP: u8 = 1 << 3;
+
+/// Reduce a TCP SYN's options and window size to one of `FINGERPRINT_BUCKETS`
+/// small fixed buckets: 4 bits of option presence, 2 bits of window size
+/// range, one number, no unbounded hashing of raw option bytes.
+fn fingerprint_bucket(tcp: &TcpSlice) -> u8 {
+    let mut presence = 0u8;
+    for opt in tcp.options_iterator().flatten() {
+        presence |= match opt {
+            TcpOptionElement::MaximumSegmentSize(_) => OPT_MSS,
+            TcpOptionElement::WindowScale(_) => OPT_WSCALE,
+            TcpOptionElement::SelectiveAcknowledgementPermitted
+            | TcpOptionElement::SelectiveAcknowledgement(..) => OPT_SACK,
+            TcpOptionElement::Timestamp(..) => OPT_TIMESTAMP,
+            TcpOptionElement::Noop => 0,
+        };
+    }
+
+    let window_bucket = match tcp.window_size() {
+        0 => 0u8,
+        1..=8192 => 1,
+        8193..=32768 => 2,
+        _ => 3,
+    };
+
+    let bucket = presence | (window_bucket << 4);
+    // Guards the invariant this function's bit widths exist to keep: the
+    // result must fit stage1-ebpf's FINGERPRINT_HIST map, sized to
+    // FINGERPRINT_BUCKETS on the other backend.
+    debug_assert!((bucket as usize) < FINGERPRINT_BUCKETS);
+    bucket
 }
 
 /// Runtime parameters for one capture thread.
@@ -276,13 +333,15 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             truncated += 1;
         }
 
-        // Extract source and destination IPs from the IP header.
-        let (src_ip, dst_ip, ip_num) = match sliced.net {
+        // Extract source and destination IPs, and the TTL / hop limit, from
+        // the IP header. V7's TTL variance feature reads the same header
+        // this already parses, no new parsing.
+        let (src_ip, dst_ip, ip_num, ttl) = match sliced.net {
             Some(LaxNetSlice::Ipv4(ref ipv4)) => {
-                (IpAddr::from(ipv4.header().source_addr()), IpAddr::from(ipv4.header().destination_addr()), ipv4.header().protocol())
+                (IpAddr::from(ipv4.header().source_addr()), IpAddr::from(ipv4.header().destination_addr()), ipv4.header().protocol(), ipv4.header().ttl())
             }
             Some(LaxNetSlice::Ipv6(ref ipv6)) => {
-                (IpAddr::from(ipv6.header().source_addr()), IpAddr::from(ipv6.header().destination_addr()), ipv6.header().next_header())
+                (IpAddr::from(ipv6.header().source_addr()), IpAddr::from(ipv6.header().destination_addr()), ipv6.header().next_header(), ipv6.header().hop_limit())
             }
             // Not an IP frame.
             _ => {
@@ -291,10 +350,16 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
             }
         };
 
-        let dst_port = match sliced.transport {
-            Some(TransportSlice::Tcp(ref slice)) => slice.destination_port(),
-            Some(TransportSlice::Udp(ref slice)) => slice.destination_port(),
-            _                                     => 0,
+        // V7's port entropy and TCP fingerprint diversity features read the
+        // same already parsed transport slice `dst_port` already reads.
+        let (dst_port, source_port, fingerprint_bucket) = match sliced.transport {
+            Some(TransportSlice::Tcp(ref slice)) => (
+                slice.destination_port(),
+                slice.source_port(),
+                slice.syn().then(|| fingerprint_bucket(slice)),
+            ),
+            Some(TransportSlice::Udp(ref slice)) => (slice.destination_port(), slice.source_port(), None),
+            _ => (0, 0, None),
         };
 
         let protocol = match ip_num.0 {
@@ -310,7 +375,10 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         packet_count += 1;
 
         // Forward metadata to the analysis thread via the bounded channel.
-        let meta = PacketMeta { direction: cfg.direction, src_ip, dst_ip, arrived_at, protocol, dst_port };
+        let meta = PacketMeta {
+            direction: cfg.direction, src_ip, dst_ip, arrived_at, protocol, dst_port,
+            source_port, ttl, fingerprint_bucket,
+        };
 
         // Blocks when the channel is full, which is what keeps memory bounded
         // under a flood.
@@ -321,8 +389,105 @@ pub fn run_capture_thread(cfg: CaptureConfig, tx: Sender<PacketMeta>) {
         }
 
         // Progress at debug level.
-        if packet_count % 10_000 == 0 {
+        if packet_count.is_multiple_of(10_000) {
             debug!("Capture: {} packets forwarded to analysis thread", packet_count);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etherparse::PacketBuilder;
+
+    /// Builds a full Ethernet frame around one TCP segment, so it can be fed
+    /// straight through `LaxSlicedPacket::from_ethernet`, the same entry
+    /// point the real capture loop uses.
+    fn synthetic_tcp_frame(
+        ttl: u8,
+        source_port: u16,
+        window_size: u16,
+        syn: bool,
+        options: &[TcpOptionElement],
+    ) -> Vec<u8> {
+        let mut builder = PacketBuilder::ethernet2([0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11])
+            .ipv4([198, 51, 100, 9], [192, 0, 2, 3], ttl)
+            .tcp(source_port, 443, 0, window_size)
+            .options(options)
+            .expect("valid TCP options");
+        if syn {
+            builder = builder.syn();
+        }
+        let mut raw = Vec::with_capacity(builder.size(0));
+        builder.write(&mut raw, &[]).expect("serialise synthetic frame");
+        raw
+    }
+
+    fn parsed_tcp(raw: &[u8]) -> (u8, u16, Option<u8>) {
+        let sliced = LaxSlicedPacket::from_ethernet(raw).expect("parses");
+        let ttl = match sliced.net.as_ref().expect("ip header") {
+            LaxNetSlice::Ipv4(ipv4) => ipv4.header().ttl(),
+            LaxNetSlice::Ipv6(ipv6) => ipv6.header().hop_limit(),
+        };
+        match sliced.transport.as_ref().expect("tcp header") {
+            TransportSlice::Tcp(slice) => (
+                ttl,
+                slice.source_port(),
+                slice.syn().then(|| fingerprint_bucket(slice)),
+            ),
+            _ => panic!("expected a TCP transport slice"),
+        }
+    }
+
+    /// A SYN carrying the common Linux-shaped option set gets a fingerprint
+    /// bucket built from presence of each option group plus a window size
+    /// range, not from hashing the raw option bytes.
+    #[test]
+    fn a_syn_with_common_options_extracts_port_ttl_and_a_fingerprint_bucket() {
+        let raw = synthetic_tcp_frame(
+            64,
+            51_000,
+            65_535,
+            true,
+            &[
+                TcpOptionElement::MaximumSegmentSize(1460),
+                TcpOptionElement::SelectiveAcknowledgementPermitted,
+                TcpOptionElement::Timestamp(1, 0),
+                TcpOptionElement::Noop,
+                TcpOptionElement::WindowScale(7),
+            ],
+        );
+        let (ttl, source_port, bucket) = parsed_tcp(&raw);
+        assert_eq!(ttl, 64);
+        assert_eq!(source_port, 51_000);
+        assert_eq!(
+            bucket,
+            Some(OPT_MSS | OPT_WSCALE | OPT_SACK | OPT_TIMESTAMP | (3 << 4)),
+            "window 65535 falls in the top window bucket, all four option groups present"
+        );
+        assert!(
+            (bucket.unwrap() as usize) < FINGERPRINT_BUCKETS,
+            "a real fingerprint must fit in the fixed table FINGERPRINT_HIST is sized for"
+        );
+    }
+
+    /// A NOP carries no diagnostic weight on its own: a SYN with only NOPs
+    /// has the same fingerprint bucket as one with no options at all.
+    #[test]
+    fn noop_only_options_do_not_change_the_fingerprint_bucket() {
+        let bare = synthetic_tcp_frame(64, 51_000, 512, true, &[]);
+        let padded = synthetic_tcp_frame(64, 51_000, 512, true, &[TcpOptionElement::Noop, TcpOptionElement::Noop]);
+        assert_eq!(parsed_tcp(&bare).2, parsed_tcp(&padded).2);
+    }
+
+    /// Fingerprinting is a SYN only technique. A non SYN TCP segment must
+    /// not get a fingerprint bucket at all, not even a zero one: zero is a
+    /// real, if unusual, fingerprint, and would be indistinguishable from
+    /// "not applicable" if this returned it instead of `None`.
+    #[test]
+    fn a_non_syn_segment_has_no_fingerprint_bucket() {
+        let raw = synthetic_tcp_frame(64, 51_000, 65_535, false, &[TcpOptionElement::MaximumSegmentSize(1460)]);
+        let (_, _, bucket) = parsed_tcp(&raw);
+        assert_eq!(bucket, None);
     }
 }
