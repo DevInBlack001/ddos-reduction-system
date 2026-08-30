@@ -138,6 +138,7 @@ struct CliArgs {
     cooldown_windows:         u64,
     cooldown_k_factor:        f64,
     peacetime_ewma_weight:    f64,
+    max_baseline_freeze_windows: u64,
     /// Kernel map capacities. See `kernel::MapSizes`.
     max_sources:          u32,
     max_flows:            u32,
@@ -178,6 +179,7 @@ impl CliArgs {
         let mut cooldown_windows = state::DEFAULT_COOLDOWN_WINDOWS;
         let mut cooldown_k_factor = state::DEFAULT_COOLDOWN_K_FACTOR;
         let mut peacetime_ewma_weight = state::DEFAULT_PEACETIME_EWMA_WEIGHT;
+        let mut max_baseline_freeze_windows = state::DEFAULT_MAX_BASELINE_FREEZE_WINDOWS;
         let mut victim_ips: Option<String> = None;
         let mut victim_subnet: Option<String> = None;
         let mut exclude_ips_str: Option<String> = None;
@@ -286,6 +288,10 @@ impl CliArgs {
                 "--peacetime-ewma-weight" => {
                     i += 1;
                     peacetime_ewma_weight = parse_positive(args.get(i), "--peacetime-ewma-weight");
+                }
+                "--max-baseline-freeze-windows" => {
+                    i += 1;
+                    max_baseline_freeze_windows = parse_positive_u64(args.get(i), "--max-baseline-freeze-windows");
                 }
                 "--victim-ip" | "--victim-ips" => {
                     i += 1;
@@ -432,7 +438,8 @@ impl CliArgs {
                entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
                entropy_min_packets, max_sources, max_flows, max_protected_hosts,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
-               outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight }
+               outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight,
+               max_baseline_freeze_windows }
     }
 }
 
@@ -512,6 +519,9 @@ fn print_usage(bin: &str) {
     eprintln!("                               [default: {}]", state::DEFAULT_COOLDOWN_K_FACTOR);
     eprintln!("  --peacetime-ewma-weight <F>  EWMA weight for the slow poisoning-detection");
     eprintln!("                               reference [default: {}]", state::DEFAULT_PEACETIME_EWMA_WEIGHT);
+    eprintln!("  --max-baseline-freeze-windows <N>  Consecutive frozen windows before current");
+    eprintln!("                               traffic is accepted as the new baseline");
+    eprintln!("                               [default: {}]", state::DEFAULT_MAX_BASELINE_FREEZE_WINDOWS);
     eprintln!("  --socket     <PATH>    IPC socket path       [default: /run/ddos_stage1/stage1.sock]");
     eprintln!("  --no-filter            Disable BPF filter (dev/test only)");
     eprintln!("  --log-file   <PATH>    Path to write logs to in addition to terminal");
@@ -713,6 +723,7 @@ fn main() {
         cooldown_windows:         args.cooldown_windows,
         cooldown_k_factor:        args.cooldown_k_factor,
         peacetime_ewma_weight:    args.peacetime_ewma_weight,
+        max_baseline_freeze_windows: args.max_baseline_freeze_windows,
     };
 
     // Before the interface check, so a configuration mistake is reported even

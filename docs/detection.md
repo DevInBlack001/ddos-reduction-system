@@ -315,10 +315,11 @@ a calibration overrides whatever the installer chose without the script
 needing to know the interface, the targets, or the capture mode. Deleting the
 file returns those values.
 
-The script also reports when a host's traffic has outgrown its learned mean,
-which is a state the baseline cannot leave on its own, since every flagged
-window freezes it. `--clear-baseline` deletes the persisted file so the
-sensor relearns at the current level.
+The script also reports when a host's traffic has outgrown its learned mean.
+`--max-baseline-freeze-windows`, below, now lets the baseline leave that
+state on its own after long enough; `--clear-baseline` remains the
+immediate way to force it, deleting the persisted file so the sensor
+relearns at the current level right away instead of waiting out the cap.
 
 ### Cooldown
 
@@ -371,6 +372,36 @@ other. If the boundary sits close to the mean, ordinary windows get flagged,
 the baseline stops updating, the standard deviation never grows to reflect real
 variation, and the false positives sustain themselves. Every other flagged
 window still freezes, so the slow ramp defence is unchanged.
+
+**A bound on how long any freeze may last.** The entropy exception above
+only covers one specific, provably safe case. Rate has no equivalent: a
+distributed flood is also high rate and low dominance, the same shape as
+a target's traffic genuinely growing, so a window flagged only on rate
+still freezes even where the growth is real. Left alone that freeze does
+not recover on its own, since the boundary it is measured against can
+never move to catch up. `--max-baseline-freeze-windows` (default 400,
+roughly double `WARMUP_WINDOWS`) bounds it instead: once a target has
+sat frozen for more consecutive windows than this, the current traffic is
+accepted as the new baseline regardless of whether it is still being
+flagged. This does not weaken detection while frozen. Stage 1 keeps
+flagging and reporting every anomalous window to Stage 2 for the whole
+freeze, cooldown and the boundary maths included, since only the
+learning side pauses, not the reporting side that enforcement in Stage 2
+actually depends on. An attacker gains nothing beyond what a target's own
+first warm up already grants: the escape hatch only opens after
+sustaining elevated traffic for longer than the configured cap, not after
+a single well-placed window.
+
+**The escaping sample also bypasses the outlier check.** A window that
+has been pushing against a frozen boundary for the entire cap deviates
+from the stale mean and sigma by a large margin almost by definition,
+since that gap is the reason the freeze happened at all. The ordinary
+`--outlier-sigma` (default 5.0) rejection would otherwise reject this
+exact sample for the same reason it deserved to escape the freeze in the
+first place, leaving Welford exactly as frozen as before despite the
+escape firing. Only a window that is clean specifically because it
+escaped a freeze skips the check; a window that was already naturally
+clean, or one still frozen, is unaffected.
 
 ## Baseline Persistence
 

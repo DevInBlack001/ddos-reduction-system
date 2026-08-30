@@ -29,6 +29,19 @@ echo 1 | sudo tee /run/ddos_stage1/train_label
 That directory is root owned rather than world writable, which is why the
 switch needs `tee` instead of a plain shell redirect.
 
+This rule is easy to violate in an automated capture script without
+noticing, not just a manual one. A script that starts an attack
+generator, sleeps through a ramp period, and only then sets the label
+has real, already-flowing traffic landing in the CSV for that whole
+sleep, still stamped with the previous phase's label. Six sessions in
+one V7 capture were caught this way: short (a few hundred rows against
+a real session's thousands), an elevated rate that did not match their
+label, sitting exactly at a phase boundary. Confirmed by comparing each
+one against the real, correctly-labelled session immediately next to it
+in the same capture, not from rate or entropy thresholds alone, since a
+distributed flood's entropy can look as high as a legitimate crowd's.
+Relabelled to match what the traffic actually was rather than discarded.
+
 ### Capture Sequence
 
 **Phase 0, peacetime.** Run normal traffic for about four minutes so warm up
@@ -102,6 +115,11 @@ A quick way to check before committing a whole session: after a short test
 capture, group the CSV by label and look at `sigma_r`'s spread. If it is a
 single repeated value for a label, the generator is too regular and the
 session is not worth keeping as is.
+
+Confirmed fixed on a real recapture: jittered burst timing (randomised
+gaps and packet counts, no unpaced flood mode, no full-silence stretch)
+produced real `sigma_r` variation across every label rather than a value
+pinned at the configured floor.
 
 ## Training
 

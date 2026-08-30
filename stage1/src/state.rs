@@ -41,6 +41,12 @@ pub const DEFAULT_RATE_MEAN_CAP: f64 = 10000.0;
 pub const DEFAULT_COOLDOWN_WINDOWS: u64 = 10;
 pub const DEFAULT_COOLDOWN_K_FACTOR: f64 = 0.5;
 pub const DEFAULT_PEACETIME_EWMA_WEIGHT: f64 = 0.001;
+/// Roughly double `WARMUP_WINDOWS`: a target whose baseline has been
+/// frozen this long has been elevated for longer than a brand new target's
+/// own first look at its traffic would take to trust, so treating it as a
+/// fresh baseline at that point costs nothing a fresh target's warm-up
+/// does not already cost.
+pub const DEFAULT_MAX_BASELINE_FREEZE_WINDOWS: u64 = 400;
 
 /// Runtime parameters for the analysis thread.
 #[derive(Debug, Clone)]
@@ -136,6 +142,18 @@ pub struct AnalysisConfig {
     /// smaller than `ewma_alpha`: the reference needs to move slower than
     /// the mean it guards, or it cannot tell drift from ordinary variation.
     pub peacetime_ewma_weight: f64,
+    /// How many consecutive frozen windows a target's rate or entropy
+    /// baseline may sit through before the current traffic is accepted as
+    /// the new baseline regardless. Sustained legitimate growth otherwise
+    /// freezes the baseline permanently: each window it stays above the
+    /// stale boundary re-flags, which re-arms cooldown, which keeps the
+    /// gate closed indefinitely, since nothing in that loop ever lets the
+    /// boundary move to catch up. Bounded and configurable rather than
+    /// indefinite: an attacker can force this open only by sustaining
+    /// elevated traffic for at least this many windows, the same tradeoff
+    /// a target's very first warm-up already makes for its initial
+    /// baseline.
+    pub max_baseline_freeze_windows: u64,
 }
 
 impl Default for AnalysisConfig {
@@ -166,6 +184,7 @@ impl Default for AnalysisConfig {
             cooldown_windows:       DEFAULT_COOLDOWN_WINDOWS,
             cooldown_k_factor:      DEFAULT_COOLDOWN_K_FACTOR,
             peacetime_ewma_weight:  DEFAULT_PEACETIME_EWMA_WEIGHT,
+            max_baseline_freeze_windows: DEFAULT_MAX_BASELINE_FREEZE_WINDOWS,
         }
     }
 }
@@ -284,6 +303,11 @@ pub struct TargetState {
     pub(crate) cooldown_counter: usize,
     pub(crate) last_sent_time: f64,
     pub(crate) warmup_completed_logged: bool,
+    /// How many consecutive windows this target's baseline has sat frozen.
+    /// Not persisted: `to_persisted()` only snapshots from a clean window
+    /// by construction, so a restored baseline was never mid-freeze, and a
+    /// restart already gives warm-up its own fresh look regardless.
+    pub(crate) consecutive_frozen_windows: u64,
 }
 
 impl TargetState {
@@ -340,6 +364,7 @@ impl TargetState {
             cooldown_counter,
             last_sent_time: 0.0,
             warmup_completed_logged: false,
+            consecutive_frozen_windows: 0,
         }
     }
 

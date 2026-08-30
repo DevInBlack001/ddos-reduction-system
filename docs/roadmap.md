@@ -81,10 +81,14 @@ loaded and run on the sensor VM: the verifier accepted both programs, all
 seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
 entropy and 4 to 6% on ingress packet counts. The non-technical explainer is
 written, [docs/explainer.md](explainer.md). Still open before this merges:
-dashboard visibility for the three raw features, and a retrain against a
-capture taken with jittered traffic generators rather than the scripted,
-mechanically regular timing the sessions above used, see
-[Known Gaps](#known-gaps).
+dashboard visibility for the three raw features.
+
+A retrain against jittered traffic generators, rather than the scripted,
+mechanically regular timing the original 35,442 row capture used, is
+done: 25,449 rows across three fresh sessions per label, real `sigma_r`
+variation confirmed across every label, LOSO accuracy 0.982. See
+[Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
+recapture made possible.
 
 **V8, automated playbooks.** Granular incident reports and multi stage response
 playbooks executed during severe events.
@@ -226,20 +230,51 @@ runs of a generator that does not repeat exactly.
 No throughput comparison has been made. That is a separate question from
 whether detection is preserved, and less important.
 
-**Scripted traffic generators can make the rate look artificially steady.**
-`sigma_r`, the standard deviation Stage 1 learns for a target's rate, comes
-from window to window variation in a smoothed EWMA rate. A load testing tool
-or flood tool that paces every request or packet on a fixed, regular
-interval, rather than the independent, uncoordinated timing real clients or
-a real botnet have, produces almost no such variation, so `sigma_r` reads at
-or near its configured floor for the entire capture regardless of how much
-traffic is actually flowing. A training set built this way teaches a model
-"this traffic is mechanically regular" rather than the intended class
-signature, which will not transfer to traffic with natural jitter. The fix
-is on the generator side: randomised inter request wait time, varying the
-active source or user count over the session rather than holding it flat,
-and avoiding an unpaced flood mode in favour of short, randomised bursts.
-See [training.md](training.md).
+**Scripted traffic generators can make the rate look artificially steady,
+fixed by jittering generator timing.** `sigma_r`, the standard deviation
+Stage 1 learns for a target's rate, comes from window to window variation
+in a smoothed EWMA rate. A load testing tool or flood tool that paces every
+request or packet on a fixed, regular interval, rather than the
+independent, uncoordinated timing real clients or a real botnet have,
+produces almost no such variation, so `sigma_r` reads at or near its
+configured floor for the entire capture regardless of how much traffic is
+actually flowing. A training set built this way teaches a model "this
+traffic is mechanically regular" rather than the intended class signature,
+which will not transfer to traffic with natural jitter. Fixed on the
+generator side: randomised inter request wait time, varying the active
+source or user count over the session rather than holding it flat, and
+avoiding an unpaced flood mode in favour of short, randomised bursts.
+Confirmed on a real recapture, real `sigma_r` variation across every label
+rather than a value pinned at the floor. See [training.md](training.md).
+
+## Benchmark: FLOD vs. Fixed Threshold
+
+`scripts/benchmark_fixed_threshold.py` answers the question this
+project's own thesis rests on: does an adaptive boundary actually beat a
+static one, on real captured data, not just in the abstract. Run
+offline against an already-captured training CSV, no live traffic
+needed. FLOD's own side of the comparison is the trained RandomForest
+evaluated by Leave-One-Session-Out, the same held-out methodology
+`stage2/train.py`'s own accuracy claims already rest on, not a
+hand-derived proxy. The fixed-threshold side is one constant, some
+multiple of the observed mean Normal rate, chosen once before scoring
+either arm.
+
+Three scenarios: Normal, Flash Crowd, DDoS, the classes the training
+data's label column actually carries. Run against a fresh 25,449 row,
+nine session capture with jittered generator timing: LOSO accuracy
+0.982, FLOD precision 100.0% and recall 95.4% with a 0.0% false
+positive rate, against the fixed threshold's precision 52.1%, recall
+100.0%, and a 57.9% false positive rate. The number that matters most:
+of real Flash Crowd traffic, FLOD correctly left 100.0% alone, the
+fixed threshold flagged all of it as an attack. A threshold set low
+enough to catch the DDoS sessions here catches the legitimate surge
+too, because both read as an elevated rate and rate is the only signal
+a fixed threshold has.
+
+```bash
+python3 scripts/benchmark_fixed_threshold.py <path-to-training.csv>
+```
 
 ## References
 

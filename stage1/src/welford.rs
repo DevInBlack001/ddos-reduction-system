@@ -284,6 +284,31 @@ mod tests {
         assert_eq!(acc.n, max, "n exceeded the recency cap");
     }
 
+    /// Once `n` sits at the recency cap, one sample far from the learned
+    /// mean must move `std_dev` by a real amount, not something lost in
+    /// the noise. This is the actual mechanism the baseline-freeze escape
+    /// hatch in `analysis.rs` depends on: after a long freeze, the sample
+    /// that finally gets through has to move the needle in one step, not
+    /// require dozens more escapes at hundreds of windows apiece before
+    /// `sigma_r` reflects anything close to current reality.
+    #[test]
+    fn a_single_large_sample_at_the_recency_cap_moves_std_dev_by_a_real_amount() {
+        let mut acc = WelfordAccumulator::new(500);
+        for _ in 0..500 {
+            acc.update(20.0);
+        }
+        let std_dev_before = acc.std_dev();
+        assert!(std_dev_before < 1.0, "should be tightly settled before the jump: {std_dev_before}");
+
+        acc.update(1000.0);
+
+        let std_dev_after = acc.std_dev();
+        assert!(
+            std_dev_after > 10.0 * std_dev_before.max(0.01),
+            "one large sample should move std_dev by an order of magnitude, not a rounding error: before={std_dev_before} after={std_dev_after}"
+        );
+    }
+
     /// Upper / lower boundary helpers are symmetric around mean.
     #[test]
     fn boundary_helpers() {

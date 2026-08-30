@@ -78,6 +78,38 @@ fn window_is_clean(
         && rate <= rate_ceiling
 }
 
+/// Updates the consecutive-frozen-windows counter for one window and
+/// decides whether this window should be treated as clean: either
+/// naturally, per `window_is_clean`, or because the freeze has now lasted
+/// longer than `max_baseline_freeze_windows`. Returns the counter's new
+/// value and the clean/not-clean decision.
+///
+/// Sustained legitimate growth otherwise freezes the baseline permanently:
+/// each window it stays above the stale boundary re-flags, which re-arms
+/// cooldown, which keeps the gate closed, and nothing in that loop ever
+/// lets the boundary move to catch up. This is the escape hatch, bounded
+/// and configurable rather than indefinite: an attacker can force it open
+/// only by sustaining elevated traffic for longer than
+/// `max_baseline_freeze_windows`, the same tradeoff a target's very first
+/// warm-up already makes for its initial baseline. The entropy-only
+/// exception `window_is_clean` already grants is unaffected, since it
+/// already returns clean well before this bound is ever reached.
+fn apply_freeze_escape(
+    naturally_clean: bool,
+    consecutive_frozen_windows: u64,
+    max_baseline_freeze_windows: u64,
+) -> (u64, bool) {
+    if naturally_clean {
+        return (0, true);
+    }
+    let updated = consecutive_frozen_windows + 1;
+    if updated > max_baseline_freeze_windows {
+        (0, true)
+    } else {
+        (updated, false)
+    }
+}
+
 /// How far the running mean may sit from the peacetime reference before it is
 /// treated as poisoned and reverted.
 const MAX_BASELINE_DRIFT: f64 = 0.50;
@@ -705,7 +737,7 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
 
             // Named because the baseline snapshot below reuses the same
             // condition. A save must never capture mid attack state.
-            let is_clean_window = window_is_clean(
+            let naturally_clean = window_is_clean(
                 anomaly_flags,
                 target_state.cooldown_counter,
                 dominant_ip_ratio,
@@ -713,14 +745,47 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
                 r,
                 target_state.welford_rate.mean + sigma_r,
             );
+
+            let was_frozen = target_state.consecutive_frozen_windows;
+            let (consecutive_frozen_windows, is_clean_window) = apply_freeze_escape(
+                naturally_clean,
+                target_state.consecutive_frozen_windows,
+                cfg.max_baseline_freeze_windows,
+            );
+            target_state.consecutive_frozen_windows = consecutive_frozen_windows;
+
+            // A window that is clean only because it just escaped a freeze,
+            // not because it looked ordinary on its own merits, is exactly
+            // the sample the outlier checks below would otherwise reject:
+            // it deviates from the stale, pre-freeze mean and sigma by a
+            // huge margin almost by definition, since that gap is the
+            // reason the freeze happened at all. Rejecting it as an
+            // outlier would fire the escape's own warning while silently
+            // leaving Welford exactly as frozen as before, which is what
+            // the first version of this fix actually did: the warning
+            // logged, the update never ran, and `sigma_r` never moved.
+            // Confirmed on the VM on 2026-08-30 before this line existed:
+            // the escape fired ten times across a real DDoS-shaped session
+            // and `sigma_r` still read the floor on every single row.
+            let escaped_freeze = is_clean_window && !naturally_clean;
+
+            if escaped_freeze {
+                warn!(
+                    "Analysis [victim={}]: baseline was frozen for {} consecutive windows, \
+                     past the configured cap ({}); accepting current traffic as the new baseline.",
+                    victim_ip, was_frozen + 1, cfg.max_baseline_freeze_windows
+                );
+            }
             if is_clean_window {
-                let is_rate_outlier = sigma_r > 0.0
+                let is_rate_outlier = !escaped_freeze
+                    && sigma_r > 0.0
                     && (r - target_state.welford_rate.mean).abs() > cfg.outlier_sigma * sigma_r;
                 if !is_rate_outlier && target_state.welford_rate.mean < cfg.rate_mean_cap {
                     target_state.welford_rate.update(r);
                 }
 
-                let is_entropy_outlier = sigma_h > 0.0
+                let is_entropy_outlier = !escaped_freeze
+                    && sigma_h > 0.0
                     && (h - target_state.welford_entropy.mean).abs() > cfg.outlier_sigma * sigma_h;
                 if !is_entropy_outlier {
                     target_state.welford_entropy.update(h);
@@ -988,6 +1053,76 @@ mod tests {
             10.0,
             100.0
         ));
+    }
+
+    #[test]
+    fn a_naturally_clean_window_resets_the_freeze_counter() {
+        let (counter, is_clean) = apply_freeze_escape(true, 87, 400);
+        assert_eq!(counter, 0);
+        assert!(is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_under_the_cap_stays_frozen_and_counts_up() {
+        let (counter, is_clean) = apply_freeze_escape(false, 5, 400);
+        assert_eq!(counter, 6);
+        assert!(!is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_exactly_at_the_cap_still_stays_frozen() {
+        // The bound is "past the cap", not "at it": a target configured
+        // for 400 windows gets the full 400, not 399.
+        let (counter, is_clean) = apply_freeze_escape(false, 399, 400);
+        assert_eq!(counter, 400);
+        assert!(!is_clean);
+    }
+
+    #[test]
+    fn a_frozen_window_past_the_cap_is_accepted_as_the_new_baseline() {
+        let (counter, is_clean) = apply_freeze_escape(false, 400, 400);
+        assert_eq!(counter, 0);
+        assert!(is_clean);
+    }
+
+    #[test]
+    fn sustained_growth_escapes_the_freeze_at_exactly_the_configured_bound() {
+        // Simulates a target whose rate keeps climbing past its stale
+        // boundary for longer than any real poisoning attempt this defence
+        // is meant to catch: this is the actual bug this escape hatch
+        // fixes, reproduced with a small cap instead of the real one so
+        // the test does not need hundreds of iterations.
+        let cap = 5;
+        let mut counter = 0u64;
+        let mut escaped_at = None;
+        for window in 1..=(cap + 2) {
+            let (new_counter, is_clean) = apply_freeze_escape(false, counter, cap);
+            counter = new_counter;
+            if is_clean {
+                escaped_at = Some(window);
+                break;
+            }
+        }
+        assert_eq!(escaped_at, Some(cap + 1));
+    }
+
+    #[test]
+    fn an_attacker_cannot_shorten_the_freeze_by_alternating_clean_and_flagged_windows() {
+        // A window that is naturally clean resets the counter to zero, so
+        // flickering between "flagged" and "clean" never accumulates
+        // toward the escape bound. Only a genuinely sustained elevation,
+        // one that never lets a window read as naturally clean, can reach
+        // it.
+        let cap = 5;
+        let mut counter = 0u64;
+        for _ in 0..20 {
+            let (c1, clean1) = apply_freeze_escape(false, counter, cap);
+            assert!(!clean1, "a single flagged window must never itself escape the freeze");
+            let (c2, clean2) = apply_freeze_escape(true, c1, cap);
+            assert!(clean2);
+            counter = c2;
+        }
+        assert_eq!(counter, 0);
     }
 
     #[test]
