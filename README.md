@@ -150,6 +150,7 @@ scripts/test.sh
 | [Testing](docs/testing.md) | Running both test suites |
 | [Security](docs/security.md) | The hardening pass and the threat model |
 | [Roadmap](docs/roadmap.md) | Completed and planned versions |
+| [Benchmark Results](docs/benchmark-results.md) | FLOD vs. a fixed threshold: hardware, methodology, full output |
 | [Lessons Learned](docs/lessons-learned.md) | Real bugs found during development, kept for what they generalize to |
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers development setup and conventions.

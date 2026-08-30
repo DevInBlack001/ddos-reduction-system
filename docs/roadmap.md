@@ -80,13 +80,15 @@ accuracy 0.989, DDoS precision 0.97 and recall 0.98. The eBPF side has since
 loaded and run on the sensor VM: the verifier accepted both programs, all
 seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
 entropy and 4 to 6% on ingress packet counts. The non-technical explainer is
-written, [docs/explainer.md](explainer.md). Still open before this merges:
-dashboard visibility for the three raw features.
+written, [docs/explainer.md](explainer.md). Dashboard visibility for the
+three raw features is also done.
 
 A retrain against jittered traffic generators, rather than the scripted,
 mechanically regular timing the original 35,442 row capture used, is
-done: 25,449 rows across three fresh sessions per label, real `sigma_r`
-variation confirmed across every label, LOSO accuracy 0.982. See
+done: 25,449 new rows across nine fresh sessions, merged with the
+original capture into a 60,891 row, 21 session dataset, real `sigma_r`
+variation confirmed across every label, RandomForest LOSO accuracy
+0.997 on the full merged set. See
 [Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
 recapture made possible.
 
@@ -253,24 +255,31 @@ rather than a value pinned at the floor. See [training.md](training.md).
 project's own thesis rests on: does an adaptive boundary actually beat a
 static one, on real captured data, not just in the abstract. Run
 offline against an already-captured training CSV, no live traffic
-needed. FLOD's own side of the comparison is the trained RandomForest
-evaluated by Leave-One-Session-Out, the same held-out methodology
-`stage2/train.py`'s own accuracy claims already rest on, not a
-hand-derived proxy. The fixed-threshold side is one constant, some
-multiple of the observed mean Normal rate, chosen once before scoring
-either arm.
+needed. Covers both trained models, not the RandomForest alone: the
+RandomForest by Leave-One-Session-Out, the same held-out methodology
+`stage2/train.py`'s own accuracy claims already rest on, and the
+Isolation Forest under the same LOSO standard, which is stricter than
+`stage2/train_isolation_forest.py`'s own self-evaluation (unsupervised,
+so it has no held-out label to score against in production, but a
+benchmark can hold it to a higher bar). Also reports real training
+time, prediction latency and throughput, model size on disk, and this
+process's own CPU time and peak memory, measured directly rather than
+via an external sampler. Full methodology, hardware, and results:
+[Benchmark Results](benchmark-results.md).
 
 Three scenarios: Normal, Flash Crowd, DDoS, the classes the training
-data's label column actually carries. Run against a fresh 25,449 row,
-nine session capture with jittered generator timing: LOSO accuracy
-0.982, FLOD precision 100.0% and recall 95.4% with a 0.0% false
-positive rate, against the fixed threshold's precision 52.1%, recall
-100.0%, and a 57.9% false positive rate. The number that matters most:
-of real Flash Crowd traffic, FLOD correctly left 100.0% alone, the
-fixed threshold flagged all of it as an attack. A threshold set low
-enough to catch the DDoS sessions here catches the legitimate surge
-too, because both read as an elevated rate and rate is the only signal
-a fixed threshold has.
+data's label column actually carries. Latest run, against the full
+60,891 row, 21 session corrected dataset: RandomForest LOSO accuracy
+0.997, precision 99.7%, recall 99.2%, false positive rate 0.1%. Fixed
+threshold: precision 43.5%, recall 98.9%, false positive rate 52.5%.
+The number that matters most: of real Flash Crowd traffic, the
+RandomForest correctly left 100.0% alone, the fixed threshold flagged
+all of it as an attack. A threshold set low enough to catch the DDoS
+sessions here catches the legitimate surge too, because both read as an
+elevated rate and rate is the only signal a fixed threshold has. The
+Isolation Forest, evaluated the same way even though this is a narrower
+question than what it is actually for, correctly left 100.0% of Flash
+Crowd alone too.
 
 ```bash
 python3 scripts/benchmark_fixed_threshold.py <path-to-training.csv>
