@@ -472,6 +472,9 @@ if [[ -d "$STAGE2_DIR" ]]; then
         [[ -f "$f" && ! -L "$f" ]] || continue
         install -o root -g root -m 644 "$f" "$STAGE2_INSTALL_DIR/$(basename "$f")"
     done
+    # version.json is the project's single source of truth for the release
+    # version; config.py checks beside itself first, which is here.
+    install -o root -g root -m 644 "$(dirname "$STAGE2_DIR")/version.json" "$STAGE2_INSTALL_DIR/version.json"
     if [[ -d "$STAGE2_DIR/static" ]]; then
         install -d -o root -g root -m 755 "$STAGE2_INSTALL_DIR/static"
         while IFS= read -r -d '' f; do

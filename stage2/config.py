@@ -8,6 +8,7 @@ imports this one, directly or transitively, before it logs anything).
 
 import os
 import sys
+import json
 import struct
 import logging
 
@@ -20,12 +21,42 @@ from storage import load_json_file
 # socket path before this process does, or plant a fake active-flows file.
 RUNTIME_DIR = "/run/ddos_stage1"
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "stage1.sock")
-# Kept in step with the Rust crates in stage1/Cargo.toml and with the release
-# tag. Reported at startup and by /api/version so a deployed gateway can be
-# identified without inspecting files.
-VERSION = "1.2.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_version():
+    """Read version.json, the project's single source of truth for the
+    release version (stage1's build.rs reads the same file at compile
+    time). FLOD_VERSION_FILE overrides the path outright; otherwise this
+    checks beside config.py first (where install.sh/update.sh copy it in
+    a production install) and falls back to the repo root (a checkout run
+    directly). Deliberately read-only: unlike load_json_file, a missing
+    file must not get a default written back to it, that would silently
+    paper over a real deployment mistake."""
+    candidates = []
+    override = os.environ.get("FLOD_VERSION_FILE")
+    if override:
+        candidates.append(override)
+    candidates.append(os.path.join(SCRIPT_DIR, "version.json"))
+    candidates.append(os.path.join(SCRIPT_DIR, "..", "version.json"))
+
+    for path in candidates:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            with os.fdopen(fd, "r") as f:
+                return json.load(f)["version"]
+        except Exception:
+            continue
+    return "Unknown"
+
+
+# Reported at startup and by /api/version so a deployed gateway can be
+# identified without inspecting files.
+VERSION = _load_version()
 
 # Every path below defaults to living beside this file, which is what a
 # checkout run directly (scripts/run.sh, development) wants. A production

@@ -48,3 +48,8 @@ serde_json        = "1"
 # the sensor still compiles on a machine with no eBPF toolchain.
 aya               = "0.14"
 ddos-stage1-common = { path = "../stage1-common", features = ["user"] }
+
+# build.rs reads version.json into FLOD_VERSION at compile time; it needs
+# its own copy of serde_json since build scripts don't see [dependencies].
+[build-dependencies]
+serde_json        = "1"

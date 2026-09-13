@@ -353,7 +353,7 @@ impl CliArgs {
                     process::exit(0);
                 }
                 "--version" | "-V" => {
-                    println!("ddos_stage1 {}", env!("CARGO_PKG_VERSION"));
+                    println!("ddos_stage1 {}", env!("FLOD_VERSION"));
                     process::exit(0);
                 }
                 other => {
@@ -665,7 +665,7 @@ fn main() {
 
     info!(
         "FLOD System: Stage 1 sensor starting | version {}",
-        env!("CARGO_PKG_VERSION")
+        env!("FLOD_VERSION")
     );
 
     // Build the capture and analysis configurations.
