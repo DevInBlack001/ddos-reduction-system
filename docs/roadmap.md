@@ -92,24 +92,129 @@ variation confirmed across every label, RandomForest LOSO accuracy
 [Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
 recapture made possible.
 
-**V8, automated playbooks.** Granular incident reports and multi stage response
-playbooks executed during severe events.
+V8 through V12 below are ordered by difficulty rather than by any priority
+between them, easiest first, so the milestone number is a build-order
+estimate, not a ranking of importance. Kernel level work has consistently
+been the most expensive part of this project to get right (the eBPF
+milestone's own "compiled, passed its own tests, and did nothing" episode,
+recorded elsewhere in this project's notes, is the cautionary example),
+which is why the firewall backend work below sits behind the playbook work
+despite being smaller in surface area.
 
-**V9, federated peer signalling.** Cooperating gateways exchange authenticated
+**V8, confidence gated automatic labeling.** Passively collected network
+logs, including Isolation Forest output and traffic captured before any
+model has been trained on this deployment, are labeled automatically after
+a configurable delay (hours to weeks, an operator setting rather than a
+constant, per this project's own tuning convention) instead of requiring an
+admin to label everything by hand. A human labeling a large volume of
+traffic by hand is slow and error prone, but labeling all of it
+automatically is not a safe substitute either.
+
+Only windows a local model reads as confidently one class or another, far
+from any decision boundary, are auto-labeled and folded into training data.
+Anything ambiguous still lands in the existing human reviewed
+`anomalous_capture.csv` queue rather than being labeled automatically. This
+is a deliberate extension of, not a replacement for, the decision recorded
+elsewhere in this project not to feed `Anomalous` windows back into training
+automatically: doing that unconditionally reopens the same poisoning path,
+shape traffic to sit near the boundary and get mislabeled, that the manual
+review step exists to close. Keeping the ambiguous cases gated on a human
+keeps that defence intact while removing most of the manual burden for the
+large volume of traffic that is not ambiguous.
+
+Self contained inside Stage 2: no new kernel level code and no new protocol,
+built directly on models and a review queue that already exist. The easiest
+of the five below for exactly that reason.
+
+Not designed yet. Needs a concrete definition of "confident" per model
+(a `RandomForest` margin from `predict_proba`, an `IsolationForest` distance
+from its own decision function), both as configurable thresholds rather than
+constants, and a decision on whether the delay is fixed per deployment or
+adjustable per label class.
+
+**V9, operator defined playbooks and granular incident reporting.** The
+four existing enforcement tiers keep running automatically on every window
+exactly as they do today; a playbook is a separate layer on top that starts
+when a trigger condition fires and adds three kinds of stage the tiers do
+not do on their own: escalate a target over time without waiting for an
+operator, fire an external alert as a scripted step rather than a one shot
+notification, and generate an incident report the moment the playbook
+fires rather than waiting for one to be pulled later.
+
+A playbook belongs to an operator, not to this codebase: different
+deployments will want different sequences, so playbooks are defined, not
+hardcoded, editable either through a form builder or as a JSON or YAML
+document, both views round tripping to one stored definition rather than
+being two separate systems. A trigger can be any of a tier being reached, a
+run of consecutive attack classified windows past the existing hysteresis
+count, or several protected hosts under attack at once, and a playbook may
+combine more than one. Stages are linear, no branching, since nothing asked
+of this milestone needs it and a conditional stage graph is a materially
+bigger and harder to secure thing to build than the sequence anyone has
+actually described wanting.
+
+Incident reporting gains two things alongside this: a timeline of which
+stage fired when and against which source or host, distinct from the
+existing window by window classification log, and a per source breakdown
+within a single incident rather than only the aggregate view the current
+PDF and CSV export give.
+
+Large in surface area (a new schema, a new dashboard builder, a stateful
+per host execution engine) but entirely application level, no verifier to
+satisfy and no kernel programming risk, which is why it ranks below V8 on
+raw scope but above V10 on difficulty.
+
+**V10, firewall backend abstraction.** Enforcement currently assumes
+`iptables` and two `ipset`s unconditionally. Not every deployment runs
+`iptables` as its live ruleset, some run `nftables` instead, sometimes with
+`iptables` only present as a compatibility shim over it, and detecting
+which one is actually managing the host's traffic and using that one,
+rather than installing a second, competing ruleset, is the point of this
+milestone.
+
+A third candidate sits alongside the other two rather than replacing them:
+blocking directly in an XDP program when the kernel capture backend
+(`--capture-mode kernel`) is already loaded and running in driver mode,
+which drops a packet before the kernel builds a socket buffer for it at
+all, strictly cheaper per packet than either `nftables` or `iptables`
+since both only see a packet after it has already gone further into the
+stack. That gap matters most exactly during the highest packet rate
+moment of a flood, which is when the cheapest possible drop path pays off
+most. The advantage is conditional, not automatic: driver mode XDP support
+is NIC and driver dependent the same way it already is for detection, so
+on hardware without it, or when the pcap capture backend is active instead,
+XDP is not a candidate at all and the choice is strictly `nftables` versus
+`iptables`.
+
+Ranked below V9 despite a smaller surface area because kernel level work
+of any kind, XDP based blocking included, has been the consistently most
+expensive category of work in this project to get right the first time,
+where the application level playbook work above carries no equivalent
+verifier or driver risk.
+
+**V11, multi interface aggregation.** Traffic statistics aggregated across
+several parallel ingress uplinks.
+
+The code itself is likely not the hard part, it would reuse the per CPU
+summing pattern already solved for the eBPF maps, but the milestone is
+blocked on a topology that does not exist yet: the current deployment uses
+its two interfaces as the ingress and egress of a single path, not as
+parallel uplinks, so there is nothing to aggregate or verify against until
+that changes. Ranked by readiness rather than by code difficulty for that
+reason; revisit this position if a multi uplink topology becomes available
+sooner than the milestones ranked above it are ready to build.
+
+**V12, federated peer signalling.** Cooperating gateways exchange authenticated
 advisory reports, so the peer that owns an address, the only party able to see
 individual hosts behind its own NAT, investigates and acts locally instead of
 the receiving gateway blackholing a shared address.
 
 Conceptually aligned with IETF DOTS. Requires mutual authentication and a
 static peer registry, and applies only within a federation of cooperating
-gateways, not to arbitrary sources.
-
-**V10, multi interface aggregation.** Traffic statistics aggregated across
-several parallel ingress uplinks.
-
-Deferred behind everything above because the current topology uses its two
-interfaces as the ingress and egress of a single path, not as parallel uplinks.
-There is nothing to aggregate yet.
+gateways, not to arbitrary sources. The highest complexity and the highest
+stakes of the five: a new wire protocol and a cross organization trust
+boundary, where a design mistake means one gateway trusting another's report
+it should not have.
 
 ## Relative Sigma Floors
 
