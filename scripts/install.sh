@@ -127,6 +127,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Validate arguments ────────────────────────────────────────────────────────
+if ! [[ "$AUTO_LABEL_INTERVAL" =~ ^[0-9]+(s|m|min|h|hr|d|w)$ ]]; then
+    error "--auto-label-interval must look like a systemd time span, e.g. 30m, 1h, 6h. Got: '$AUTO_LABEL_INTERVAL'."
+fi
+
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root. Try: sudo bash $0"
@@ -525,7 +530,7 @@ if [[ -d "$STAGE2_DIR" ]]; then
     done
     chown -R root:root "$STAGE2_STATE_DIR"
 
-    for f in ddos_rf_model.joblib ddos_if_model.joblib; do
+    for f in ddos_rf_model.joblib ddos_if_model.joblib ddos_gb_model.joblib; do
         if [[ -f "$STAGE2_DIR/$f" && ! -f "$STAGE2_STATE_DIR/$f" ]]; then
             warn "Found $f in the checkout but did not migrate it:" \
                  "a model file is loaded with joblib.load(), which can run" \
@@ -711,6 +716,9 @@ Group=root
 WorkingDirectory=$STAGE2_INSTALL_DIR
 ExecStart=/bin/bash -c 'source "$STAGE2_INSTALL_DIR/venv/bin/activate" && exec python3 auto_label.py'
 Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
 EOF
 
         cat > "$SERVICE_DIR/ddos-stage2-auto-label.timer" << EOF
@@ -724,6 +732,7 @@ EOF
 OnBootSec=$AUTO_LABEL_INTERVAL
 OnUnitActiveSec=$AUTO_LABEL_INTERVAL
 Persistent=true
+RandomizedDelaySec=5m
 
 [Install]
 WantedBy=timers.target
