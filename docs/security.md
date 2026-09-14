@@ -148,6 +148,18 @@ The database permission is set before write ahead logging is enabled. SQLite
 gives the sidecar files the mode the database has when it creates them, and
 those files hold recently written pages including user rows.
 
+**V8's `stage2/auto_label.py` is a periodic job, not a service.** It runs
+under `ddos-stage2-auto-label.timer`, root, once an hour by default, rather
+than as a thread inside the long running Stage 2 process or anything
+network facing. It reads and rewrites the same root owned capture files
+under `FLOD_STATE_DIR` that Stage 2 itself already owns
+(`pretraining_capture.csv`, `anomalous_capture.csv`, and the staged
+`auto_labeled_capture.csv`), through the same atomic rewrite as every
+other JSON config write in this section (`storage._atomic_write`, a temp
+file in the same directory then an atomic rename). It opens no new
+network surface and accepts no external input of its own; the only data
+it acts on is what this project already captured.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

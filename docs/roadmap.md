@@ -126,11 +126,27 @@ Self contained inside Stage 2: no new kernel level code and no new protocol,
 built directly on models and a review queue that already exist. The easiest
 of the five below for exactly that reason.
 
-Not designed yet. Needs a concrete definition of "confident" per model
-(a `RandomForest` margin from `predict_proba`, an `IsolationForest` distance
-from its own decision function), both as configurable thresholds rather than
-constants, and a decision on whether the delay is fixed per deployment or
-adjustable per label class.
+On branch `v8`, code complete, not yet merged or tagged. "Confident" turned
+out to need a second model rather than a threshold on the RandomForest's own
+`predict_proba`: a `RandomForest` re-confirming its own margin on a row it
+already has a blind spot for just reproduces that blind spot with new-found
+confidence. `stage2/train_second_model.py` trains a
+`HistGradientBoostingClassifier` on the same cleaned feature set, a
+structurally different learning process (boosting corrects its own trees'
+errors sequentially, rather than the RandomForest's bagged, independently
+grown trees), and `stage2/auto_label.py` only stages a row once both models
+agree on the class and both clear `AUTO_LABEL_CONFIDENCE_THRESHOLD` on it.
+
+The delay is a single configurable setting
+(`AUTO_LABEL_DELAY_HOURS`), not adjustable per label class. A second
+safeguard sits alongside confidence and delay: both models must have been
+trained after the row was captured, so a stale, unretrained model can never
+confirm its own blind spot even with a second opinion agreeing. See
+[training.md](training.md#confidence-gated-automatic-labeling).
+
+Not yet confirmed: a real run of `ddos-stage2-auto-label.timer` against
+live captured data on the sensor VM, which is what this project's own
+convention requires before a milestone is trusted, not a local test pass.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window
