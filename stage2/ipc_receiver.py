@@ -81,6 +81,46 @@ ANOMALOUS_CSV_HEADER = [
     "fingerprint_diversity", "timestamp", "label", "victim_ip", "if_score", "rf_verdict",
 ]
 
+# V8: windows captured before any RandomForest model exists. Same 13 base
+# columns as ANOMALOUS_CSV_HEADER, no context columns, since no model ran
+# at capture time to produce a score or a verdict. See docs/specs/2026-09-
+# 13-confidence-gated-labeling-design.md.
+PRETRAINING_CSV_HEADER = [
+    "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+    "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
+    "fingerprint_diversity", "timestamp", "label",
+]
+
+
+def _append_csv_row(path, header, row):
+    """Append one row to a capture CSV, writing the header first if the
+    file does not exist yet. Shared by every capture point in this module
+    so the append-and-header behaviour lives in one place."""
+    write_header = not os.path.exists(path)
+    try:
+        with open(path, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(header)
+            w.writerow(row)
+    except OSError as e:
+        logging.error(f"[-] Failed to write {path}: {e}")
+
+
+def _base_feature_row(feature_values):
+    """The 13 base columns shared by every capture format, training_data.csv's
+    own column order. label is always blank: nothing at capture time
+    knows what this traffic actually is."""
+    return [
+        f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
+        f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
+        f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
+        f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
+        f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
+        f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
+        "",
+    ]
+
 
 def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     """Append one Anomalous window to config.ANOMALOUS_CSV_PATH for later
@@ -89,23 +129,15 @@ def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     first 13 columns match training.csv's own order exactly, so a row
     can be copied straight across once a human fills in the label and
     drops the victim_ip/if_score/rf_verdict columns on the end."""
-    write_header = not os.path.exists(config.ANOMALOUS_CSV_PATH)
-    try:
-        with open(config.ANOMALOUS_CSV_PATH, "a", newline="") as f:
-            w = csv.writer(f)
-            if write_header:
-                w.writerow(ANOMALOUS_CSV_HEADER)
-            w.writerow([
-                f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
-                f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
-                f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
-                f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
-                f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
-                f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
-                "", victim_ip, f"{if_score:+.4f}", rf_verdict,
-            ])
-    except OSError as e:
-        logging.error(f"[-] Failed to write anomalous_capture.csv row: {e}")
+    row = _base_feature_row(feature_values) + [victim_ip, f"{if_score:+.4f}", rf_verdict]
+    _append_csv_row(config.ANOMALOUS_CSV_PATH, ANOMALOUS_CSV_HEADER, row)
+
+
+def _write_pretraining_row(**feature_values):
+    """Append one cold-start window (no RandomForest model deployed yet)
+    to config.PRETRAINING_CSV_PATH for auto_label.py to score once a model
+    exists. label is left blank, same reasoning as _write_anomalous_row."""
+    _append_csv_row(config.PRETRAINING_CSV_PATH, PRETRAINING_CSV_HEADER, _base_feature_row(feature_values))
 
 
 def _peer_uid(conn):

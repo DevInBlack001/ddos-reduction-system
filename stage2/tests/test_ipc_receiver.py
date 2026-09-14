@@ -146,6 +146,57 @@ class WriteAnomalousRowTests(unittest.TestCase):
         self.assertEqual(rows[2][13], "192.0.2.11")
 
 
+class WritePretrainingRowTests(unittest.TestCase):
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)  # start from "file does not exist"
+        self.original_path = config.PRETRAINING_CSV_PATH
+        config.PRETRAINING_CSV_PATH = self.path
+
+    def tearDown(self):
+        config.PRETRAINING_CSV_PATH = self.original_path
+        unlink(self.path)
+
+    def _rows(self):
+        with open(self.path) as handle:
+            return list(csv.reader(handle))
+
+    def test_creates_the_file_on_the_first_cold_start_window(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_the_thirteen_columns_match_trainingcsvs_own_order(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        header = self._rows()[0]
+        self.assertEqual(header, [
+            "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+            "proto_ratio", "dominant_ip_ratio", "source_port_entropy",
+            "ttl_variance", "fingerprint_diversity", "timestamp", "label",
+        ])
+
+    def test_the_label_column_is_left_blank(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        row = self._rows()[1]
+        self.assertEqual(row[12], "")
+
+    def test_a_second_cold_start_window_appends_rather_than_overwriting(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        rows = self._rows()
+        self.assertEqual(len(rows), 3)  # header + two data rows
+
+
+class SharedCsvAppendHelperTests(unittest.TestCase):
+    """The refactor must not change _write_anomalous_row's own behaviour;
+    WriteAnomalousRowTests above already pins its output format, this
+    class only pins that the two writers now share one low-level append
+    so a future third capture point does not need a third copy of it."""
+
+    def test_write_anomalous_row_and_write_pretraining_row_share_the_append_helper(self):
+        self.assertIs(ipc_receiver._write_anomalous_row.__globals__["_append_csv_row"],
+                       ipc_receiver._write_pretraining_row.__globals__["_append_csv_row"])
+
+
 class PeerUidTests(unittest.TestCase):
     """The IPC socket's defence in depth against a connection from an
     unexpected local account: SO_PEERCRED reports the real, kernel
