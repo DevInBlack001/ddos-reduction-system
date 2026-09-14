@@ -26,6 +26,8 @@
 #   --exclude-ips <IPs>      Addresses carved out of the above, comma-separated (alias: --exclude-ip)
 #   --capture-mode <MODE>    pcap (default) or kernel. 'kernel' uses XDP and TC
 #                            and is written into the service unit
+#   --auto-label-interval <DURATION> Systemd time span for confidence gated auto-labeling
+#                            job (default: 1h, e.g. 30m, 2h, 1d)
 #   --no-service             Skip systemd unit installation
 #
 # Detection tuning, all optional. Anything not given is left out of the unit so
@@ -69,6 +71,8 @@ EXCLUDE_IPS=""
 # works on any interface; the kernel backend additionally needs the compiled
 # object and a driver the verifier will attach to.
 CAPTURE_MODE="pcap"
+# Systemd time span for the confidence gated auto-labeling job timer.
+AUTO_LABEL_INTERVAL="1h"
 INSTALL_SERVICE=true
 # Detection tuning. Empty means "not set", and an unset value is left out of
 # the unit entirely so the sensor's own default applies. Writing every default
@@ -109,6 +113,7 @@ while [[ $# -gt 0 ]]; do
                 *) error "--capture-mode takes 'pcap' or 'kernel', got '$2'." ;;
             esac
             shift 2 ;;
+        --auto-label-interval)     AUTO_LABEL_INTERVAL="$2"; shift 2 ;;
         --k)                       TUNE_K="$2"; shift 2 ;;
         --entropy-sigma-floor)     TUNE_ENTROPY_SIGMA_FLOOR="$2"; shift 2 ;;
         --rate-sigma-floor)        TUNE_RATE_SIGMA_FLOOR="$2"; shift 2 ;;
@@ -716,8 +721,8 @@ EOF
 # =============================================================================
 
 [Timer]
-OnBootSec=1h
-OnUnitActiveSec=1h
+OnBootSec=$AUTO_LABEL_INTERVAL
+OnUnitActiveSec=$AUTO_LABEL_INTERVAL
 Persistent=true
 
 [Install]

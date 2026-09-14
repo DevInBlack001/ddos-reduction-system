@@ -22,6 +22,8 @@
 # Options:
 #   --no-toolchain-update   Skip `rustup update` (use existing compiler)
 #   --no-service-restart    Do not restart the systemd service after update
+#   --auto-label-interval <DURATION> Systemd time span for confidence gated auto-labeling
+#                            job (default: 1h, e.g. 30m, 2h, 1d)
 # =============================================================================
 
 set -euo pipefail
@@ -35,6 +37,8 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 # ── Defaults ──────────────────────────────────────────────────────────────────
 UPDATE_TOOLCHAIN=true
 RESTART_SERVICE=true
+# Systemd time span for the confidence gated auto-labeling job timer.
+AUTO_LABEL_INTERVAL="1h"
 BINARY_NAME="ddos_stage1"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="ddos-stage1"
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-toolchain-update) UPDATE_TOOLCHAIN=false; shift ;;
         --no-service-restart)  RESTART_SERVICE=false; shift ;;
+        --auto-label-interval) AUTO_LABEL_INTERVAL="$2"; shift 2 ;;
         --help|-h)
             grep '^#' "$0" | head -30 | sed 's/^# \?//'
             exit 0 ;;
@@ -291,8 +296,8 @@ EOF
 # =============================================================================
 
 [Timer]
-OnBootSec=1h
-OnUnitActiveSec=1h
+OnBootSec=$AUTO_LABEL_INTERVAL
+OnUnitActiveSec=$AUTO_LABEL_INTERVAL
 Persistent=true
 
 [Install]
