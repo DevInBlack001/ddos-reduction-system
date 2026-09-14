@@ -144,8 +144,10 @@ trained after the row was captured, so a stale, unretrained model can never
 confirm its own blind spot even with a second opinion agreeing. See
 [training.md](training.md#confidence-gated-automatic-labeling).
 
-Not yet confirmed: a real run of `ddos-stage2-auto-label.timer` against
-live captured data on the sensor VM, which is what this project's own
+A dedicated security review found and fixed concurrent file access, unbounded
+capture growth, and resource contention issues; see [security.md](security.md#process-and-filesystem-isolation)
+for the details. Not yet confirmed: a real run of `ddos-stage2-auto-label.timer`
+against live captured data on the sensor VM, which is what this project's own
 convention requires before a milestone is trusted, not a local test pass.
 
 **V9, operator defined playbooks and granular incident reporting.** The

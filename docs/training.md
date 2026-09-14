@@ -316,6 +316,11 @@ against the RandomForest and a second, independently trained model (see
 - Both are confident in it, at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD`.
 - Both were trained after the row was captured.
 
+Both capture files are bounded to prevent unbounded growth: by row count via
+`AUTO_LABEL_MAX_QUEUE_ROWS` when `auto_label.py` trims them on each run, and
+by total file size via `PRETRAINING_MAX_BYTES` at write time in
+`ipc_receiver.py`, so the files stay within operator configured limits.
+
 The freshness check is the core safeguard, not a secondary one. Re-scoring
 a row with the same model that already has a blind spot for it, or with a
 second model trained before that blind spot existed, just reproduces the

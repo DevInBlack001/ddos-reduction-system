@@ -160,6 +160,18 @@ file in the same directory then an atomic rename). It opens no new
 network surface and accepts no external input of its own; the only data
 it acts on is what this project already captured.
 
+Concurrent access between the periodic labeling job and the live service is
+safe: `ipc_receiver.py` and `auto_label.py` coordinate via `fcntl.flock` on
+sibling `.lock` files, so writes from the service cannot land on the old
+inode while the job is rewriting. Both capture files are bounded to prevent
+unbounded growth on long running deployments: writes from `ipc_receiver.py`
+are dropped when the file size exceeds `PRETRAINING_MAX_BYTES` (default ~50MB,
+operator configurable), and `auto_label.py` trims to `AUTO_LABEL_MAX_QUEUE_ROWS`
+on each run. The systemd timer unit and service isolate the job's resource use:
+the job runs at low priority (`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`)
+with jittered start time (`RandomizedDelaySec=5m`), so it cannot contend with
+live enforcement if the system is busy during a real flood.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,
