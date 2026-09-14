@@ -113,7 +113,8 @@ def _read_rows(path):
     newest config.AUTO_LABEL_MAX_QUEUE_ROWS data rows via a deque, so peak memory
     is capped by the row limit even if the file is larger than that. Header is
     read first with next() to prevent it from being evicted. Returns was_bounded=True
-    if the deque had to drop rows (file was over cap), False otherwise."""
+    only if the actual file row count exceeded the cap (deque had to drop rows),
+    False if file was at or under cap."""
     if not os.path.exists(path):
         return None, [], False
     with open(path, newline="") as f:
@@ -121,15 +122,16 @@ def _read_rows(path):
         header = next(reader, None)
         if header is None:
             return None, [], False
-        # Track how many rows we see to know if the deque bounded them
-        rows_deque = deque(reader, maxlen=config.AUTO_LABEL_MAX_QUEUE_ROWS)
+        # Track how many rows we actually read, separately from what the bounded
+        # deque keeps. The deque only drops rows if total > maxlen.
+        rows_deque = deque(maxlen=config.AUTO_LABEL_MAX_QUEUE_ROWS)
+        total_rows = 0
+        for row in reader:
+            rows_deque.append(row)
+            total_rows += 1
         rows = list(rows_deque)
-    # The deque dropped rows (file was over cap) if it's at max capacity and
-    # hit that capacity (would need another iteration to fill it, which wouldn't
-    # happen if file had fewer rows). Simple heuristic: if rows == maxlen, the
-    # deque probably filled and started dropping. More precisely, we'd need to
-    # know the actual file line count, but that requires a separate pass.
-    was_bounded = len(rows) == config.AUTO_LABEL_MAX_QUEUE_ROWS
+    # was_bounded is True only if the file actually exceeded the cap
+    was_bounded = total_rows > config.AUTO_LABEL_MAX_QUEUE_ROWS
     return header, rows, was_bounded
 
 
@@ -225,7 +227,7 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
                 _append_labeled_row(labeled_out, labeled_row)
                 labeled_count += 1
 
-            if dropped or labeled_count:
+            if dropped or labeled_count or was_bounded:
                 _rewrite_csv(path, header, kept_rows)
             return labeled_count
         finally:

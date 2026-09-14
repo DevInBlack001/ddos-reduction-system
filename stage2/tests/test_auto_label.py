@@ -424,6 +424,125 @@ class DequeHeaderEvictionRegressionTests(unittest.TestCase):
             config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
 
 
+class ProcessCaptureFileTrimsOvercapWhenNoRowsLabelTests(unittest.TestCase):
+    """Regression test: _process_capture_file must trim oversized files even when
+    labeled_count == 0 (no row clears the delay/confidence gates). Previously,
+    was_bounded was unpacked but not used in the rewrite condition."""
+
+    class _FakeConfidentModel:
+        """Model that always returns Normal, so no rows get labeled."""
+        classes_ = np.array([0, 1, 2])
+
+        def predict_proba(self, features_df):
+            # Highest confidence on Normal (class 0), so all rows are labeled "Normal"
+            return np.array([[0.95, 0.03, 0.02]])
+
+    def _row(self, timestamp):
+        return ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                "0.9", "0.1", "0.1", str(timestamp), ""]
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_process_capture_file_trims_overcap_file_even_with_zero_labeled_count(self):
+        # Write a file significantly over the cap, with recent timestamps so no row clears the delay
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 5
+        # Use a recent timestamp (just now) so it fails the delay check (< 24 hours old)
+        now = time.time()
+        recent_timestamp = str(now)
+        try:
+            with open(self.capture_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(auto_label.BASE_CSV_HEADER)
+                for t in range(1, 21):  # 20 data rows
+                    w.writerow(self._row(recent_timestamp))
+
+            # Verify file is oversized before
+            with open(self.capture_path) as f:
+                lines_before = len(list(csv.reader(f)))
+            self.assertGreater(lines_before, 6)  # header + > 5 data rows
+
+            # Call _process_capture_file with models that return Normal for everything
+            # Rows won't be eligible (too young for the delay) so labeled_count will be 0,
+            # but was_bounded=True should still trigger rewrite
+            model_mtimes = [now, now]
+            labeled_count = auto_label._process_capture_file(
+                self.capture_path, self._FakeConfidentModel(), self._FakeConfidentModel(),
+                model_mtimes, self.labeled_path,
+            )
+
+            # No rows should have been labeled (all are ineligible due to delay)
+            self.assertEqual(labeled_count, 0)
+
+            # But the file on disk should have been trimmed anyway (was_bounded check)
+            with open(self.capture_path) as f:
+                lines_after = len(list(csv.reader(f)))
+
+            # Should be trimmed to header + at most 5 data rows = at most 6 lines
+            self.assertLessEqual(lines_after, 6,
+                               f"File should be trimmed to cap even with labeled_count=0: "
+                               f"{lines_before} lines before, {lines_after} after, cap={original_max_rows}")
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+
+class ReadRowsWasBoundedHeuristicTests(unittest.TestCase):
+    """Verify was_bounded correctly distinguishes 'exactly at cap' from 'over cap'."""
+
+    def _row(self, timestamp):
+        return ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                "0.9", "0.1", "0.1", str(timestamp), ""]
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+
+    def tearDown(self):
+        unlink(self.capture_path)
+
+    def test_exactly_at_cap_rows_returns_was_bounded_false(self):
+        # Write a file with exactly the cap's worth of rows
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 5
+        try:
+            with open(self.capture_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(auto_label.BASE_CSV_HEADER)
+                for t in range(1, 6):  # exactly 5 data rows = exactly cap
+                    w.writerow(self._row(float(t)))
+
+            header, rows, was_bounded = auto_label._read_rows(self.capture_path)
+            self.assertEqual(len(rows), 5)
+            self.assertFalse(was_bounded, "File at exactly cap should not be marked as bounded")
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+    def test_one_over_cap_rows_returns_was_bounded_true(self):
+        # Write a file with one more than the cap's worth of rows
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 5
+        try:
+            with open(self.capture_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(auto_label.BASE_CSV_HEADER)
+                for t in range(1, 7):  # 6 data rows = cap + 1
+                    w.writerow(self._row(float(t)))
+
+            header, rows, was_bounded = auto_label._read_rows(self.capture_path)
+            # Deque keeps at most 5 rows
+            self.assertLessEqual(len(rows), 5)
+            self.assertTrue(was_bounded, "File over cap should be marked as bounded")
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+
 class FileLockingTests(unittest.TestCase):
     """Test that file locking is actually acquired in critical sections."""
 
