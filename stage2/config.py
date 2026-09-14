@@ -104,6 +104,12 @@ SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(_STATE_DIR,
 AUTO_LABEL_DELAY_HOURS = float(os.environ.get("AUTO_LABEL_DELAY_HOURS", "24"))
 AUTO_LABEL_CONFIDENCE_THRESHOLD = float(os.environ.get("AUTO_LABEL_CONFIDENCE_THRESHOLD", "0.90"))
 AUTO_LABEL_MAX_QUEUE_ROWS = int(os.environ.get("AUTO_LABEL_MAX_QUEUE_ROWS", "50000"))
+# Maximum bytes for pretraining_capture.csv and anomalous_capture.csv before
+# new appends are skipped. Cold-start capture can run for hours without a model;
+# unbounded file growth to gigabytes is possible on heavy traffic. Starting point
+# of 50 MB; adjust downward on constrained systems or upward if trimming needs to
+# run less frequently.
+PRETRAINING_MAX_BYTES = int(os.environ.get("PRETRAINING_MAX_BYTES", "52428800"))
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(_STATE_DIR, "stage2.db"))
 WHITELIST_PATH = os.environ.get("WHITELIST_PATH", os.path.join(_STATE_DIR, "whitelist.json"))

@@ -231,5 +231,56 @@ class PeerUidTests(unittest.TestCase):
         self.assertIsNone(ipc_receiver._peer_uid(a))
 
 
+class AppendCsvRowSizeConstraintTests(unittest.TestCase):
+    """_append_csv_row enforces PRETRAINING_MAX_BYTES: appends are skipped
+    once the file reaches the cap, preventing unbounded growth of cold-start
+    capture files."""
+
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)
+        self.original_max_bytes = config.PRETRAINING_MAX_BYTES
+        # Use a tiny limit so we can hit it without creating megabyte files
+        config.PRETRAINING_MAX_BYTES = 100
+
+    def tearDown(self):
+        config.PRETRAINING_MAX_BYTES = self.original_max_bytes
+        unlink(self.path)
+
+    def test_skips_append_when_file_is_at_the_size_cap(self):
+        # Write a file that exactly matches the cap
+        with open(self.path, "w") as f:
+            f.write("x" * config.PRETRAINING_MAX_BYTES)
+
+        row_count_before = os.path.getsize(self.path)
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+        row_count_after = os.path.getsize(self.path)
+
+        # File size should not have changed
+        self.assertEqual(row_count_before, row_count_after)
+
+    def test_skips_append_when_file_exceeds_the_size_cap(self):
+        # Write a file larger than the cap
+        with open(self.path, "w") as f:
+            f.write("x" * (config.PRETRAINING_MAX_BYTES + 50))
+
+        row_count_before = os.path.getsize(self.path)
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+        row_count_after = os.path.getsize(self.path)
+
+        # File size should not have changed
+        self.assertEqual(row_count_before, row_count_after)
+
+    def test_appends_normally_when_file_is_under_the_size_cap(self):
+        # Write a small file
+        with open(self.path, "w") as f:
+            f.write("x" * 50)
+
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+
+        # File should have grown
+        self.assertGreater(os.path.getsize(self.path), 50)
+
+
 if __name__ == "__main__":
     unittest.main()
