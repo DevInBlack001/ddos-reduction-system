@@ -186,6 +186,17 @@ class WritePretrainingRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)  # header + two data rows
 
 
+class ShouldCapturePretrainingRowTests(unittest.TestCase):
+    def test_true_when_no_random_forest_model_is_loaded_and_not_warming_up(self):
+        self.assertTrue(ipc_receiver._should_capture_pretraining_row(clf=None, is_warmup=False))
+
+    def test_false_during_warmup_even_with_no_model(self):
+        self.assertFalse(ipc_receiver._should_capture_pretraining_row(clf=None, is_warmup=True))
+
+    def test_false_once_a_random_forest_model_is_loaded(self):
+        self.assertFalse(ipc_receiver._should_capture_pretraining_row(clf=object(), is_warmup=False))
+
+
 class SharedCsvAppendHelperTests(unittest.TestCase):
     """The refactor must not change _write_anomalous_row's own behaviour;
     WriteAnomalousRowTests above already pins its output format, this

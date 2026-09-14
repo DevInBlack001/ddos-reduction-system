@@ -140,6 +140,15 @@ def _write_pretraining_row(**feature_values):
     _append_csv_row(config.PRETRAINING_CSV_PATH, PRETRAINING_CSV_HEADER, _base_feature_row(feature_values))
 
 
+def _should_capture_pretraining_row(clf, is_warmup):
+    """Cold-start capture fires only before any RandomForest model exists
+    (the actual "before the first model is trained" case) and never during
+    warm-up, since a warm-up window's mean/sigma-derived features are not
+    meaningful even to a model trained later. The Isolation Forest is a
+    secondary, optional model; its absence alone does not mean this."""
+    return clf is None and not is_warmup
+
+
 def _peer_uid(conn):
     """The connecting process's real UID, via SO_PEERCRED. Linux only,
     which is the only platform this project targets (systemd, ipset,
@@ -377,6 +386,15 @@ def run_ipc_receiver():
                 # default (0, Normal) as this model's own opinion.
                 if not is_warmup and clf:
                     pred_class = int(clf.predict(features_df)[0])
+
+                if _should_capture_pretraining_row(clf, is_warmup):
+                    _write_pretraining_row(
+                        entropy=entropy, ewma_rate=ewma_rate, mean_h=mean_h, mean_r=mean_r,
+                        sigma_h=sigma_h, sigma_r=sigma_r, proto_ratio=proto_ratio,
+                        dominant_ip_ratio=dominant_ip_ratio, source_port_entropy=source_port_entropy,
+                        ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
+                        timestamp=timestamp,
+                    )
 
                 # Adaptive safety overrides. Deliberately NOT gated on
                 # is_warmup, see apply_safety_overrides' own docstring.
