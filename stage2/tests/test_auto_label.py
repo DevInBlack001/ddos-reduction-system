@@ -4,7 +4,10 @@ docs/specs/2026-09-13-confidence-gated-labeling-design.md."""
 
 import csv
 import os
+import time
 import unittest
+
+import numpy as np
 
 import _support
 from _support import temp_path, unlink
@@ -132,6 +135,59 @@ class MainLeavesCapturedRowsUntouchedWithoutBothModelsTests(unittest.TestCase):
         with open(self.pretraining_path, newline="") as f:
             rows = list(csv.reader(f))
         self.assertEqual(len(rows), 2)  # header + the one row, unchanged
+
+
+class ProcessCaptureFileSkipsMalformedRowsTests(unittest.TestCase):
+    """A single corrupted row (a non-numeric timestamp here) must not abort
+    the whole file: the valid rows around it are still scored normally, and
+    the bad row is left in place for a human to look at, not silently
+    dropped or allowed to crash the run."""
+
+    class _FakeConfidentModel:
+        """Always confidently agrees on class 2. Standing in for a real
+        joblib model so this test does not need one: only the malformed
+        row handling in _process_capture_file is under test here."""
+
+        def predict_proba(self, features_df):
+            return np.array([[0.01, 0.02, 0.97]])
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+        old_timestamp = "1000000.0"  # unambiguously older than the delay and every model mtime
+        valid_row = ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                     "0.9", "0.1", "0.1", old_timestamp, ""]
+        malformed_row = ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                          "0.9", "0.1", "0.1", "not-a-timestamp", ""]
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(auto_label.BASE_CSV_HEADER)
+            w.writerow(valid_row)
+            w.writerow(malformed_row)
+            w.writerow(valid_row)
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_the_malformed_row_is_skipped_and_the_valid_rows_are_still_labeled(self):
+        model_mtimes = [time.time(), time.time()]
+        labeled_count = auto_label._process_capture_file(
+            self.capture_path, self._FakeConfidentModel(), self._FakeConfidentModel(),
+            model_mtimes, self.labeled_path,
+        )
+        self.assertEqual(labeled_count, 2)  # both valid rows, the malformed one does not count
+
+        with open(self.capture_path, newline="") as f:
+            remaining_rows = list(csv.reader(f))
+        # header + the one malformed row, left exactly where it was
+        self.assertEqual(len(remaining_rows), 2)
+        self.assertEqual(remaining_rows[1][auto_label.TIMESTAMP_COL], "not-a-timestamp")
+
+        with open(self.labeled_path, newline="") as f:
+            labeled_rows = list(csv.reader(f))
+        self.assertEqual(len(labeled_rows), 3)  # header + the two labeled rows
 
 
 if __name__ == "__main__":

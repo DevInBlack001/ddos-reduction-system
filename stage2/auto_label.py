@@ -2,24 +2,12 @@
 """
 auto_label.py: Stage 2, V8's confidence gated automatic labeling.
 
-Run periodically by a systemd timer (ddos-stage2-auto-label.timer), not a
-background thread inside stage2.py: this reads and rewrites CSV files on
-disk, the same "runs occasionally against accumulated state" shape as
-scripts/calibrate.py, not something that belongs sharing the long-running
-service's own concurrency.
-
-Re-scores rows in config.PRETRAINING_CSV_PATH (cold-start windows) and
-config.ANOMALOUS_CSV_PATH (Isolation-Forest-flagged windows) against the
-RandomForest and a second, independently trained model. A row is only
-auto-labeled when both models agree on the class, both clear the
-confidence threshold, and both were trained after the row was captured.
-See docs/specs/2026-09-13-confidence-gated-labeling-design.md for why:
-re-running the same RF against a row it already has a blind spot for
-would just reproduce that blind spot with new-found confidence.
-
-Confidently labeled rows are staged in config.AUTO_LABELED_CSV_PATH, not
-written into training_data.csv directly, so nothing enters the
-authoritative training set without an operator's own deliberate merge.
+Re-scores rows in config.PRETRAINING_CSV_PATH and config.ANOMALOUS_CSV_PATH
+against the RandomForest and a second, independently trained model, staging
+a row into config.AUTO_LABELED_CSV_PATH when both agree and both are
+confident. Both models must also have been trained after the row was
+captured, so a stale, unretrained model can never auto-label its own blind
+spot. See docs/specs/2026-09-13-confidence-gated-labeling-design.md.
 """
 
 import os
@@ -156,16 +144,24 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
     kept_rows = []
     labeled_count = 0
     for row in rows:
-        row_timestamp = float(row[TIMESTAMP_COL])
-        if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
+        # A single malformed row (bad timestamp, missing column) must not
+        # abort the rest of the file: log it, leave it exactly where it is
+        # for a human, and keep scoring everything else.
+        try:
+            row_timestamp = float(row[TIMESTAMP_COL])
+            if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
+                kept_rows.append(row)
+                continue
+
+            features = _row_to_features(row, BASE_CSV_HEADER)
+            features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
+            rf_proba = clf.predict_proba(features_df)[0]
+            second_proba = second_clf.predict_proba(features_df)[0]
+            label = decide_label(rf_proba, second_proba, config.AUTO_LABEL_CONFIDENCE_THRESHOLD)
+        except (ValueError, IndexError, KeyError) as e:
+            logging.warning(f"[!] Skipping malformed row in {path}: {row!r} ({e})")
             kept_rows.append(row)
             continue
-
-        features = _row_to_features(row, BASE_CSV_HEADER)
-        features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
-        rf_proba = clf.predict_proba(features_df)[0]
-        second_proba = second_clf.predict_proba(features_df)[0]
-        label = decide_label(rf_proba, second_proba, config.AUTO_LABEL_CONFIDENCE_THRESHOLD)
 
         if label is None:
             kept_rows.append(row)
