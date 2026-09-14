@@ -41,7 +41,7 @@ options it asks for each value and offers a default.
 
 Options:
   -c, --csv <PATH>          Training CSV                 [default: $CSV_PATH]
-  -w, --which <rf|if|both>  Which model(s) to train       [default: $WHICH]
+  -w, --which <rf|if|sm|both|all>  Which model(s) to train [default: $WHICH]
   -y, --defaults            Accept every default, ask nothing
   -h, --help                Show this message
 
@@ -86,10 +86,10 @@ CSV_PATH=$(ask "Training CSV" "$CSV_PATH")
 CSV_PATH="$(cd "$(dirname "$CSV_PATH")" && pwd)/$(basename "$CSV_PATH")"
 
 while true; do
-    WHICH=$(ask "Train which model(s)? (rf, if, or both)" "$WHICH")
+    WHICH=$(ask "Train which model(s)? (rf, if, sm, both, or all)" "$WHICH")
     case "${WHICH,,}" in
-        rf|if|both) WHICH="${WHICH,,}"; break ;;
-        *) echo "    Answer rf, if, or both." >&2 ;;
+        rf|if|sm|both|all) WHICH="${WHICH,,}"; break ;;
+        *) echo "    Answer rf, if, sm, both, or all." >&2 ;;
     esac
 done
 
@@ -116,6 +116,7 @@ if [[ -x "$STAGE2_PROD_DIR/venv/bin/python3" ]]; then
     TRAIN_DIR="$STAGE2_PROD_DIR"
     export MODEL_PATH="$STAGE2_STATE_DIR/ddos_rf_model.joblib"
     export IF_MODEL_PATH="$STAGE2_STATE_DIR/ddos_if_model.joblib"
+    export SECOND_MODEL_PATH="$STAGE2_STATE_DIR/ddos_gb_model.joblib"
     info "Production install detected: training into $STAGE2_STATE_DIR."
 else
     VENV_PYTHON="$PROJECT_ROOT/stage2/venv/bin/python3"
@@ -133,17 +134,24 @@ echo ""
 
 cd "$TRAIN_DIR"
 
-if [[ "$WHICH" == "rf" || "$WHICH" == "both" ]]; then
+if [[ "$WHICH" == "rf" || "$WHICH" == "both" || "$WHICH" == "all" ]]; then
     info "Training the RandomForest (train.py)..."
     "$VENV_PYTHON" train.py "$CSV_PATH"
     success "RandomForest trained."
     echo ""
 fi
 
-if [[ "$WHICH" == "if" || "$WHICH" == "both" ]]; then
+if [[ "$WHICH" == "if" || "$WHICH" == "both" || "$WHICH" == "all" ]]; then
     info "Training the Isolation Forest (train_isolation_forest.py)..."
     "$VENV_PYTHON" train_isolation_forest.py "$CSV_PATH"
     success "Isolation Forest trained."
+    echo ""
+fi
+
+if [[ "$WHICH" == "sm" || "$WHICH" == "all" ]]; then
+    info "Training the second model (train_second_model.py)..."
+    "$VENV_PYTHON" train_second_model.py "$CSV_PATH"
+    success "Second model trained."
     echo ""
 fi
 
