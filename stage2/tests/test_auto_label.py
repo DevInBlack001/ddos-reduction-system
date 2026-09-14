@@ -264,5 +264,81 @@ class ProcessCaptureFileStagesSixteenColumnRowsCorrectlyTests(unittest.TestCase)
         self.assertEqual(labeled_rows[1][auto_label.BASE_CSV_HEADER.index("label")], "2")
 
 
+class TrimCsvRowsMalformedHandlingTests(unittest.TestCase):
+    """Malformed rows (non-numeric or missing timestamp) must not crash
+    trim_csv_rows: they should sort oldest and get dropped first if the
+    file is over the row cap."""
+
+    def _row(self, timestamp_str):
+        return ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                "0.9", "0.1", "0.1", timestamp_str, ""]
+
+    def test_malformed_timestamp_sorts_oldest_without_raising(self):
+        rows = [self._row("3.0"), self._row("not-a-timestamp"), self._row("2.0"), self._row("1.0")]
+        # Over the cap by one row; the malformed one should be dropped first
+        kept, dropped = auto_label.trim_csv_rows(rows, max_rows=3)
+        self.assertEqual(dropped, 1)
+        # Kept rows are 1.0, 2.0, 3.0 in timestamp order; malformed one gone
+        self.assertEqual(len(kept), 3)
+        self.assertNotIn("not-a-timestamp", [r[auto_label.TIMESTAMP_COL] for r in kept])
+
+    def test_missing_timestamp_column_sorts_oldest_without_raising(self):
+        good_row = self._row("2.0")
+        short_row = ["0.9", "20.0", "0.9"]  # missing timestamp column entirely
+        rows = [good_row, short_row, self._row("1.0")]
+        kept, dropped = auto_label.trim_csv_rows(rows, max_rows=2)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(kept), 2)
+        # The short row should be gone
+        self.assertNotEqual(len(kept[0]), len(short_row))
+
+
+class TrimCaptureFileWithoutModelsTests(unittest.TestCase):
+    """_trim_capture_file_only runs even when no models exist, bounding
+    unbounded growth of cold-start capture files during the pre-training
+    period."""
+
+    def _row(self, timestamp):
+        return ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                "0.9", "0.1", "0.1", str(timestamp), ""]
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+
+    def tearDown(self):
+        unlink(self.capture_path)
+
+    def test_trim_without_models_succeeds_on_valid_csv(self):
+        # When no models exist, _trim_capture_file_only still runs to keep
+        # files bounded. It reads with _read_rows (which uses a deque to
+        # bound peak memory) and trims if needed. The test verifies the
+        # function succeeds and produces a valid CSV even on a file over the cap.
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(auto_label.BASE_CSV_HEADER)
+            for t in (1.0, 2.0, 3.0, 4.0, 5.0):
+                w.writerow(self._row(t))
+
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 3
+        try:
+            # _trim_capture_file_only should succeed and not crash
+            dropped = auto_label._trim_capture_file_only(self.capture_path)
+            # Returns the number of rows trim_csv_rows dropped after the deque read
+
+            with open(self.capture_path, newline="") as f:
+                rows = list(csv.reader(f))
+            # CSV should still be valid with a proper header
+            self.assertEqual(rows[0], auto_label.BASE_CSV_HEADER)
+            # Verify data rows still have proper timestamp structure
+            for data_row in rows[1:]:
+                self.assertGreaterEqual(len(data_row), auto_label.TIMESTAMP_COL + 1)
+                # Timestamp column should be numeric
+                float(data_row[auto_label.TIMESTAMP_COL])
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+
 if __name__ == "__main__":
     unittest.main()
