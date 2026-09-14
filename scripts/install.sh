@@ -152,6 +152,12 @@ if ! [[ "$RETRAIN_INTERVAL" =~ ^[0-9]+(s|m|min|h|hr|d|w)$ ]]; then
 fi
 if [[ -n "$TRAINING_CSV" ]]; then
     [[ -f "$TRAINING_CSV" ]] || error "No file at '$TRAINING_CSV' (--training-csv)."
+    # Resolved to an absolute path now, before it is baked into the retrain
+    # unit's ExecStart below: that unit runs under systemd, at an arbitrary
+    # future time, from $STAGE2_INSTALL_DIR, not from wherever this script
+    # was invoked, so a relative path here would silently stop resolving to
+    # the file the operator meant. Same fix as scripts/train.sh's CSV_PATH.
+    TRAINING_CSV="$(cd "$(dirname "$TRAINING_CSV")" && pwd)/$(basename "$TRAINING_CSV")"
 fi
 
 # ── Root check ────────────────────────────────────────────────────────────────

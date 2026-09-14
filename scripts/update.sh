@@ -77,7 +77,11 @@ while [[ $# -gt 0 ]]; do
         --training-csv)        TRAINING_CSV="$2"; shift 2 ;;
         --retrain-interval)    RETRAIN_INTERVAL="$2"; shift 2 ;;
         --help|-h)
-            grep '^#' "$0" | head -30 | sed 's/^# \?//'
+            # The header comment block (through the closing ===== line) is
+            # now 34 lines after --training-csv/--retrain-interval were
+            # added; 30 cut off mid-description before --retrain-interval.
+            # A little headroom above the exact count, not the bare minimum.
+            grep '^#' "$0" | head -36 | sed 's/^# \?//'
             exit 0 ;;
         *) error "Unknown argument: $1" ;;
     esac
@@ -92,6 +96,12 @@ if ! [[ "$RETRAIN_INTERVAL" =~ ^[0-9]+(s|m|min|h|hr|d|w)$ ]]; then
 fi
 if [[ -n "$TRAINING_CSV" ]]; then
     [[ -f "$TRAINING_CSV" ]] || error "No file at '$TRAINING_CSV' (--training-csv)."
+    # Resolved to an absolute path now, before it is baked into the retrain
+    # unit's ExecStart below: that unit runs under systemd, at an arbitrary
+    # future time, from $STAGE2_INSTALL_DIR, not from wherever this script
+    # was invoked, so a relative path here would silently stop resolving to
+    # the file the operator meant. Same fix as scripts/train.sh's CSV_PATH.
+    TRAINING_CSV="$(cd "$(dirname "$TRAINING_CSV")" && pwd)/$(basename "$TRAINING_CSV")"
 fi
 
 # ── Root check ────────────────────────────────────────────────────────────────
