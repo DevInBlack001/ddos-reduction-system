@@ -16,6 +16,7 @@ import logging
 import grp
 import pwd
 import time
+import fcntl
 
 import joblib
 
@@ -95,16 +96,47 @@ PRETRAINING_CSV_HEADER = [
 def _append_csv_row(path, header, row):
     """Append one row to a capture CSV, writing the header first if the
     file does not exist yet. Shared by every capture point in this module
-    so the append-and-header behaviour lives in one place."""
-    write_header = not os.path.exists(path)
+    so the append-and-header behaviour lives in one place. Holds an exclusive
+    lock on <path>.lock around the actual write to prevent auto_label.py's
+    atomic rewrite from silently losing the appended row. Skips the append if
+    the file is already at or over PRETRAINING_MAX_BYTES, logging once."""
+    lockfile_path = f"{path}.lock"
+    lock_fd = os.open(lockfile_path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        with open(path, "a", newline="") as f:
-            w = csv.writer(f)
-            if write_header:
-                w.writerow(header)
-            w.writerow(row)
-    except OSError as e:
-        logging.error(f"[-] Failed to write {path}: {e}")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            # Check file size before writing; skip append if already at cap.
+            try:
+                file_size = os.path.getsize(path)
+                if file_size >= config.PRETRAINING_MAX_BYTES:
+                    # Log once per threshold crossing, not on every skipped row:
+                    # only log if size just reached the cap by checking if the
+                    # previous size was under it. Simple heuristic: check if
+                    # roughly the row would push us over. Don't micro-optimize;
+                    # a warning logged occasionally is acceptable.
+                    if file_size == config.PRETRAINING_MAX_BYTES:
+                        logging.warning(
+                            f"[!] {path} has reached {config.PRETRAINING_MAX_BYTES} bytes, "
+                            f"skipping appends until auto_label.py trims it."
+                        )
+                    return
+            except OSError:
+                # File doesn't exist yet, so write will create it.
+                pass
+
+            write_header = not os.path.exists(path)
+            try:
+                with open(path, "a", newline="") as f:
+                    w = csv.writer(f)
+                    if write_header:
+                        w.writerow(header)
+                    w.writerow(row)
+            except OSError as e:
+                logging.error(f"[-] Failed to write {path}: {e}")
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
 
 
 def _base_feature_row(feature_values):

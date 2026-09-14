@@ -11,9 +11,16 @@ spot. See docs/specs/2026-09-13-confidence-gated-labeling-design.md.
 """
 
 import os
+# Constrain the second model's threading before importing anything that pulls
+# in OpenMP (joblib, numpy, pandas). Environment variables read at import time
+# by those libraries don't take effect if set later.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import csv
 import time
 import logging
+import fcntl
+from collections import deque
 
 import joblib
 import numpy as np
@@ -74,16 +81,28 @@ def decide_label(rf_proba, rf_classes, second_proba, second_classes, confidence_
     return int(rf_classes[rf_top_idx])
 
 
+def _sort_key(row):
+    """Safe sort key for trim_csv_rows: returns the timestamp as a float,
+    or float("-inf") for a malformed row (non-numeric timestamp or missing
+    column). Malformed rows sort oldest, get dropped first if the file is
+    over the cap."""
+    try:
+        return float(row[TIMESTAMP_COL])
+    except (ValueError, IndexError):
+        return float("-inf")
+
+
 def trim_csv_rows(rows, max_rows):
     """Keeps the newest max_rows rows by their timestamp column, dropping
     the oldest first. rows is a list of plain string lists as returned by
     csv.reader, header not included. Returns (kept_rows, dropped_count).
     Without this cap, a fresh deployment left running with no model, or a
     long configured delay under heavy traffic, would grow an unbounded
-    file."""
+    file. Malformed rows (non-numeric or missing timestamp) sort oldest and
+    are dropped first, without raising an exception."""
     if len(rows) <= max_rows:
         return rows, 0
-    sorted_rows = sorted(rows, key=lambda r: float(r[TIMESTAMP_COL]))
+    sorted_rows = sorted(rows, key=_sort_key)
     dropped = len(sorted_rows) - max_rows
     return sorted_rows[dropped:], dropped
 
@@ -91,12 +110,16 @@ def trim_csv_rows(rows, max_rows):
 def _read_rows(path):
     """Returns (header, rows) for a capture CSV, or (None, []) if the file
     does not exist yet, which is the normal state for a fresh deployment
-    that has not captured anything of this kind."""
+    that has not captured anything of this kind. Bounds memory during the read
+    by keeping only the newest config.AUTO_LABEL_MAX_QUEUE_ROWS rows via a
+    deque, so peak memory is capped by the row limit even if the file is
+    larger than that."""
     if not os.path.exists(path):
         return None, []
     with open(path, newline="") as f:
         reader = csv.reader(f)
-        rows = list(reader)
+        rows_deque = deque(reader, maxlen=config.AUTO_LABEL_MAX_QUEUE_ROWS + 1)
+        rows = list(rows_deque)
     if not rows:
         return None, []
     return rows[0], rows[1:]
@@ -140,56 +163,67 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
     remaining row: eligible and confidently agreed rows are appended to
     labeled_out and removed here; everything else stays for the next run
     or for a human, exactly as it does today. Returns the number of rows
-    auto-labeled."""
-    header, rows = _read_rows(path)
-    if header is None:
-        logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
-        return 0
-
-    rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
-    if dropped:
-        logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
-                         f"dropped {dropped} oldest.")
-
-    kept_rows = []
-    labeled_count = 0
-    for row in rows:
-        # A single malformed row (bad timestamp, missing column) must not
-        # abort the rest of the file: log it, leave it exactly where it is
-        # for a human, and keep scoring everything else.
+    auto-labeled. Holds an exclusive lock on <path>.lock for the entire
+    read-score-rewrite sequence to prevent ipc_receiver.py's appends from
+    landing on the old inode and being silently lost."""
+    lockfile_path = f"{path}.lock"
+    lock_fd = os.open(lockfile_path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
-            row_timestamp = float(row[TIMESTAMP_COL])
-            if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
-                kept_rows.append(row)
-                continue
+            header, rows = _read_rows(path)
+            if header is None:
+                logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
+                return 0
 
-            features = _row_to_features(row, header)
-            features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
-            rf_proba = clf.predict_proba(features_df)[0]
-            second_proba = second_clf.predict_proba(features_df)[0]
-            label = decide_label(
-                rf_proba, clf.classes_, second_proba, second_clf.classes_,
-                config.AUTO_LABEL_CONFIDENCE_THRESHOLD,
-            )
-        except (ValueError, IndexError, KeyError) as e:
-            logging.warning(f"[!] Skipping malformed row in {path}: {row!r} ({e})")
-            kept_rows.append(row)
-            continue
+            rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
+            if dropped:
+                logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
+                                 f"dropped {dropped} oldest.")
 
-        if label is None:
-            kept_rows.append(row)
-            continue
+            kept_rows = []
+            labeled_count = 0
+            for row in rows:
+                # A single malformed row (bad timestamp, missing column) must not
+                # abort the rest of the file: log it, leave it exactly where it is
+                # for a human, and keep scoring everything else.
+                try:
+                    row_timestamp = float(row[TIMESTAMP_COL])
+                    if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
+                        kept_rows.append(row)
+                        continue
 
-        # row may carry anomalous_capture.csv's extra 3 context columns;
-        # the staging file is always the 13-column BASE_CSV_HEADER.
-        labeled_row = list(row[:len(BASE_CSV_HEADER)])
-        labeled_row[BASE_CSV_HEADER.index("label")] = str(label)
-        _append_labeled_row(labeled_out, labeled_row)
-        labeled_count += 1
+                    features = _row_to_features(row, header)
+                    features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
+                    rf_proba = clf.predict_proba(features_df)[0]
+                    second_proba = second_clf.predict_proba(features_df)[0]
+                    label = decide_label(
+                        rf_proba, clf.classes_, second_proba, second_clf.classes_,
+                        config.AUTO_LABEL_CONFIDENCE_THRESHOLD,
+                    )
+                except (ValueError, IndexError, KeyError) as e:
+                    logging.warning(f"[!] Skipping malformed row in {path}: {row!r} ({e})")
+                    kept_rows.append(row)
+                    continue
 
-    if dropped or labeled_count:
-        _rewrite_csv(path, header, kept_rows)
-    return labeled_count
+                if label is None:
+                    kept_rows.append(row)
+                    continue
+
+                # row may carry anomalous_capture.csv's extra 3 context columns;
+                # the staging file is always the 13-column BASE_CSV_HEADER.
+                labeled_row = list(row[:len(BASE_CSV_HEADER)])
+                labeled_row[BASE_CSV_HEADER.index("label")] = str(label)
+                _append_labeled_row(labeled_out, labeled_row)
+                labeled_count += 1
+
+            if dropped or labeled_count:
+                _rewrite_csv(path, header, kept_rows)
+            return labeled_count
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
 
 
 def _append_labeled_row(path, row):
@@ -204,22 +238,52 @@ def _append_labeled_row(path, row):
         logging.error(f"[-] Failed to write {path}: {e}")
 
 
+def _trim_capture_file_only(path):
+    """Trim one capture file to config.AUTO_LABEL_MAX_QUEUE_ROWS without
+    scoring, used when no models are present yet. Returns the number of
+    rows dropped."""
+    header, rows = _read_rows(path)
+    if header is None:
+        logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
+        return 0
+
+    rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
+    if dropped:
+        logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
+                         f"dropped {dropped} oldest.")
+        _rewrite_csv(path, header, rows)
+    return dropped
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    if not os.path.exists(config.MODEL_PATH) or not os.path.exists(config.SECOND_MODEL_PATH):
-        logging.info("[+] RandomForest and/or second model not present yet, "
-                      "agreement cannot be checked with only one model. Nothing to do.")
-        return
-
-    clf = joblib.load(config.MODEL_PATH)
-    clf.n_jobs = 1
-    second_clf = joblib.load(config.SECOND_MODEL_PATH)
-    model_mtimes = [os.path.getmtime(config.MODEL_PATH), os.path.getmtime(config.SECOND_MODEL_PATH)]
+    # Load models, both optional for scoring but trimming always runs.
+    clf = None
+    second_clf = None
+    model_mtimes = []
+    if os.path.exists(config.MODEL_PATH) and os.path.exists(config.SECOND_MODEL_PATH):
+        try:
+            clf = joblib.load(config.MODEL_PATH)
+            clf.n_jobs = 1
+            second_clf = joblib.load(config.SECOND_MODEL_PATH)
+            model_mtimes = [os.path.getmtime(config.MODEL_PATH), os.path.getmtime(config.SECOND_MODEL_PATH)]
+        except Exception as e:
+            logging.error(f"[-] Failed to load models: {e}. Trimming only.")
+            clf = None
+            second_clf = None
 
     total_labeled = 0
     for path in (config.PRETRAINING_CSV_PATH, config.ANOMALOUS_CSV_PATH):
-        total_labeled += _process_capture_file(path, clf, second_clf, model_mtimes, config.AUTO_LABELED_CSV_PATH)
+        try:
+            if clf is not None and second_clf is not None:
+                # Both models present: score and label.
+                total_labeled += _process_capture_file(path, clf, second_clf, model_mtimes, config.AUTO_LABELED_CSV_PATH)
+            else:
+                # No models yet: trim only.
+                _trim_capture_file_only(path)
+        except Exception as e:
+            logging.error(f"[-] Error processing {path}: {e}. Continuing to next file.")
 
     logging.info(f"[+] Auto-labeled {total_labeled} row(s) into {config.AUTO_LABELED_CSV_PATH}.")
 
