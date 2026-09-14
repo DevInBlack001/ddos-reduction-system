@@ -38,10 +38,10 @@ dependency), trained on the same `training_data.csv`. Boosting builds its
 trees sequentially, correcting the previous round's errors, a structurally
 different process from the RF's bagged, independently-grown trees, giving
 a genuine second opinion rather than a rerun of the first. This mirrors
-why IF is a second, different model alongside the RF rather than a second
-run of it, applied here to the labeling decision instead of to live
-enforcement. Whether gradient boosting is actually the best-suited second
-family for this feature set, versus e.g. logistic regression, is an
+why IF is a second, different model alongside the RF, applied here to the
+labeling decision instead of to live enforcement. Whether gradient
+boosting is actually the best-suited second family for this feature set,
+versus e.g. logistic regression, is an
 empirical question, validated by the same LOSO methodology `train.py`
 already uses for the RF, not assumed.
 

@@ -225,7 +225,7 @@ every packet from that sender outright (a block), or cap how fast it is
 allowed to send without cutting it off entirely (a throttle, used when the
 evidence is real but less certain, or when many senders are involved and
 singling one out is not possible). Both wear off automatically after a set
-period, so a wrong call heals itself rather than lasting forever.
+period, so a wrong call heals itself.
 
 Because the sensor watches both sides, what came in and what actually made
 it through to the server, it can also measure whether a block or throttle

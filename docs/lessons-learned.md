@@ -166,7 +166,7 @@ deterministic, always-on safety enforcement rules on that same warm-up
 check, leaving a freshly restarted or newly added target completely
 unenforced, no blocking, no rate-limiting, no alerting, for its first
 couple hundred windows. Caught by a structured security review before it
-shipped, not after. The fix extracted the safety logic into its own
+shipped. The fix extracted the safety logic into its own
 function that takes no warm-up parameter at all, specifically so a future
 change to warm-up handling has no path back into gating enforcement by
 accident the way one `if` wrapping too much code did the first time.

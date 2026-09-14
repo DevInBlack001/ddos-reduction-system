@@ -922,8 +922,7 @@ auto_label.py: Stage 2, V8's confidence gated automatic labeling.
 Run periodically by a systemd timer (ddos-stage2-auto-label.timer), not a
 background thread inside stage2.py: this reads and rewrites CSV files on
 disk, the same "runs occasionally against accumulated state" shape as
-scripts/calibrate.py, not something that belongs sharing the long-running
-service's own concurrency.
+scripts/calibrate.py.
 
 Re-scores rows in config.PRETRAINING_CSV_PATH (cold-start windows) and
 config.ANOMALOUS_CSV_PATH (Isolation-Forest-flagged windows) against the
