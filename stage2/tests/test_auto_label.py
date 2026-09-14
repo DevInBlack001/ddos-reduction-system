@@ -63,22 +63,43 @@ class DecideLabelTests(unittest.TestCase):
     def test_agreement_above_threshold_returns_the_agreed_class(self):
         rf_proba = [0.02, 0.03, 0.95]
         second_proba = [0.05, 0.05, 0.90]
-        self.assertEqual(auto_label.decide_label(rf_proba, second_proba, confidence_threshold=0.90), 2)
+        self.assertEqual(
+            auto_label.decide_label(rf_proba, [0, 1, 2], second_proba, [0, 1, 2], confidence_threshold=0.90),
+            2,
+        )
 
     def test_disagreement_returns_none_even_if_both_are_confident(self):
         rf_proba = [0.02, 0.03, 0.95]      # top class 2
         second_proba = [0.95, 0.03, 0.02]  # top class 0
-        self.assertIsNone(auto_label.decide_label(rf_proba, second_proba, confidence_threshold=0.90))
+        self.assertIsNone(
+            auto_label.decide_label(rf_proba, [0, 1, 2], second_proba, [0, 1, 2], confidence_threshold=0.90)
+        )
 
     def test_agreement_below_threshold_on_the_random_forest_returns_none(self):
         rf_proba = [0.15, 0.15, 0.70]      # agrees, but below 0.90
         second_proba = [0.05, 0.05, 0.90]
-        self.assertIsNone(auto_label.decide_label(rf_proba, second_proba, confidence_threshold=0.90))
+        self.assertIsNone(
+            auto_label.decide_label(rf_proba, [0, 1, 2], second_proba, [0, 1, 2], confidence_threshold=0.90)
+        )
 
     def test_agreement_below_threshold_on_the_second_model_returns_none(self):
         rf_proba = [0.02, 0.03, 0.95]
         second_proba = [0.20, 0.20, 0.60]  # agrees, but below 0.90
-        self.assertIsNone(auto_label.decide_label(rf_proba, second_proba, confidence_threshold=0.90))
+        self.assertIsNone(
+            auto_label.decide_label(rf_proba, [0, 1, 2], second_proba, [0, 1, 2], confidence_threshold=0.90)
+        )
+
+    def test_mismatched_classes_returns_none_even_when_the_shared_class_agrees(self):
+        # RF has never dropped a class; the second model's training CSV had
+        # no rows for class 1 (Flash Crowd), so its classes_ is [0, 2] and
+        # its proba index 1 actually means class 2, not class 1. Both top
+        # picks land on "index 1" but that means different classes for each
+        # model, so this must not be read as agreement.
+        rf_proba = [0.02, 0.95, 0.03]        # classes_ [0, 1, 2]: top is class 1
+        second_proba = [0.03, 0.97]          # classes_ [0, 2]: top is class 2
+        self.assertIsNone(
+            auto_label.decide_label(rf_proba, [0, 1, 2], second_proba, [0, 2], confidence_threshold=0.90)
+        )
 
 
 class TrimCsvRowsTests(unittest.TestCase):
@@ -148,6 +169,8 @@ class ProcessCaptureFileSkipsMalformedRowsTests(unittest.TestCase):
         joblib model so this test does not need one: only the malformed
         row handling in _process_capture_file is under test here."""
 
+        classes_ = np.array([0, 1, 2])
+
         def predict_proba(self, features_df):
             return np.array([[0.01, 0.02, 0.97]])
 
@@ -188,6 +211,57 @@ class ProcessCaptureFileSkipsMalformedRowsTests(unittest.TestCase):
         with open(self.labeled_path, newline="") as f:
             labeled_rows = list(csv.reader(f))
         self.assertEqual(len(labeled_rows), 3)  # header + the two labeled rows
+
+
+class ProcessCaptureFileStagesSixteenColumnRowsCorrectlyTests(unittest.TestCase):
+    """anomalous_capture.csv rows carry 3 extra context columns (victim_ip,
+    if_score, rf_verdict) beyond the 13-column BASE_CSV_HEADER every other
+    capture file uses. A labeled row must be truncated to the 13-column
+    staging layout, not written as-is: writing all 16 columns under a
+    13-column header shifts every field pandas later reads back (timestamp
+    reads as the old if_score, label as the old rf_verdict string)."""
+
+    class _FakeConfidentModel:
+        classes_ = np.array([0, 1, 2])
+
+        def predict_proba(self, features_df):
+            return np.array([[0.01, 0.02, 0.97]])
+
+    # Matches ipc_receiver.ANOMALOUS_CSV_HEADER: BASE_CSV_HEADER's 13 columns
+    # plus victim_ip, if_score, rf_verdict.
+    ANOMALOUS_CSV_HEADER = auto_label.BASE_CSV_HEADER + ["victim_ip", "if_score", "rf_verdict"]
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+        old_timestamp = "1000000.0"  # unambiguously older than the delay and every model mtime
+        anomalous_row = ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                          "0.9", "0.1", "0.1", old_timestamp, "",
+                          "198.51.100.7", "0.87", "Normal"]  # victim_ip, if_score, rf_verdict
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(self.ANOMALOUS_CSV_HEADER)
+            w.writerow(anomalous_row)
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_a_labeled_sixteen_column_row_is_staged_with_exactly_thirteen_columns(self):
+        model_mtimes = [time.time(), time.time()]
+        labeled_count = auto_label._process_capture_file(
+            self.capture_path, self._FakeConfidentModel(), self._FakeConfidentModel(),
+            model_mtimes, self.labeled_path,
+        )
+        self.assertEqual(labeled_count, 1)
+
+        with open(self.labeled_path, newline="") as f:
+            labeled_rows = list(csv.reader(f))
+        self.assertEqual(labeled_rows[0], auto_label.BASE_CSV_HEADER)
+        self.assertEqual(len(labeled_rows[1]), len(auto_label.BASE_CSV_HEADER))
+        self.assertEqual(labeled_rows[1][auto_label.TIMESTAMP_COL], "1000000.0")
+        self.assertEqual(labeled_rows[1][auto_label.BASE_CSV_HEADER.index("label")], "2")
 
 
 if __name__ == "__main__":

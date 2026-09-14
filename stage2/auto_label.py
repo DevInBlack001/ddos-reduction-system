@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 import config
+from storage import _atomic_write
 
 FEATURE_COLS = [
     "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
@@ -48,20 +49,29 @@ def is_row_eligible(row_timestamp, model_mtimes, delay_hours, now=None):
     return all(mtime > row_timestamp for mtime in model_mtimes)
 
 
-def decide_label(rf_proba, second_proba, confidence_threshold):
+def decide_label(rf_proba, rf_classes, second_proba, second_classes, confidence_threshold):
     """Returns the agreed class (0, 1, or 2) if both models pick the same
     top class and both clear confidence_threshold on it, else None.
     Agreement is what makes this a real signal rather than a rubber
     stamp: two differently built models making the same mistake on a
     genuinely novel row is far less likely than one model rehashing its
-    own opinion."""
-    rf_top = int(np.argmax(rf_proba))
-    second_top = int(np.argmax(second_proba))
-    if rf_top != second_top:
+    own opinion.
+
+    rf_proba/second_proba are indexed by each model's own classes_ array,
+    not by class label directly: a training CSV missing a label entirely
+    (balance_classes skips empty classes) yields a classes_ like [0, 2],
+    where proba index 1 means class 2, not class 1. rf_classes/second_classes
+    must match exactly, order included, or index agreement would not imply
+    class agreement, so a mismatch refuses the row rather than guessing."""
+    if list(rf_classes) != list(second_classes):
         return None
-    if rf_proba[rf_top] < confidence_threshold or second_proba[second_top] < confidence_threshold:
+    rf_top_idx = int(np.argmax(rf_proba))
+    second_top_idx = int(np.argmax(second_proba))
+    if rf_top_idx != second_top_idx:
         return None
-    return rf_top
+    if rf_proba[rf_top_idx] < confidence_threshold or second_proba[second_top_idx] < confidence_threshold:
+        return None
+    return int(rf_classes[rf_top_idx])
 
 
 def trim_csv_rows(rows, max_rows):
@@ -93,15 +103,15 @@ def _read_rows(path):
 
 
 def _rewrite_csv(path, header, rows):
-    """Atomic replace: write to a temp file in the same directory, then
-    rename over the target, so a reader never sees a partially rewritten
-    file and a crash mid-write leaves the previous complete file in place."""
-    tmp = f"{path}.tmp{os.getpid()}"
-    with open(tmp, "w", newline="") as f:
+    """Atomic replace via storage._atomic_write, so a reader never sees a
+    partially rewritten file, a crash mid-write leaves the previous complete
+    file in place, and a symlink planted at the temp path is refused rather
+    than followed."""
+    def write_fn(f):
         w = csv.writer(f)
         w.writerow(header)
         w.writerows(rows)
-    os.replace(tmp, path)
+    _atomic_write(path, write_fn)
 
 
 def _row_to_features(row, header):
@@ -153,11 +163,14 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
                 kept_rows.append(row)
                 continue
 
-            features = _row_to_features(row, BASE_CSV_HEADER)
+            features = _row_to_features(row, header)
             features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
             rf_proba = clf.predict_proba(features_df)[0]
             second_proba = second_clf.predict_proba(features_df)[0]
-            label = decide_label(rf_proba, second_proba, config.AUTO_LABEL_CONFIDENCE_THRESHOLD)
+            label = decide_label(
+                rf_proba, clf.classes_, second_proba, second_clf.classes_,
+                config.AUTO_LABEL_CONFIDENCE_THRESHOLD,
+            )
         except (ValueError, IndexError, KeyError) as e:
             logging.warning(f"[!] Skipping malformed row in {path}: {row!r} ({e})")
             kept_rows.append(row)
@@ -167,22 +180,28 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
             kept_rows.append(row)
             continue
 
-        labeled_row = list(row)
+        # row may carry anomalous_capture.csv's extra 3 context columns;
+        # the staging file is always the 13-column BASE_CSV_HEADER.
+        labeled_row = list(row[:len(BASE_CSV_HEADER)])
         labeled_row[BASE_CSV_HEADER.index("label")] = str(label)
         _append_labeled_row(labeled_out, labeled_row)
         labeled_count += 1
 
-    _rewrite_csv(path, header, kept_rows)
+    if dropped or labeled_count:
+        _rewrite_csv(path, header, kept_rows)
     return labeled_count
 
 
 def _append_labeled_row(path, row):
     write_header = not os.path.exists(path)
-    with open(path, "a", newline="") as f:
-        w = csv.writer(f)
-        if write_header:
-            w.writerow(BASE_CSV_HEADER)
-        w.writerow(row)
+    try:
+        with open(path, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(BASE_CSV_HEADER)
+            w.writerow(row)
+    except OSError as e:
+        logging.error(f"[-] Failed to write {path}: {e}")
 
 
 def main():
