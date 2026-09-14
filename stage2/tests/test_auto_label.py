@@ -6,6 +6,7 @@ import csv
 import os
 import time
 import unittest
+import fcntl
 
 import numpy as np
 
@@ -14,6 +15,7 @@ from _support import temp_path, unlink
 
 import config
 import auto_label
+import ipc_receiver
 
 
 class IsRowEligibleTests(unittest.TestCase):
@@ -338,6 +340,155 @@ class TrimCaptureFileWithoutModelsTests(unittest.TestCase):
                 float(data_row[auto_label.TIMESTAMP_COL])
         finally:
             config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+
+class DequeHeaderEvictionRegressionTests(unittest.TestCase):
+    """Regression test for a bug where the deque's maxlen window included
+    the header row, causing it to be evicted when the file had more data rows
+    than the cap. This broke both trimming (trim_csv_rows saw no excess rows
+    to drop because the evicted header exactly balanced the excess) and scoring
+    (the corrupted header caused KeyError when _row_to_features tried to map
+    field names)."""
+
+    def _row(self, timestamp):
+        return ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                "0.9", "0.1", "0.1", str(timestamp), ""]
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+
+    def tearDown(self):
+        unlink(self.capture_path)
+
+    def test_read_rows_preserves_header_even_when_file_exceeds_cap(self):
+        # Write a file with more data rows than the cap
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(auto_label.BASE_CSV_HEADER)
+            for t in range(1, 11):  # 10 data rows
+                w.writerow(self._row(float(t)))
+
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 3  # cap < 10 rows
+        try:
+            # Read should return the real header, not a data row
+            header, rows, was_bounded = auto_label._read_rows(self.capture_path)
+            self.assertEqual(header, auto_label.BASE_CSV_HEADER)
+            # Deque bounds to 3 data rows, so we should have at most 3 rows
+            self.assertLessEqual(len(rows), 3)
+            # was_bounded should be True since file exceeded cap
+            self.assertTrue(was_bounded, "File with 10 rows should be bounded at cap of 3")
+            # All returned rows should be valid data rows, not the header
+            for row in rows:
+                # If this were a header, it would equal BASE_CSV_HEADER
+                self.assertNotEqual(row, auto_label.BASE_CSV_HEADER)
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+    def test_trim_without_models_actually_trims_overflow_file(self):
+        # Write a file significantly over the cap
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(auto_label.BASE_CSV_HEADER)
+            for t in range(1, 21):  # 20 data rows
+                w.writerow(self._row(float(t)))
+
+        original_max_rows = config.AUTO_LABEL_MAX_QUEUE_ROWS
+        config.AUTO_LABEL_MAX_QUEUE_ROWS = 5  # cap << 20 rows
+        try:
+            # Trim the file
+            dropped = auto_label._trim_capture_file_only(self.capture_path)
+
+            # Read it back: should have header + at most 5 data rows
+            with open(self.capture_path, newline="") as f:
+                all_rows = list(csv.reader(f))
+
+            # Verify header is real header
+            self.assertEqual(all_rows[0], auto_label.BASE_CSV_HEADER)
+
+            # Verify file was actually trimmed (not all 20 rows still there)
+            # The deque would have bounded the read to 5 rows, was_bounded=True,
+            # so _trim_capture_file_only should have rewritten the file.
+            # Should have header + at most 5 data rows = at most 6 total
+            self.assertLessEqual(len(all_rows), 6, "File should have been trimmed to cap")
+
+            # Verify the kept rows are the newest ones (highest timestamps)
+            data_rows = all_rows[1:]
+            if len(data_rows) > 0:
+                timestamps = [float(r[auto_label.TIMESTAMP_COL]) for r in data_rows]
+                # The newest rows should have the highest timestamp values
+                # (deque keeps the last N items read)
+                self.assertGreater(min(timestamps), 15, "Should keep newest rows")
+        finally:
+            config.AUTO_LABEL_MAX_QUEUE_ROWS = original_max_rows
+
+
+class FileLockingTests(unittest.TestCase):
+    """Test that file locking is actually acquired in critical sections."""
+
+    def test_process_capture_file_acquires_lock(self):
+        """Verify fcntl.flock is called with LOCK_EX in _process_capture_file."""
+        import unittest.mock as mock
+
+        # Create a minimal fake model
+        class FakeModel:
+            classes_ = [0, 1, 2]
+            n_jobs = 1
+            def predict_proba(self, df):
+                return [[0.01, 0.02, 0.97]]
+
+        capture_path = temp_path(".csv")
+        os.unlink(capture_path)
+        labeled_path = temp_path(".csv")
+        os.unlink(labeled_path)
+
+        try:
+            # Write a valid capture file
+            with open(capture_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(auto_label.BASE_CSV_HEADER)
+                w.writerow(["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                           "0.9", "0.1", "0.1", "1000000.0", ""])
+
+            with mock.patch("fcntl.flock") as mock_flock:
+                # Call _process_capture_file with fake models
+                auto_label._process_capture_file(
+                    capture_path, FakeModel(), FakeModel(),
+                    [time.time(), time.time()], labeled_path,
+                )
+
+                # Verify fcntl.flock was called with LOCK_EX
+                lock_calls = [c for c in mock_flock.call_args_list
+                             if len(c[0]) >= 2 and c[0][1] == fcntl.LOCK_EX]
+                self.assertGreater(len(lock_calls), 0,
+                                 "fcntl.flock should be called with LOCK_EX")
+        finally:
+            unlink(capture_path, labeled_path)
+
+    def test_append_csv_row_acquires_lock(self):
+        """Verify fcntl.flock is called with LOCK_EX in _append_csv_row."""
+        import unittest.mock as mock
+
+        capture_path = temp_path(".csv")
+        os.unlink(capture_path)
+
+        try:
+            with mock.patch("fcntl.flock") as mock_flock:
+                # Call _append_csv_row
+                ipc_receiver._append_csv_row(
+                    capture_path, ipc_receiver.PRETRAINING_CSV_HEADER,
+                    ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                     "0.9", "0.1", "0.1", "1000000.0", ""],
+                )
+
+                # Verify fcntl.flock was called with LOCK_EX
+                lock_calls = [c for c in mock_flock.call_args_list
+                             if len(c[0]) >= 2 and c[0][1] == fcntl.LOCK_EX]
+                self.assertGreater(len(lock_calls), 0,
+                                 "fcntl.flock should be called with LOCK_EX")
+        finally:
+            unlink(capture_path)
 
 
 if __name__ == "__main__":

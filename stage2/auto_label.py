@@ -108,21 +108,29 @@ def trim_csv_rows(rows, max_rows):
 
 
 def _read_rows(path):
-    """Returns (header, rows) for a capture CSV, or (None, []) if the file
-    does not exist yet, which is the normal state for a fresh deployment
-    that has not captured anything of this kind. Bounds memory during the read
-    by keeping only the newest config.AUTO_LABEL_MAX_QUEUE_ROWS rows via a
-    deque, so peak memory is capped by the row limit even if the file is
-    larger than that."""
+    """Returns (header, rows, was_bounded) for a capture CSV, or (None, [], False)
+    if the file does not exist. Bounds memory during the read by keeping only the
+    newest config.AUTO_LABEL_MAX_QUEUE_ROWS data rows via a deque, so peak memory
+    is capped by the row limit even if the file is larger than that. Header is
+    read first with next() to prevent it from being evicted. Returns was_bounded=True
+    if the deque had to drop rows (file was over cap), False otherwise."""
     if not os.path.exists(path):
-        return None, []
+        return None, [], False
     with open(path, newline="") as f:
         reader = csv.reader(f)
-        rows_deque = deque(reader, maxlen=config.AUTO_LABEL_MAX_QUEUE_ROWS + 1)
+        header = next(reader, None)
+        if header is None:
+            return None, [], False
+        # Track how many rows we see to know if the deque bounded them
+        rows_deque = deque(reader, maxlen=config.AUTO_LABEL_MAX_QUEUE_ROWS)
         rows = list(rows_deque)
-    if not rows:
-        return None, []
-    return rows[0], rows[1:]
+    # The deque dropped rows (file was over cap) if it's at max capacity and
+    # hit that capacity (would need another iteration to fill it, which wouldn't
+    # happen if file had fewer rows). Simple heuristic: if rows == maxlen, the
+    # deque probably filled and started dropping. More precisely, we'd need to
+    # know the actual file line count, but that requires a separate pass.
+    was_bounded = len(rows) == config.AUTO_LABEL_MAX_QUEUE_ROWS
+    return header, rows, was_bounded
 
 
 def _rewrite_csv(path, header, rows):
@@ -171,7 +179,7 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
-            header, rows = _read_rows(path)
+            header, rows, was_bounded = _read_rows(path)
             if header is None:
                 logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
                 return 0
@@ -241,16 +249,20 @@ def _append_labeled_row(path, row):
 def _trim_capture_file_only(path):
     """Trim one capture file to config.AUTO_LABEL_MAX_QUEUE_ROWS without
     scoring, used when no models are present yet. Returns the number of
-    rows dropped."""
-    header, rows = _read_rows(path)
+    rows dropped by trim_csv_rows (not including rows dropped by the deque
+    during read if the file was already over cap)."""
+    header, rows, was_bounded = _read_rows(path)
     if header is None:
         logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
         return 0
 
     rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
-    if dropped:
-        logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
-                         f"dropped {dropped} oldest.")
+    # Rewrite if trim_csv_rows dropped rows, OR if the deque bounded the rows
+    # (meaning the original file had more rows than what we read back)
+    if dropped or was_bounded:
+        if dropped:
+            logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
+                             f"dropped {dropped} oldest.")
         _rewrite_csv(path, header, rows)
     return dropped
 

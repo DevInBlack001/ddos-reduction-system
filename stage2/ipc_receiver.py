@@ -27,6 +27,11 @@ import enforcement
 import alerts
 
 
+# Track which capture files have already logged the size-cap warning, so we
+# log once per path, not on every skipped append after the cap is reached.
+_capture_file_cap_warned = set()
+
+
 def _maybe_alert_block(ip, victim_ip, rate, cfg):
     """Dispatch a block alert the first time this IP is blocked, then
     suppress re-alerts for cfg['block_duration_seconds'], tracks the
@@ -109,12 +114,9 @@ def _append_csv_row(path, header, row):
             try:
                 file_size = os.path.getsize(path)
                 if file_size >= config.PRETRAINING_MAX_BYTES:
-                    # Log once per threshold crossing, not on every skipped row:
-                    # only log if size just reached the cap by checking if the
-                    # previous size was under it. Simple heuristic: check if
-                    # roughly the row would push us over. Don't micro-optimize;
-                    # a warning logged occasionally is acceptable.
-                    if file_size == config.PRETRAINING_MAX_BYTES:
+                    # Log once per path when cap is first reached, not on every skipped row
+                    if path not in _capture_file_cap_warned:
+                        _capture_file_cap_warned.add(path)
                         logging.warning(
                             f"[!] {path} has reached {config.PRETRAINING_MAX_BYTES} bytes, "
                             f"skipping appends until auto_label.py trims it."
