@@ -9,7 +9,8 @@ vulnerability. Security issues do not go in the public issue tracker.
 
 ## Before You Start
 
-This is a capstone project with a defined roadmap, not an open-ended platform.
+This is a personal, open source project with a defined roadmap, not an
+open-ended platform.
 The versions listed in the README describe what is planned and roughly in what
 order. A change that fits somewhere on that roadmap is far more likely to be
 merged than one that adds a new direction.

@@ -173,9 +173,9 @@ should behave were mine.
 
 ## Status
 
-A capstone project, and a working system, but not one that has been through the
-adversarial testing a production security product needs. Deploy it on a lab
-network or somewhere you can afford to have it be wrong.
+A personal, open source project, and a working system, but not one that has
+been through the adversarial testing a production security product needs.
+Deploy it on a lab network or somewhere you can afford to have it be wrong.
 
 
 ## Licence
