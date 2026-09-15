@@ -192,3 +192,7 @@ wiki/
 # Working notes for AI assisted sessions. Local context, not project history.
 CLAUDE.md
 CLAUDE (1).md
+
+# scripts/benchmark_live.sh's default output directory: per-run logs and
+# a generated report, not project history.
+benchmark-live-results/

@@ -148,6 +148,42 @@ The database permission is set before write ahead logging is enabled. SQLite
 gives the sidecar files the mode the database has when it creates them, and
 those files hold recently written pages including user rows.
 
+**V8's `stage2/auto_label.py` is a periodic job, not a service.** It runs
+under `ddos-stage2-auto-label.timer`, root, once an hour by default, rather
+than as a thread inside the long running Stage 2 process or anything
+network facing. It reads and rewrites the same root owned capture files
+under `FLOD_STATE_DIR` that Stage 2 itself already owns
+(`pretraining_capture.csv`, `anomalous_capture.csv`, and the staged
+`auto_labeled_capture.csv`), through the same atomic rewrite as every
+other JSON config write in this section (`storage._atomic_write`, a temp
+file in the same directory then an atomic rename). It opens no new
+network surface and accepts no external input of its own; the only data
+it acts on is what this project already captured.
+
+Concurrent access between the periodic labeling job and the live service is
+safe: `ipc_receiver.py` and `auto_label.py` coordinate via `fcntl.flock` on
+sibling `.lock` files, so writes from the service cannot land on the old
+inode while the job is rewriting. Both capture files are bounded to prevent
+unbounded growth on long running deployments: writes from `ipc_receiver.py`
+are dropped when the file size exceeds `PRETRAINING_MAX_BYTES` (default ~50MB,
+operator configurable), and `auto_label.py` trims to `AUTO_LABEL_MAX_QUEUE_ROWS`
+on each run. The systemd timer unit and service isolate the job's resource use:
+the job runs at low priority (`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`)
+with jittered start time (`RandomizedDelaySec=5m`), so it cannot contend with
+live enforcement if the system is busy during a real flood.
+
+**`ddos-stage2-retrain.timer` follows the same pattern.** Opt-in only,
+installed when `--training-csv` is given to `install.sh` or `update.sh`,
+never against a guessed or default path. It runs as root under the same
+`Nice`/`CPUWeight`/`IOSchedulingClass` throttling as the labeling timer,
+and its `ExecStart` resolves the given CSV path to an absolute path before
+baking it into the unit, so a relative path typed at install time cannot
+silently break once the working directory changes. It retrains all three
+models, the RandomForest, the Isolation Forest, and the second model,
+against the same CSV: see [training.md](training.md#periodic-retraining)
+for why the Isolation Forest is included even though it does not depend
+on the freshness safeguard the RF and second model retrain for.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

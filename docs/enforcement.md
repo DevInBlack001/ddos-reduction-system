@@ -100,7 +100,7 @@ tier, for sources that are elevated but ambiguous.
 **Tier 4, aggregate fallback.** If a window is classified as an attack but
 nothing above matched any individual source, traffic is distributed finely
 enough that no single source stands out. Every active flow to that host is
-throttled, rather than the system doing nothing.
+throttled.
 
 The progression is deliberate: blocking is only used where attribution is
 confident.

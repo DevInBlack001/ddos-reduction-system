@@ -27,8 +27,7 @@ enforcement: addresses marked as shared are throttled but never hard blocked.
 
 **V6, XDP and eBPF acceleration.** Packet counting moved into the driver path
 using Aya, so it happens before the kernel builds a socket buffer per packet.
-Selected with `--capture-mode kernel`, alongside the original libpcap backend
-rather than replacing it.
+Selected with `--capture-mode kernel`, alongside the original libpcap backend.
 
 The one structural break in the roadmap. Counters live in kernel maps that user
 space drains once per window, instead of a packet at a time crossing a channel.
@@ -126,11 +125,57 @@ Self contained inside Stage 2: no new kernel level code and no new protocol,
 built directly on models and a review queue that already exist. The easiest
 of the five below for exactly that reason.
 
-Not designed yet. Needs a concrete definition of "confident" per model
-(a `RandomForest` margin from `predict_proba`, an `IsolationForest` distance
-from its own decision function), both as configurable thresholds rather than
-constants, and a decision on whether the delay is fixed per deployment or
-adjustable per label class.
+On branch `v8`, code complete, not yet merged or tagged. "Confident" turned
+out to need a second model rather than a threshold on the RandomForest's own
+`predict_proba`: a `RandomForest` re-confirming its own margin on a row it
+already has a blind spot for just reproduces that blind spot with new-found
+confidence. `stage2/train_second_model.py` trains a
+`HistGradientBoostingClassifier` on the same cleaned feature set, a
+structurally different learning process (boosting corrects its own trees'
+errors sequentially, rather than the RandomForest's bagged, independently
+grown trees), and `stage2/auto_label.py` only stages a row once both models
+agree on the class and both clear `AUTO_LABEL_CONFIDENCE_THRESHOLD` on it.
+
+The delay is a single configurable setting
+(`AUTO_LABEL_DELAY_HOURS`), not adjustable per label class. A second
+safeguard sits alongside confidence and delay: both models must have been
+trained after the row was captured, so a stale, unretrained model can never
+confirm its own blind spot even with a second opinion agreeing. See
+[training.md](training.md#confidence-gated-automatic-labeling).
+
+A dedicated security review found and fixed concurrent file access, unbounded
+capture growth, and resource contention issues; see [security.md](security.md#process-and-filesystem-isolation)
+for the details.
+
+Confirmed against a real run on the sensor VM. The first unattended run of
+`ddos-stage2-auto-label.timer` against real captured data auto-labeled
+32,597 rows, surfacing two real findings. The
+freshness safeguard first blocked labeling entirely, correctly: the
+deployed RandomForest predated every captured row, so nothing could clear
+the "trained after capture" check until `ddos-stage2-retrain.timer` (see
+[training.md](training.md#periodic-retraining)) gave it something to
+retrain against. Once that ran, 32,595 of the 32,597 labeled rows turned
+out to be zero-traffic windows both models agreed on for the wrong reason:
+a shared blind spot in the training corpus. See
+[training.md](training.md#degenerate-windows-are-never-auto-labeled) for
+the guard this added. The retrain timer itself also only covered the RF
+and second model; the Isolation Forest, which depends on neither
+safeguard, stayed on the model trained at initial setup until a live
+functional test found the consequence directly: genuinely benign live
+traffic scored `Anomalous` on effectively every window, fixed by chaining
+`train_isolation_forest.py` into the same retrain run.
+
+`scripts/calibrate.py` was also re-run on the sensor VM against a real
+100-simulated-user load, deriving `--rate-sigma-floor 7.8
+--entropy-sigma-floor 0.4944 --entropy-sigma-ceiling 0.9` from actually
+observed traffic rather than the shipped defaults. A full seven-phase live
+benchmark (`scripts/benchmark_live.sh`, extended this session from four
+phases to the full sequence: Normal, Flash Crowd, Attacker, every pairwise
+mix, then all three together) then ran against the freshly calibrated,
+freshly retrained deployment: zero Stage 1 flags on pure Normal traffic,
+0% of Flash Crowd traffic escalated to DDoS, 100% escalation once all
+three traffic types combined. All fixes and the benchmark script rewrite
+are on `v8`.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window
@@ -216,6 +261,70 @@ stakes of the five: a new wire protocol and a cross organization trust
 boundary, where a design mistake means one gateway trusting another's report
 it should not have.
 
+**V13, connection and flow state pressure detection.** The window level rate
+and entropy features, V7's port, TTL, and fingerprint histograms included,
+all describe volume. None of them describe state: how many flows are open,
+how long they stay open, or what fraction of a window's flows ever complete
+a handshake. A distributed, low rate accumulation of long lived or half open
+connections from many real, non spoofed sources reads as normal rate and
+high entropy, the same numbers a legitimate high traffic period produces,
+because nothing in the current feature set measures accumulation over more
+than one window. Not limited to TCP: the same blind spot covers a UDP flood
+built from many low rate pseudo flows that never carry a handshake to look
+for in the first place, and it is the generalization this milestone targets,
+not a TCP specific one.
+
+Two parts, the same shape as V7.
+
+Part one instruments both capture backends. `FLOWS` already tracks a
+bounded set of flows; it gains a first seen timestamp and a small state
+field, SYN_RECEIVED, ESTABLISHED, FIN_WAIT, TIME_WAIT, updated from the
+flags already being read off every packet. The state distribution itself is
+exported as a bounded, value keyed histogram, the same principle V7's
+`PORT_HIST` and `TTL_HIST` established: keyed by the state enum, not by
+source or flow, so its size is fixed by the number of states rather than by
+how many flows or addresses an attacker can generate. `FLOWS` staying flow
+keyed is an accepted, stated tradeoff rather than a gap left unnoticed: a
+flood built from many low rate flows is exactly the shape that grows
+`FLOWS` fastest, the same caveat already carried by `SOURCES` and `FLOWS`
+today, extended rather than newly introduced. The wire format gains the
+state distribution counts, a connection duration accumulator, and open and
+closed flow counts for the window; Stage 2 derives the ratios (established,
+incomplete, long lived) and a growth rate from them. Multiple observation
+timescales, the fast and slow accumulation the raw window alone cannot
+show, come from a second EWMA decay constant over the existing per window
+cadence rather than a second polling interval or a second window close
+path, the delicate code this project has already decided not to touch
+twice.
+
+Part two is traffic generation and retraining, the harder half in practice
+if this project's own history with generator timing is any guide. Three new
+shapes: low rate TCP state exhaustion (many connections opened slowly, few
+completed or closed), the same pattern spread across many real sources
+rather than one, and a UDP pseudo flow equivalent. Captured, cleaned, and
+merged into the training set the same way the V7 recapture was, retrained
+with the existing RandomForest pipeline, and scored against the existing
+Isolation Forest without retraining it first, since the point of an
+unsupervised second model is to see whether it already reads the new class
+as unlike its training data before it is ever shown one. Benchmarked
+against the current, pre V13 model with `benchmark_fixed_threshold.py`'s
+own LOSO methodology on the new classes specifically, not folded into the
+aggregate accuracy figure where a small new class could hide inside a large
+one.
+
+Connection and flow state pressure becomes a new playbook trigger once V9
+exists, and the mitigation response, rate limiting new connections versus
+limiting concurrent connections per source versus the existing tiers, is a
+playbook's job to sequence rather than a new enforcement tier grafted onto
+the existing four. No new mitigation subsystem is built here for that
+reason.
+
+Appended after the five above rather than interleaved among them: it
+changes both capture backends and the wire format a second time since V7,
+real kernel and verifier risk on top of an already ordered set of
+milestones, and is a new addition to the roadmap rather than a reordering
+of what it already said.
+
 ## Relative Sigma Floors
 
 The sigma floors are global while the baselines they bound are per victim, so
@@ -269,6 +378,15 @@ Not roadmap items, but currently true and worth stating plainly.
 
 **Randomized source spoofing is not detected.** Covered in
 [detection.md](detection.md). It needs the V7 features, not a configuration
+change.
+
+**Distributed, low rate connection and flow state pressure is not detected.**
+A low rate accumulation of long lived or half open connections, or an
+equivalent build up of low rate UDP pseudo flows, spread across many real,
+non spoofed sources reads as normal rate and high entropy today, the same
+numbers a legitimate high traffic period produces. Nothing in the current
+feature set measures accumulation over more than one window or the
+completion state of a flow. It needs the V13 features, not a configuration
 change.
 
 **The source histogram is attacker fillable.** Its key includes the source

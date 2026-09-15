@@ -83,6 +83,33 @@ PAYLOAD_SIZE = struct.calcsize(FEATURE_VECTOR_FORMAT)
 # human to go investigate with. label is left blank; nothing fills it in
 # automatically. See docs/training.md#reviewing-anomalous-traffic.
 ANOMALOUS_CSV_PATH = os.environ.get("ANOMALOUS_CSV_PATH", os.path.join(_STATE_DIR, "anomalous_capture.csv"))
+# V8: windows captured before any RandomForest model exists, no capture
+# path in production has ever existed for these before. label is blank
+# the same way anomalous_capture.csv's is, filled in by auto_label.py
+# once a model exists to score it. See docs/specs/2026-09-13-confidence-
+# gated-labeling-design.md.
+PRETRAINING_CSV_PATH = os.environ.get("PRETRAINING_CSV_PATH", os.path.join(_STATE_DIR, "pretraining_capture.csv"))
+# Rows auto_label.py has confidently labeled, staged here rather than
+# written into training_data.csv directly: nothing enters the
+# authoritative training set without a deliberate, recorded merge, the
+# same discipline every past merge in this project's history already
+# follows, this only removes the per-row manual labeling effort.
+AUTO_LABELED_CSV_PATH = os.environ.get("AUTO_LABELED_CSV_PATH", os.path.join(_STATE_DIR, "auto_labeled_capture.csv"))
+# V8: a second, independently trained classifier auto_label.py checks
+# agreement against before trusting a label. Never loaded by
+# ipc_receiver.py; only auto_label.py and train_second_model.py touch it.
+SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(_STATE_DIR, "ddos_gb_model.joblib"))
+# Starting points, not proven values, same convention as every other
+# tuning default in this project.
+AUTO_LABEL_DELAY_HOURS = float(os.environ.get("AUTO_LABEL_DELAY_HOURS", "24"))
+AUTO_LABEL_CONFIDENCE_THRESHOLD = float(os.environ.get("AUTO_LABEL_CONFIDENCE_THRESHOLD", "0.90"))
+AUTO_LABEL_MAX_QUEUE_ROWS = int(os.environ.get("AUTO_LABEL_MAX_QUEUE_ROWS", "50000"))
+# Maximum bytes for pretraining_capture.csv and anomalous_capture.csv before
+# new appends are skipped. Cold-start capture can run for hours without a model;
+# unbounded file growth to gigabytes is possible on heavy traffic. Starting point
+# of 50 MB; adjust downward on constrained systems or upward if trimming needs to
+# run less frequently.
+PRETRAINING_MAX_BYTES = int(os.environ.get("PRETRAINING_MAX_BYTES", "52428800"))
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(_STATE_DIR, "stage2.db"))
 WHITELIST_PATH = os.environ.get("WHITELIST_PATH", os.path.join(_STATE_DIR, "whitelist.json"))

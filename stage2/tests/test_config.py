@@ -146,5 +146,30 @@ class EnforcementConfigTests(unittest.TestCase):
         self.assertEqual(config.DEFAULT_ENFORCEMENT_CONFIG, original)
 
 
+class NewCaptureAndSecondModelPathTests(unittest.TestCase):
+    def test_pretraining_csv_path_defaults_beside_the_anomalous_capture_file(self):
+        self.assertEqual(
+            os.path.dirname(config.PRETRAINING_CSV_PATH),
+            os.path.dirname(config.ANOMALOUS_CSV_PATH),
+        )
+        self.assertEqual(os.path.basename(config.PRETRAINING_CSV_PATH), "pretraining_capture.csv")
+
+    def test_auto_labeled_csv_path_defaults_beside_the_anomalous_capture_file(self):
+        self.assertEqual(
+            os.path.dirname(config.AUTO_LABELED_CSV_PATH),
+            os.path.dirname(config.ANOMALOUS_CSV_PATH),
+        )
+        self.assertEqual(os.path.basename(config.AUTO_LABELED_CSV_PATH), "auto_labeled_capture.csv")
+
+    def test_second_model_path_defaults_beside_the_random_forest_model(self):
+        self.assertEqual(os.path.dirname(config.SECOND_MODEL_PATH), os.path.dirname(config.MODEL_PATH))
+        self.assertEqual(os.path.basename(config.SECOND_MODEL_PATH), "ddos_gb_model.joblib")
+
+    def test_auto_label_tuning_defaults(self):
+        self.assertEqual(config.AUTO_LABEL_DELAY_HOURS, 24.0)
+        self.assertEqual(config.AUTO_LABEL_CONFIDENCE_THRESHOLD, 0.90)
+        self.assertEqual(config.AUTO_LABEL_MAX_QUEUE_ROWS, 50000)
+
+
 if __name__ == "__main__":
     unittest.main()

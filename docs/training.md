@@ -284,3 +284,130 @@ Label](#more-than-one-session-per-label) above: a handful of individually
 reviewed rows is not a session, and does not substitute for one, but it is
 real ground truth about a gap the current training data has, which is
 exactly what should shape what to capture on purpose next.
+
+## Confidence Gated Automatic Labeling
+
+**File:** `stage2/auto_label.py`
+
+Manual review does not scale with capture volume, and most flagged or
+cold-start windows are not actually ambiguous, a second opinion would
+call them the same thing a person would. This automates the easy majority
+of that review while leaving the same manual path above for whatever it
+cannot confidently resolve.
+
+Two capture files feed it. `stage2/pretraining_capture.csv` holds windows
+captured before any RandomForest model existed at all, the cold-start
+case: no model ran at capture time, so there is no verdict to reconsider,
+only the thirteen base feature columns. `stage2/anomalous_capture.csv` is
+the same file [Reviewing Anomalous Traffic](#reviewing-anomalous-traffic)
+above describes, reused here rather than duplicated, with its three
+context columns (`victim_ip`, `if_score`, `rf_verdict`) carried along but
+never written into the staged output.
+
+`auto_label.py` runs periodically, via the `ddos-stage2-auto-label.timer`
+systemd timer rather than as a thread inside the long running Stage 2
+service, so a stuck or slow run cannot affect classification or
+enforcement. On each run it re-scores every eligible row in both files
+against the RandomForest and a second, independently trained model (see
+[The Second Model](#the-second-model) below), and stages a row into
+`stage2/auto_labeled_capture.csv` only when:
+
+- Both models pick the same class.
+- Both are confident in it, at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD`.
+- Both were trained after the row was captured.
+
+Both capture files are bounded to prevent unbounded growth: by row count via
+`AUTO_LABEL_MAX_QUEUE_ROWS` when `auto_label.py` trims them on each run, and
+by total file size via `PRETRAINING_MAX_BYTES` at write time in
+`ipc_receiver.py`, so the files stay within operator configured limits.
+
+The freshness check is the core safeguard, not a secondary one. Re-scoring
+a row with the same model that already has a blind spot for it, or with a
+second model trained before that blind spot existed, just reproduces the
+same mistake with new-found confidence. A row only clears this check once
+it has genuinely been re-evaluated by models that postdate it. A row that
+does not clear all three conditions is left exactly where it is, for the
+next run or for a human, the same as an unresolved row already works
+today.
+
+Staged rows land in `stage2/auto_labeled_capture.csv`, not directly in
+`training.csv`. The columns match `training.csv`'s own order, the same
+thirteen columns [Reviewing Anomalous Traffic](#reviewing-anomalous-traffic)
+above lists. Merge it in the same way a manually reviewed row is merged
+above, appendable to `training.csv` following [More Than One Session Per
+Label](#more-than-one-session-per-label): staged rows are not
+automatically part of the training set, an operator still decides when to
+fold them in.
+
+### Degenerate Windows Are Never Auto-Labeled
+
+A real run against a sensor VM's captured data auto-labeled 32,597 rows on
+its first unattended pass, agreement and confidence both satisfied. Cross
+referencing the labeled rows against `training_data.csv` found that 32,595
+of them carried `entropy`, `proto_ratio`, `dominant_ip_ratio`,
+`source_port_entropy`, `ttl_variance`, and `fingerprint_diversity` all
+exactly `0.0`, a zero-traffic window rather than a genuine observation of
+any class. That same all-zero pattern occurs across every label in the
+training corpus, Normal, Flash Crowd, and DDoS alike, so two models
+agreeing on it reflects a gap shared by both models' training data, not a
+real signal.
+
+`is_row_degenerate()` checks those six fields before either model scores a
+row, and a row where all six read `0.0` is left exactly where it is, the
+same as an unresolved row, regardless of what confidence or agreement the
+models would otherwise report. Rate-based fields (`ewma_rate`, `mean_r`,
+`sigma_r`, `mean_h`, `sigma_h`) are deliberately excluded from this check:
+an idle window can still carry a real rate reading, and this guard exists
+to catch the absence of traffic-shape signal, not a particular rate.
+
+### Periodic Retraining
+
+**Files:** `ddos-stage2-retrain.service`, `ddos-stage2-retrain.timer`
+
+The freshness safeguard above means a model that never changes eventually
+blocks auto-labeling permanently: every captured row is older than an
+unretrained model, not younger than it. `--training-csv <path>` on
+`install.sh` or `update.sh` installs a systemd timer that retrains all
+three models, RandomForest, Isolation Forest, and the second model,
+together against the same CSV, on a configurable interval
+(`--retrain-interval`, default `7d`), so the RF and second model's
+mtimes move together and the freshness check has something to clear. No
+default path is guessed: there is no CSV every deployment should
+retrain against, so the timer is only installed when an operator names
+one explicitly. It runs at the same low priority as the labeling timer
+(`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`), since a weekly
+retrain job takes meaningfully longer under that throttling than an
+unthrottled manual run, a deliberate tradeoff so it cannot contend with
+live enforcement during a real flood.
+
+The Isolation Forest is included for a different reason than the
+freshness safeguard: it does not gate on freshness at all, but a model
+whose contamination rate and decision boundary were selected against an
+old capture keeps scoring new live traffic against that stale boundary
+indefinitely otherwise. A live functional test on the sensor VM found
+exactly this: genuinely benign traffic against a months-old Isolation
+Forest read as `Anomalous` on effectively every logged window. Retraining
+it on the same schedule and the same CSV as the other two models keeps
+its boundary current without adding a second operator-facing setting.
+
+### The Second Model
+
+**File:** `stage2/train_second_model.py`
+
+A `HistGradientBoostingClassifier`, fit on the same cleaned feature set
+`train.py` uses, all three labels, supervised. Deliberately a different
+learning process from the RandomForest, boosting builds its trees
+sequentially correcting the previous trees' errors, rather than the
+RandomForest's bagged, independently grown trees, so agreement between
+the two is a real second opinion rather than the same model asked twice.
+
+Train it with:
+
+```bash
+scripts/train.sh -w sm
+```
+
+or `-w all` to train the RandomForest, Isolation Forest, and second model
+together. Like the other two models, `scripts/train.sh` detects a
+production install and writes to `/var/lib/flod` with `sudo` in that
+case, the checkout otherwise, per [Training](#training) above.

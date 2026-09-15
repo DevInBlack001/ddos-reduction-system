@@ -407,7 +407,7 @@ scripts/
 
 `scripts/run.sh` is for development and demonstrations, not deployment. It
 starts Stage 1 out of the build directory, optionally alongside Stage 2, and
-asks for every value it needs rather than requiring a command line. Stage 2 is
+asks for every value it needs. Stage 2 is
 optional because Stage 1 retries the IPC socket and keeps analysing without it,
 which is what a run for calibration or a backend comparison wants. Deployment
 is `install.sh` and systemd.

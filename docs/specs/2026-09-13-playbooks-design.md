@@ -175,8 +175,7 @@ Two additions to the existing incident report (`report_data.py`,
   which individual sources were escalated against, not only the aggregate
   picture.
 
-Both are additive to the existing report structure, not a replacement for
-the aggregate view.
+Both are additive to the existing report structure.
 
 ## Testing Plan
 
@@ -209,7 +208,7 @@ ordering.
   toward a raw count with a documented, non-authoritative default, per
   this project's own convention that a threshold like this is a starting
   point, not a proven value, but this needs a real multi-host capture to
-  size sensibly rather than a guess.
+  size sensibly.
 - Whether a `report` stage firing mid-incident, before the incident has
   fully resolved, needs any different framing in the PDF than the existing
   after-the-fact report (e.g. an explicit "still in progress" marker on

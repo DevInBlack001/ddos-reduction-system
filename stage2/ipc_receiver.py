@@ -16,6 +16,7 @@ import logging
 import grp
 import pwd
 import time
+import fcntl
 
 import joblib
 
@@ -24,6 +25,11 @@ import state
 import db
 import enforcement
 import alerts
+
+
+# Track which capture files have already logged the size-cap warning, so we
+# log once per path, not on every skipped append after the cap is reached.
+_capture_file_cap_warned = set()
 
 
 def _maybe_alert_block(ip, victim_ip, rate, cfg):
@@ -81,6 +87,74 @@ ANOMALOUS_CSV_HEADER = [
     "fingerprint_diversity", "timestamp", "label", "victim_ip", "if_score", "rf_verdict",
 ]
 
+# V8: windows captured before any RandomForest model exists. Same 13 base
+# columns as ANOMALOUS_CSV_HEADER, no context columns, since no model ran
+# at capture time to produce a score or a verdict. See docs/specs/2026-09-
+# 13-confidence-gated-labeling-design.md.
+PRETRAINING_CSV_HEADER = [
+    "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+    "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
+    "fingerprint_diversity", "timestamp", "label",
+]
+
+
+def _append_csv_row(path, header, row):
+    """Append one row to a capture CSV, writing the header first if the
+    file does not exist yet. Shared by every capture point in this module
+    so the append-and-header behaviour lives in one place. Holds an exclusive
+    lock on <path>.lock around the actual write to prevent auto_label.py's
+    atomic rewrite from silently losing the appended row. Skips the append if
+    the file is already at or over PRETRAINING_MAX_BYTES, logging once."""
+    lockfile_path = f"{path}.lock"
+    lock_fd = os.open(lockfile_path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            # Check file size before writing; skip append if already at cap.
+            try:
+                file_size = os.path.getsize(path)
+                if file_size >= config.PRETRAINING_MAX_BYTES:
+                    # Log once per path when cap is first reached, not on every skipped row
+                    if path not in _capture_file_cap_warned:
+                        _capture_file_cap_warned.add(path)
+                        logging.warning(
+                            f"[!] {path} has reached {config.PRETRAINING_MAX_BYTES} bytes, "
+                            f"skipping appends until auto_label.py trims it."
+                        )
+                    return
+            except OSError:
+                # File doesn't exist yet, so write will create it.
+                pass
+
+            write_header = not os.path.exists(path)
+            try:
+                with open(path, "a", newline="") as f:
+                    w = csv.writer(f)
+                    if write_header:
+                        w.writerow(header)
+                    w.writerow(row)
+            except OSError as e:
+                logging.error(f"[-] Failed to write {path}: {e}")
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _base_feature_row(feature_values):
+    """The 13 base columns shared by every capture format, training_data.csv's
+    own column order. label is always blank: nothing at capture time
+    knows what this traffic actually is."""
+    return [
+        f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
+        f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
+        f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
+        f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
+        f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
+        f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
+        "",
+    ]
+
 
 def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     """Append one Anomalous window to config.ANOMALOUS_CSV_PATH for later
@@ -89,23 +163,24 @@ def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     first 13 columns match training.csv's own order exactly, so a row
     can be copied straight across once a human fills in the label and
     drops the victim_ip/if_score/rf_verdict columns on the end."""
-    write_header = not os.path.exists(config.ANOMALOUS_CSV_PATH)
-    try:
-        with open(config.ANOMALOUS_CSV_PATH, "a", newline="") as f:
-            w = csv.writer(f)
-            if write_header:
-                w.writerow(ANOMALOUS_CSV_HEADER)
-            w.writerow([
-                f"{feature_values['entropy']:.6f}", f"{feature_values['ewma_rate']:.6f}",
-                f"{feature_values['mean_h']:.6f}", f"{feature_values['mean_r']:.6f}",
-                f"{feature_values['sigma_h']:.6f}", f"{feature_values['sigma_r']:.6f}",
-                f"{feature_values['proto_ratio']:.6f}", f"{feature_values['dominant_ip_ratio']:.6f}",
-                f"{feature_values['source_port_entropy']:.6f}", f"{feature_values['ttl_variance']:.6f}",
-                f"{feature_values['fingerprint_diversity']:.6f}", f"{feature_values['timestamp']:.3f}",
-                "", victim_ip, f"{if_score:+.4f}", rf_verdict,
-            ])
-    except OSError as e:
-        logging.error(f"[-] Failed to write anomalous_capture.csv row: {e}")
+    row = _base_feature_row(feature_values) + [victim_ip, f"{if_score:+.4f}", rf_verdict]
+    _append_csv_row(config.ANOMALOUS_CSV_PATH, ANOMALOUS_CSV_HEADER, row)
+
+
+def _write_pretraining_row(**feature_values):
+    """Append one cold-start window (no RandomForest model deployed yet)
+    to config.PRETRAINING_CSV_PATH for auto_label.py to score once a model
+    exists. label is left blank, same reasoning as _write_anomalous_row."""
+    _append_csv_row(config.PRETRAINING_CSV_PATH, PRETRAINING_CSV_HEADER, _base_feature_row(feature_values))
+
+
+def _should_capture_pretraining_row(clf, is_warmup):
+    """Cold-start capture fires only before any RandomForest model exists
+    (the actual "before the first model is trained" case) and never during
+    warm-up, since a warm-up window's mean/sigma-derived features are not
+    meaningful even to a model trained later. The Isolation Forest is a
+    secondary, optional model; its absence alone does not mean this."""
+    return clf is None and not is_warmup
 
 
 def _peer_uid(conn):
@@ -345,6 +420,15 @@ def run_ipc_receiver():
                 # default (0, Normal) as this model's own opinion.
                 if not is_warmup and clf:
                     pred_class = int(clf.predict(features_df)[0])
+
+                if _should_capture_pretraining_row(clf, is_warmup):
+                    _write_pretraining_row(
+                        entropy=entropy, ewma_rate=ewma_rate, mean_h=mean_h, mean_r=mean_r,
+                        sigma_h=sigma_h, sigma_r=sigma_r, proto_ratio=proto_ratio,
+                        dominant_ip_ratio=dominant_ip_ratio, source_port_entropy=source_port_entropy,
+                        ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
+                        timestamp=timestamp,
+                    )
 
                 # Adaptive safety overrides. Deliberately NOT gated on
                 # is_warmup, see apply_safety_overrides' own docstring.

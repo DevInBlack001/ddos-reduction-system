@@ -146,6 +146,68 @@ class WriteAnomalousRowTests(unittest.TestCase):
         self.assertEqual(rows[2][13], "192.0.2.11")
 
 
+class WritePretrainingRowTests(unittest.TestCase):
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)  # start from "file does not exist"
+        self.original_path = config.PRETRAINING_CSV_PATH
+        config.PRETRAINING_CSV_PATH = self.path
+
+    def tearDown(self):
+        config.PRETRAINING_CSV_PATH = self.original_path
+        unlink(self.path)
+
+    def _rows(self):
+        with open(self.path) as handle:
+            return list(csv.reader(handle))
+
+    def test_creates_the_file_on_the_first_cold_start_window(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_the_thirteen_columns_match_trainingcsvs_own_order(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        header = self._rows()[0]
+        self.assertEqual(header, [
+            "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+            "proto_ratio", "dominant_ip_ratio", "source_port_entropy",
+            "ttl_variance", "fingerprint_diversity", "timestamp", "label",
+        ])
+
+    def test_the_label_column_is_left_blank(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        row = self._rows()[1]
+        self.assertEqual(row[12], "")
+
+    def test_a_second_cold_start_window_appends_rather_than_overwriting(self):
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        ipc_receiver._write_pretraining_row(**FEATURES)
+        rows = self._rows()
+        self.assertEqual(len(rows), 3)  # header + two data rows
+
+
+class ShouldCapturePretrainingRowTests(unittest.TestCase):
+    def test_true_when_no_random_forest_model_is_loaded_and_not_warming_up(self):
+        self.assertTrue(ipc_receiver._should_capture_pretraining_row(clf=None, is_warmup=False))
+
+    def test_false_during_warmup_even_with_no_model(self):
+        self.assertFalse(ipc_receiver._should_capture_pretraining_row(clf=None, is_warmup=True))
+
+    def test_false_once_a_random_forest_model_is_loaded(self):
+        self.assertFalse(ipc_receiver._should_capture_pretraining_row(clf=object(), is_warmup=False))
+
+
+class SharedCsvAppendHelperTests(unittest.TestCase):
+    """The refactor must not change _write_anomalous_row's own behaviour;
+    WriteAnomalousRowTests above already pins its output format, this
+    class only pins that the two writers now share one low-level append
+    so a future third capture point does not need a third copy of it."""
+
+    def test_write_anomalous_row_and_write_pretraining_row_share_the_append_helper(self):
+        self.assertIs(ipc_receiver._write_anomalous_row.__globals__["_append_csv_row"],
+                       ipc_receiver._write_pretraining_row.__globals__["_append_csv_row"])
+
+
 class PeerUidTests(unittest.TestCase):
     """The IPC socket's defence in depth against a connection from an
     unexpected local account: SO_PEERCRED reports the real, kernel
@@ -167,6 +229,57 @@ class PeerUidTests(unittest.TestCase):
         a.close()
         b.close()
         self.assertIsNone(ipc_receiver._peer_uid(a))
+
+
+class AppendCsvRowSizeConstraintTests(unittest.TestCase):
+    """_append_csv_row enforces PRETRAINING_MAX_BYTES: appends are skipped
+    once the file reaches the cap, preventing unbounded growth of cold-start
+    capture files."""
+
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)
+        self.original_max_bytes = config.PRETRAINING_MAX_BYTES
+        # Use a tiny limit so we can hit it without creating megabyte files
+        config.PRETRAINING_MAX_BYTES = 100
+
+    def tearDown(self):
+        config.PRETRAINING_MAX_BYTES = self.original_max_bytes
+        unlink(self.path)
+
+    def test_skips_append_when_file_is_at_the_size_cap(self):
+        # Write a file that exactly matches the cap
+        with open(self.path, "w") as f:
+            f.write("x" * config.PRETRAINING_MAX_BYTES)
+
+        row_count_before = os.path.getsize(self.path)
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+        row_count_after = os.path.getsize(self.path)
+
+        # File size should not have changed
+        self.assertEqual(row_count_before, row_count_after)
+
+    def test_skips_append_when_file_exceeds_the_size_cap(self):
+        # Write a file larger than the cap
+        with open(self.path, "w") as f:
+            f.write("x" * (config.PRETRAINING_MAX_BYTES + 50))
+
+        row_count_before = os.path.getsize(self.path)
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+        row_count_after = os.path.getsize(self.path)
+
+        # File size should not have changed
+        self.assertEqual(row_count_before, row_count_after)
+
+    def test_appends_normally_when_file_is_under_the_size_cap(self):
+        # Write a small file
+        with open(self.path, "w") as f:
+            f.write("x" * 50)
+
+        ipc_receiver._append_csv_row(self.path, ipc_receiver.PRETRAINING_CSV_HEADER, ["field1", "field2"])
+
+        # File should have grown
+        self.assertGreater(os.path.getsize(self.path), 50)
 
 
 if __name__ == "__main__":

@@ -334,7 +334,7 @@ uses before a baseline entropy has been learned, i.e. during warm-up.
 
 ## Baseline Poisoning Defences
 
-Two complementary mechanisms, not one.
+Two complementary mechanisms.
 
 **Freeze on anomaly.** Samples only enter the accumulator when the window is
 clean and not in cooldown. During an active or recently resolved anomaly the

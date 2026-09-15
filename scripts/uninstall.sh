@@ -39,8 +39,16 @@ BINARY_NAME="ddos_stage1"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="ddos-stage1"
 SERVICE2_NAME="ddos-stage2"
+AUTO_LABEL_SERVICE_NAME="ddos-stage2-auto-label"
+AUTO_LABEL_TIMER_NAME="ddos-stage2-auto-label.timer"
+RETRAIN_SERVICE_NAME="ddos-stage2-retrain"
+RETRAIN_TIMER_NAME="ddos-stage2-retrain.timer"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SERVICE2_FILE="/etc/systemd/system/${SERVICE2_NAME}.service"
+AUTO_LABEL_SERVICE_FILE="/etc/systemd/system/${AUTO_LABEL_SERVICE_NAME}.service"
+AUTO_LABEL_TIMER_FILE="/etc/systemd/system/${AUTO_LABEL_TIMER_NAME}"
+RETRAIN_SERVICE_FILE="/etc/systemd/system/${RETRAIN_SERVICE_NAME}.service"
+RETRAIN_TIMER_FILE="/etc/systemd/system/${RETRAIN_TIMER_NAME}"
 SOCKET_FILE="/run/ddos_stage1/stage1.sock"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(dirname "$SCRIPT_DIR")/stage1/target"
@@ -80,6 +88,8 @@ if $CONFIRM; then
     warn "  • $INSTALL_DIR/$BINARY_NAME"
     warn "  • $SERVICE_FILE (if present)"
     warn "  • $SERVICE2_FILE (if present)"
+    warn "  • $AUTO_LABEL_SERVICE_FILE and $AUTO_LABEL_TIMER_FILE (if present)"
+    warn "  • $RETRAIN_SERVICE_FILE and $RETRAIN_TIMER_FILE (if present)"
     warn "  • $SOCKET_FILE (if present)"
     warn "  • $STAGE2_INSTALL_DIR (Stage 2 code and virtual environment)"
     warn "  • $STAGE2_STATE_DIR (database, config, trained models)"
@@ -106,6 +116,42 @@ if command -v systemctl &>/dev/null; then
             success "$svc disabled."
         fi
     done
+    # The timer needs its .timer suffix explicit, systemctl does not default
+    # to it the way it defaults a bare name to .service. The oneshot service
+    # it triggers is stopped too in case a run is mid-flight.
+    if systemctl is-active --quiet "$AUTO_LABEL_TIMER_NAME" 2>/dev/null; then
+        info "Stopping $AUTO_LABEL_TIMER_NAME..."
+        systemctl stop "$AUTO_LABEL_TIMER_NAME"
+        success "$AUTO_LABEL_TIMER_NAME stopped."
+    fi
+    if systemctl is-enabled --quiet "$AUTO_LABEL_TIMER_NAME" 2>/dev/null; then
+        info "Disabling $AUTO_LABEL_TIMER_NAME..."
+        systemctl disable "$AUTO_LABEL_TIMER_NAME"
+        success "$AUTO_LABEL_TIMER_NAME disabled."
+    fi
+    if systemctl is-active --quiet "$AUTO_LABEL_SERVICE_NAME" 2>/dev/null; then
+        info "Stopping $AUTO_LABEL_SERVICE_NAME..."
+        systemctl stop "$AUTO_LABEL_SERVICE_NAME"
+        success "$AUTO_LABEL_SERVICE_NAME stopped."
+    fi
+    # Same handling for the periodic retrain timer/service. Harmless no-op on
+    # an install where --training-csv was never given at install time, since
+    # these units were then never generated.
+    if systemctl is-active --quiet "$RETRAIN_TIMER_NAME" 2>/dev/null; then
+        info "Stopping $RETRAIN_TIMER_NAME..."
+        systemctl stop "$RETRAIN_TIMER_NAME"
+        success "$RETRAIN_TIMER_NAME stopped."
+    fi
+    if systemctl is-enabled --quiet "$RETRAIN_TIMER_NAME" 2>/dev/null; then
+        info "Disabling $RETRAIN_TIMER_NAME..."
+        systemctl disable "$RETRAIN_TIMER_NAME"
+        success "$RETRAIN_TIMER_NAME disabled."
+    fi
+    if systemctl is-active --quiet "$RETRAIN_SERVICE_NAME" 2>/dev/null; then
+        info "Stopping $RETRAIN_SERVICE_NAME..."
+        systemctl stop "$RETRAIN_SERVICE_NAME"
+        success "$RETRAIN_SERVICE_NAME stopped."
+    fi
 else
     info "systemctl not found; skipping service stop."
 fi
@@ -135,7 +181,8 @@ rm -f "$STAGE2_DIR/stage2.db" "$STAGE2_DIR/whitelist.json" "$STAGE2_DIR/victims.
       "$STAGE2_DIR/shared_ips.json" "$STAGE2_DIR/enforcement_config.json" \
       "$STAGE2_DIR/alerts_config.json" "$STAGE2_DIR/stage2.log" \
       "$STAGE2_DIR/anomalous_capture.csv" "$STAGE2_DIR/ddos_rf_model.joblib" \
-      "$STAGE2_DIR/ddos_if_model.joblib"
+      "$STAGE2_DIR/ddos_if_model.joblib" "$STAGE2_DIR/pretraining_capture.csv" \
+      "$STAGE2_DIR/auto_labeled_capture.csv" "$STAGE2_DIR/ddos_gb_model.joblib"
 rm -rf "/run/ddos_stage1"
 success "Database and configurations removed."
 
@@ -143,7 +190,7 @@ success "Database and configurations removed."
 # Remove systemd unit files
 # =============================================================================
 RELOAD_NEEDED=false
-for svc_file in "$SERVICE_FILE" "$SERVICE2_FILE"; do
+for svc_file in "$SERVICE_FILE" "$SERVICE2_FILE" "$AUTO_LABEL_SERVICE_FILE" "$AUTO_LABEL_TIMER_FILE" "$RETRAIN_SERVICE_FILE" "$RETRAIN_TIMER_FILE"; do
     if [[ -f "$svc_file" ]]; then
         info "Removing systemd unit file: $svc_file"
         rm -f "$svc_file"
