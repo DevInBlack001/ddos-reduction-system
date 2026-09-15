@@ -149,16 +149,33 @@ for the details.
 
 Confirmed against a real run on the sensor VM. The first unattended run of
 `ddos-stage2-auto-label.timer` against real captured data auto-labeled
-32,597 rows, and surfaced two real findings rather than a clean pass. The
+32,597 rows, surfacing two real findings. The
 freshness safeguard first blocked labeling entirely, correctly: the
 deployed RandomForest predated every captured row, so nothing could clear
 the "trained after capture" check until `ddos-stage2-retrain.timer` (see
 [training.md](training.md#periodic-retraining)) gave it something to
 retrain against. Once that ran, 32,595 of the 32,597 labeled rows turned
-out to be zero-traffic windows both models agreed on for the wrong reason,
-a shared blind spot in the training corpus rather than a real signal; see
+out to be zero-traffic windows both models agreed on for the wrong reason:
+a shared blind spot in the training corpus. See
 [training.md](training.md#degenerate-windows-are-never-auto-labeled) for
-the guard this added. Both fixes are on `v8`.
+the guard this added. The retrain timer itself also only covered the RF
+and second model; the Isolation Forest, which depends on neither
+safeguard, stayed on the model trained at initial setup until a live
+functional test found the consequence directly: genuinely benign live
+traffic scored `Anomalous` on effectively every window, fixed by chaining
+`train_isolation_forest.py` into the same retrain run.
+
+`scripts/calibrate.py` was also re-run on the sensor VM against a real
+100-simulated-user load, deriving `--rate-sigma-floor 7.8
+--entropy-sigma-floor 0.4944 --entropy-sigma-ceiling 0.9` from actually
+observed traffic rather than the shipped defaults. A full seven-phase live
+benchmark (`scripts/benchmark_live.sh`, extended this session from four
+phases to the full sequence: Normal, Flash Crowd, Attacker, every pairwise
+mix, then all three together) then ran against the freshly calibrated,
+freshly retrained deployment: zero Stage 1 flags on pure Normal traffic,
+0% of Flash Crowd traffic escalated to DDoS, 100% escalation once all
+three traffic types combined. All fixes and the benchmark script rewrite
+are on `v8`.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window

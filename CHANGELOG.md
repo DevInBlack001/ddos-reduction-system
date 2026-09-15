@@ -35,11 +35,16 @@ On branch `v8`, not yet merged or tagged.
   `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity`
   reading exactly `0.0`) regardless of model agreement or confidence.
   Found on a real VM run: this pattern occurs across all three labels in
-  the training corpus, so agreement on it reflects a shared blind spot,
-  not a real signal.
+  the training corpus, so agreement on it reflects a shared blind spot.
 - `--auto-label-interval` and `--retrain-interval` flags on
-  `install.sh`/`update.sh`, both operator configurable rather than
-  hardcoded.
+  `install.sh`/`update.sh`, both operator configurable.
+- `scripts/benchmark_live.sh` extended from four phases to the full seven:
+  Normal, Flash Crowd, Attacker, then every pairwise mix, then all three
+  together, redesigned around one start/stop command pair per traffic
+  type so a generator already running into a mixed phase stays running.
+  Confirmed end to end on the sensor VM against a freshly calibrated,
+  freshly retrained deployment: 0% of Flash Crowd traffic escalated to
+  DDoS, 100% escalation once all three traffic types combined.
 
 ### Security
 
