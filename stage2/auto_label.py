@@ -56,6 +56,23 @@ def is_row_eligible(row_timestamp, model_mtimes, delay_hours, now=None):
     return all(mtime > row_timestamp for mtime in model_mtimes)
 
 
+DEGENERATE_FIELDS = [
+    "entropy", "proto_ratio", "dominant_ip_ratio",
+    "source_port_entropy", "ttl_variance", "fingerprint_diversity",
+]
+
+
+def is_row_degenerate(features):
+    """True if every field in DEGENERATE_FIELDS reads exactly 0.0, the
+    signature of a zero-traffic window (an idle capture interval, not a
+    real observation of any class). Confirmed against the real training
+    corpus: this exact all-zero pattern appears across all three labels
+    (Normal, Flash Crowd, and DDoS alike), so two models agreeing on such
+    a row reflects a shared corpus-level blind spot, not a real signal,
+    and must never be auto-labeled regardless of confidence or agreement."""
+    return all(features[field] == 0.0 for field in DEGENERATE_FIELDS)
+
+
 def decide_label(rf_proba, rf_classes, second_proba, second_classes, confidence_threshold):
     """Returns the agreed class (0, 1, or 2) if both models pick the same
     top class and both clear confidence_threshold on it, else None.
@@ -204,6 +221,10 @@ def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
                         continue
 
                     features = _row_to_features(row, header)
+                    if is_row_degenerate(features):
+                        kept_rows.append(row)
+                        continue
+
                     features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
                     rf_proba = clf.predict_proba(features_df)[0]
                     second_proba = second_clf.predict_proba(features_df)[0]

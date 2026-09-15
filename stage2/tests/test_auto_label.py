@@ -104,6 +104,88 @@ class DecideLabelTests(unittest.TestCase):
         )
 
 
+class IsRowDegenerateTests(unittest.TestCase):
+    """A row where every DEGENERATE_FIELDS entry reads exactly 0.0 is the
+    signature of a zero-traffic window, not a real observation of any
+    class, and must be recognized regardless of what the other fields
+    (rate, sigma) happen to hold."""
+
+    def _features(self, **overrides):
+        base = {
+            "entropy": 0.0, "ewma_rate": 20.0, "mean_h": 0.9, "mean_r": 20.0,
+            "sigma_h": 0.1, "sigma_r": 7.1, "proto_ratio": 0.0,
+            "dominant_ip_ratio": 0.0, "delta_rate": 0.0, "delta_entropy": 0.0,
+            "dominant_rate": 0.0, "source_port_entropy": 0.0,
+            "ttl_variance": 0.0, "fingerprint_diversity": 0.0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_all_six_fields_at_zero_is_degenerate(self):
+        self.assertTrue(auto_label.is_row_degenerate(self._features()))
+
+    def test_one_nonzero_field_is_not_degenerate(self):
+        self.assertFalse(auto_label.is_row_degenerate(self._features(entropy=0.9)))
+        self.assertFalse(auto_label.is_row_degenerate(self._features(fingerprint_diversity=0.1)))
+
+    def test_nonzero_rate_alongside_all_zero_fields_is_still_degenerate(self):
+        # ewma_rate/mean_r/sigma_r are not part of the degenerate signature:
+        # an idle window can still carry a nonzero rate reading.
+        self.assertTrue(auto_label.is_row_degenerate(self._features(ewma_rate=500.0)))
+
+
+class ProcessCaptureFileSkipsDegenerateRowsTests(unittest.TestCase):
+    """A degenerate (all-zero-feature) row must never be auto-labeled, even
+    when both models confidently agree on it. Confirmed against the real
+    training corpus that this exact all-zero pattern occurs across all
+    three labels, so agreement here reflects a shared corpus blind spot,
+    not a real signal."""
+
+    class _FakeConfidentModel:
+        classes_ = np.array([0, 1, 2])
+
+        def predict_proba(self, features_df):
+            return np.array([[0.01, 0.02, 0.97]])
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        os.unlink(self.capture_path)
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+        old_timestamp = "1000000.0"  # unambiguously older than the delay and every model mtime
+        # entropy, proto_ratio, dominant_ip_ratio, source_port_entropy, ttl_variance,
+        # fingerprint_diversity all 0.0: the degenerate signature.
+        degenerate_row = ["0.0", "20.0", "0.9", "20.0", "0.1", "7.1", "0.0", "0.0",
+                           "0.0", "0.0", "0.0", old_timestamp, ""]
+        genuine_row = ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                       "0.9", "0.1", "0.1", old_timestamp, ""]
+        with open(self.capture_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(auto_label.BASE_CSV_HEADER)
+            w.writerow(degenerate_row)
+            w.writerow(genuine_row)
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_the_degenerate_row_is_left_in_place_and_the_genuine_row_is_labeled(self):
+        model_mtimes = [time.time(), time.time()]
+        labeled_count = auto_label._process_capture_file(
+            self.capture_path, self._FakeConfidentModel(), self._FakeConfidentModel(),
+            model_mtimes, self.labeled_path,
+        )
+        self.assertEqual(labeled_count, 1)  # only the genuine row
+
+        with open(self.capture_path, newline="") as f:
+            remaining_rows = list(csv.reader(f))
+        self.assertEqual(len(remaining_rows), 2)  # header + the degenerate row, left in place
+        self.assertEqual(remaining_rows[1][auto_label.BASE_CSV_HEADER.index("entropy")], "0.0")
+
+        with open(self.labeled_path, newline="") as f:
+            labeled_rows = list(csv.reader(f))
+        self.assertEqual(len(labeled_rows), 2)  # header + the one genuine labeled row
+
+
 class TrimCsvRowsTests(unittest.TestCase):
     """Without a cap, a fresh deployment left running with no model, or a
     long configured delay under heavy traffic, would grow an unbounded
