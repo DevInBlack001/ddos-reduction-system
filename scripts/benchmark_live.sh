@@ -17,6 +17,13 @@
 # Flash Crowd / Attacker traffic comes from whatever start/stop commands you
 # configure, run over SSH on your own generator hosts.
 #
+# Seven phases, each traffic type introduced alone first, then every pairwise
+# combination, then all three together: Normal, Flash Crowd, Attacker,
+# Normal+Flash Crowd, Normal+Attacker, Flash Crowd+Attacker, all three. Each
+# phase only starts or stops the generators whose desired state actually
+# changed from the previous phase, so a generator already running into a
+# mixed phase keeps running rather than being restarted.
+#
 # Usage:
 #   bash scripts/benchmark_live.sh <config-file>
 #
@@ -46,7 +53,8 @@ source "$CONFIG"
 : "${NORMAL_SECS:=120}"
 : "${FLASHCROWD_SECS:=120}"
 : "${ATTACK_SECS:=180}"
-: "${MIXED_SECS:=120}"
+: "${PAIR_SECS:=150}"
+: "${ALL_THREE_SECS:=180}"
 : "${OUTPUT_DIR:=./benchmark-live-results}"
 
 GW_SSH="ssh -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 $GATEWAY_HOST"
@@ -86,18 +94,61 @@ run_remote() {
     ssh_retry "$host: $*" ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=10 "$host" "$@"
 }
 
+# --- Per traffic type start/stop, one command pair reused across every
+# phase that wants it active, rather than a separate command set per phase
+# combination. A generator that stays active across a phase transition (for
+# example Normal running through Normal, then Normal+Flash Crowd) is left
+# alone, not stopped and restarted. ---
+start_normal() {
+    if [ -n "${NORMAL_START_CMD:-}" ]; then run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$NORMAL_START_CMD"; fi
+    if [ -n "${NORMAL_START_CMD_2:-}" ]; then run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$NORMAL_START_CMD_2"; fi
+}
+stop_normal() {
+    if [ -n "${NORMAL_STOP_CMD:-}" ]; then run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$NORMAL_STOP_CMD"; fi
+    if [ -n "${NORMAL_STOP_CMD_2:-}" ]; then run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$NORMAL_STOP_CMD_2"; fi
+}
+start_flashcrowd() {
+    if [ -n "${FLASHCROWD_START_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$FLASHCROWD_START_CMD"; fi
+    if [ -n "${FLASHCROWD_START_CMD_2:-}" ]; then run_remote "$FLASHCROWD_HOST_2" "$FLASHCROWD_SSH_KEY_2" "$FLASHCROWD_START_CMD_2"; fi
+}
+stop_flashcrowd() {
+    if [ -n "${FLASHCROWD_STOP_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$FLASHCROWD_STOP_CMD"; fi
+    if [ -n "${FLASHCROWD_STOP_CMD_2:-}" ]; then run_remote "$FLASHCROWD_HOST_2" "$FLASHCROWD_SSH_KEY_2" "$FLASHCROWD_STOP_CMD_2"; fi
+}
+start_attack() {
+    if [ -n "${ATTACK_START_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$ATTACK_START_CMD"; fi
+}
+stop_attack() {
+    if [ -n "${ATTACK_STOP_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$ATTACK_STOP_CMD"; fi
+}
+
+# goto_phase <name> <normal 0|1> <flashcrowd 0|1> <attack 0|1>
+# Starts or stops only what changed from the previous phase's active set,
+# then marks the phase boundary.
+normal_on=0
+flashcrowd_on=0
+attack_on=0
+goto_phase() {
+    local name="$1" want_normal="$2" want_flashcrowd="$3" want_attack="$4"
+
+    if [ "$want_normal" -eq 0 ] && [ "$normal_on" -eq 1 ]; then stop_normal; fi
+    if [ "$want_flashcrowd" -eq 0 ] && [ "$flashcrowd_on" -eq 1 ]; then stop_flashcrowd; fi
+    if [ "$want_attack" -eq 0 ] && [ "$attack_on" -eq 1 ]; then stop_attack; fi
+
+    if [ "$want_normal" -eq 1 ] && [ "$normal_on" -eq 0 ]; then start_normal; fi
+    if [ "$want_flashcrowd" -eq 1 ] && [ "$flashcrowd_on" -eq 0 ]; then start_flashcrowd; fi
+    if [ "$want_attack" -eq 1 ] && [ "$attack_on" -eq 0 ]; then start_attack; fi
+
+    normal_on="$want_normal"; flashcrowd_on="$want_flashcrowd"; attack_on="$want_attack"
+    mark_phase "$name"
+}
+
 log "=== FLOD live benchmark starting ==="
 log "Targets: $TARGET_IPS"
 mark_phase "session_start"
 
 log "--- Phase 1: Normal ---"
-if [ -n "${NORMAL_START_CMD:-}" ]; then
-    run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$NORMAL_START_CMD"
-fi
-if [ -n "${NORMAL_START_CMD_2:-}" ]; then
-    run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$NORMAL_START_CMD_2"
-fi
-mark_phase "normal"
+goto_phase "normal" 1 0 0
 
 log "Waiting for warm-up (up to ${WARMUP_TIMEOUT_SECS}s)..."
 NORMAL_PHASE_START=$(awk -F'\t' '$1=="normal"{print $2}' "$PHASES_FILE")
@@ -120,38 +171,39 @@ log "Observing Normal for ${NORMAL_SECS}s..."
 sleep "$NORMAL_SECS"
 
 log "--- Phase 2: Flash Crowd ---"
-if [ -n "${NORMAL_STOP_CMD:-}" ]; then run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$NORMAL_STOP_CMD"; fi
-if [ -n "${NORMAL_STOP_CMD_2:-}" ]; then run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$NORMAL_STOP_CMD_2"; fi
-if [ -n "${FLASHCROWD_START_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$FLASHCROWD_START_CMD"; fi
-if [ -n "${FLASHCROWD_START_CMD_2:-}" ]; then run_remote "$FLASHCROWD_HOST_2" "$FLASHCROWD_SSH_KEY_2" "$FLASHCROWD_START_CMD_2"; fi
-mark_phase "flash_crowd"
+goto_phase "flash_crowd" 0 1 0
 log "Observing Flash Crowd for ${FLASHCROWD_SECS}s..."
 sleep "$FLASHCROWD_SECS"
 
 log "--- Phase 3: Attacker ---"
-if [ -n "${FLASHCROWD_STOP_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$FLASHCROWD_STOP_CMD"; fi
-if [ -n "${FLASHCROWD_STOP_CMD_2:-}" ]; then run_remote "$FLASHCROWD_HOST_2" "$FLASHCROWD_SSH_KEY_2" "$FLASHCROWD_STOP_CMD_2"; fi
-if [ -n "${ATTACK_START_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$ATTACK_START_CMD"; fi
-mark_phase "attacker"
+goto_phase "attacker" 0 0 1
 log "Observing Attacker for ${ATTACK_SECS}s..."
 sleep "$ATTACK_SECS"
 
-log "--- Phase 4: Mixed ---"
-if [ -n "${ATTACK_STOP_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$ATTACK_STOP_CMD"; fi
-if [ -n "${MIXED_NORMAL_START_CMD:-}" ]; then run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$MIXED_NORMAL_START_CMD"; fi
-if [ -n "${MIXED_NORMAL_START_CMD_2:-}" ]; then run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$MIXED_NORMAL_START_CMD_2"; fi
-sleep 5
-if [ -n "${MIXED_FLASHCROWD_START_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$MIXED_FLASHCROWD_START_CMD"; fi
-if [ -n "${MIXED_ATTACK_START_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$MIXED_ATTACK_START_CMD"; fi
-mark_phase "mixed"
-log "Observing Mixed for ${MIXED_SECS}s..."
-sleep "$MIXED_SECS"
+log "--- Phase 4: Normal + Flash Crowd ---"
+goto_phase "normal_flashcrowd" 1 1 0
+log "Observing Normal + Flash Crowd for ${PAIR_SECS}s..."
+sleep "$PAIR_SECS"
+
+log "--- Phase 5: Normal + Attacker ---"
+goto_phase "normal_attacker" 1 0 1
+log "Observing Normal + Attacker for ${PAIR_SECS}s..."
+sleep "$PAIR_SECS"
+
+log "--- Phase 6: Flash Crowd + Attacker ---"
+goto_phase "flashcrowd_attacker" 0 1 1
+log "Observing Flash Crowd + Attacker for ${PAIR_SECS}s..."
+sleep "$PAIR_SECS"
+
+log "--- Phase 7: All three ---"
+goto_phase "all_three" 1 1 1
+log "Observing all three for ${ALL_THREE_SECS}s..."
+sleep "$ALL_THREE_SECS"
 
 log "--- Stopping all traffic ---"
-if [ -n "${MIXED_NORMAL_STOP_CMD:-}" ]; then run_remote "$NORMAL_HOST" "$NORMAL_SSH_KEY" "$MIXED_NORMAL_STOP_CMD"; fi
-if [ -n "${MIXED_NORMAL_STOP_CMD_2:-}" ]; then run_remote "$NORMAL_HOST_2" "$NORMAL_SSH_KEY_2" "$MIXED_NORMAL_STOP_CMD_2"; fi
-if [ -n "${MIXED_FLASHCROWD_STOP_CMD:-}" ]; then run_remote "$FLASHCROWD_HOST" "$FLASHCROWD_SSH_KEY" "$MIXED_FLASHCROWD_STOP_CMD"; fi
-if [ -n "${MIXED_ATTACK_STOP_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$MIXED_ATTACK_STOP_CMD"; fi
+stop_normal
+stop_flashcrowd
+stop_attack
 mark_phase "session_end"
 
 SESSION_START=$(awk -F'\t' '$1=="session_start"{print $2}' "$PHASES_FILE")

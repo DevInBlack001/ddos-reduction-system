@@ -50,10 +50,10 @@ def line_time(line, year_hint):
     # journalctl's default format carries month and day but no year;
     # reconstruct a full "YYYY-MM-DD HH:MM:SS" from each line's own month/day
     # rather than a single date captured once at the start of the session.
-    # A benchmark run can cross midnight (Normal starting one day, Mixed
-    # finishing the next), and a single fixed date silently drops every line
-    # after the rollover from every phase window, this was caught by running
-    # the script for real, not by inspection.
+    # A benchmark run can cross midnight (Normal starting one day, the final
+    # all-three phase finishing the next), and a single fixed date silently
+    # drops every line after the rollover from every phase window, this was
+    # caught by running the script for real, not by inspection.
     m = TS_RE.match(line)
     if not m:
         return None
@@ -117,9 +117,10 @@ def analyze(output_dir):
             print(f"    {victim}: {count}")
         print(f"  Class-2 (DDoS) verdicts (Stage 2): {class2_count}")
         print(f"  Enforcement actions triggered: {mitigation_count}")
+        attack_phases = ("attacker", "normal_attacker", "flashcrowd_attacker", "all_three")
         if total_anomaly > 0:
             rate = class2_count / total_anomaly
-            label = "escalation rate" if name in ("attacker", "mixed") else "false-positive rate (of anomaly-flagged windows)"
+            label = "escalation rate" if name in attack_phases else "false-positive rate (of anomaly-flagged windows)"
             print(f"  {label}: {rate:.1%}")
         print()
 
