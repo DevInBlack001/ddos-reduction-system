@@ -92,3 +92,64 @@ whatever load tooling your start/stop commands invoke (this run used
 `locust` and `hping3`, both already present on the lab VMs). Wall time
 scales with the phase durations in the config; this run's seven phases
 totaled just over 30 minutes plus warm-up.
+
+## Distribution-shift follow-up
+
+A separate, smaller follow-up on the same deployment, same day, testing a
+real question the seven-phase run above cannot answer on its own: every
+training session and that benchmark ran on one lab topology, so the
+numbers above show generalization across traffic sessions on this
+network, not portability to a different one. No retrain for this
+follow-up; the same models from the run above scored everything, a
+static-transfer test.
+
+**What was actually tested, and what was not.** The original plan
+covered two kinds of distribution shift: the traffic generator's own
+shape (request timing, protocol weighting) and the network path itself
+(latency, jitter, loss, MTU). Only the first was achievable here. The
+lab's attacker and flash-crowd VMs have no outbound internet access, so
+`tc` could not be installed on them to shape traffic at the source.
+Applying `tc netem` on the sensor's own capture interface instead
+(`ens192`, XDP attached in driver mode) silently broke packet counting:
+real traffic kept flowing and got real HTTP responses the whole time, but
+the kernel backend reported zero ingress packets, and removing the
+`netem` qdisc afterward did not restore it. Only a full restart of
+`ddos-stage1` brought capture back. Confirmed this was the qdisc change
+itself, not the MTU change alone, by reverting MTU first and observing
+capture stayed broken. Worth knowing on its own: modifying `tc` qdisc
+state on an XDP driver-mode interface can silently disable capture
+without detaching the program or logging an error.
+
+**What ran instead.** Two new generators, same targets, same source
+pools, deliberately different traffic shape: a bursty-polling Locust
+variant (short rapid-request bursts separated by long idle gaps, instead
+of the baseline's smooth uniform wait) for Normal traffic, and a
+protocol-reweighted attack variant (roughly 70% UDP, 30% SYN, instead of
+the baseline's even three-way split across SYN, UDP, and ICMP) for
+Attacker traffic. Flash Crowd reused the unchanged generator. The
+`ddos-stage1` restart needed to recover capture also reset warm-up and
+the learned baseline, so this run started from a freshly relearned,
+less mature baseline than the seven-phase run above had.
+
+| Phase | Stage 1 flags | DDoS verdicts | Enforcement actions | Result |
+|---|---:|---:|---:|---|
+| Normal (shape B) | 0 | 0 | 0 | Clean |
+| Flash Crowd (unchanged) | 2,065 | 2 | 92 | ~0.1% escalated, not 0% |
+| Attacker (shape B) | 1,983 | 0 | 2,147 | Real mitigation held |
+
+Normal held clean under a request-timing pattern the model had never
+seen. Attacker held under a protocol mix the model had never seen,
+2,147 real enforcement actions is comparable mitigation strength to the
+original run's 2,459, even though the hysteresis-gated Class-2 log line
+count reads lower here for the same reason noted above. Flash Crowd is
+the one real blemish: 2 windows escalated to DDoS this time, against a
+clean 0 in the original run. It cannot be cleanly attributed to shape
+variation alone, since Flash Crowd's own generator was not varied here;
+the freshly relearned baseline from the forced restart is a real,
+unresolved confound. Recorded honestly rather than folded into the
+clean seven-phase numbers above.
+
+**Still open.** Network-path-level distribution shift, latency, jitter,
+loss, MTU, an added routing hop, remains untested. It needs either
+internet access on the generator VMs to install `tc` there, or applying
+`netem` somewhere that is not the sensor's own XDP-bound interface.
