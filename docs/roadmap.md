@@ -145,9 +145,20 @@ confirm its own blind spot even with a second opinion agreeing. See
 
 A dedicated security review found and fixed concurrent file access, unbounded
 capture growth, and resource contention issues; see [security.md](security.md#process-and-filesystem-isolation)
-for the details. Not yet confirmed: a real run of `ddos-stage2-auto-label.timer`
-against live captured data on the sensor VM, which is what this project's own
-convention requires before a milestone is trusted, not a local test pass.
+for the details.
+
+Confirmed against a real run on the sensor VM. The first unattended run of
+`ddos-stage2-auto-label.timer` against real captured data auto-labeled
+32,597 rows, and surfaced two real findings rather than a clean pass. The
+freshness safeguard first blocked labeling entirely, correctly: the
+deployed RandomForest predated every captured row, so nothing could clear
+the "trained after capture" check until `ddos-stage2-retrain.timer` (see
+[training.md](training.md#periodic-retraining)) gave it something to
+retrain against. Once that ran, 32,595 of the 32,597 labeled rows turned
+out to be zero-traffic windows both models agreed on for the wrong reason,
+a shared blind spot in the training corpus rather than a real signal; see
+[training.md](training.md#degenerate-windows-are-never-auto-labeled) for
+the guard this added. Both fixes are on `v8`.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window

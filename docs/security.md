@@ -172,6 +172,14 @@ the job runs at low priority (`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle
 with jittered start time (`RandomizedDelaySec=5m`), so it cannot contend with
 live enforcement if the system is busy during a real flood.
 
+**`ddos-stage2-retrain.timer` follows the same pattern.** Opt-in only,
+installed when `--training-csv` is given to `install.sh` or `update.sh`,
+never against a guessed or default path. It runs as root under the same
+`Nice`/`CPUWeight`/`IOSchedulingClass` throttling as the labeling timer,
+and its `ExecStart` resolves the given CSV path to an absolute path before
+baking it into the unit, so a relative path typed at install time cannot
+silently break once the working directory changes.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

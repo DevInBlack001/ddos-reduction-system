@@ -339,6 +339,46 @@ Label](#more-than-one-session-per-label): staged rows are not
 automatically part of the training set, an operator still decides when to
 fold them in.
 
+### Degenerate Windows Are Never Auto-Labeled
+
+A real run against a sensor VM's captured data auto-labeled 32,597 rows on
+its first unattended pass, agreement and confidence both satisfied. Cross
+referencing the labeled rows against `training_data.csv` found that 32,595
+of them carried `entropy`, `proto_ratio`, `dominant_ip_ratio`,
+`source_port_entropy`, `ttl_variance`, and `fingerprint_diversity` all
+exactly `0.0`, a zero-traffic window rather than a genuine observation of
+any class. That same all-zero pattern occurs across every label in the
+training corpus, Normal, Flash Crowd, and DDoS alike, so two models
+agreeing on it reflects a gap shared by both models' training data, not a
+real signal.
+
+`is_row_degenerate()` checks those six fields before either model scores a
+row, and a row where all six read `0.0` is left exactly where it is, the
+same as an unresolved row, regardless of what confidence or agreement the
+models would otherwise report. Rate-based fields (`ewma_rate`, `mean_r`,
+`sigma_r`, `mean_h`, `sigma_h`) are deliberately excluded from this check:
+an idle window can still carry a real rate reading, and this guard exists
+to catch the absence of traffic-shape signal, not a particular rate.
+
+### Periodic Retraining
+
+**Files:** `ddos-stage2-retrain.service`, `ddos-stage2-retrain.timer`
+
+The freshness safeguard above means a model that never changes eventually
+blocks auto-labeling permanently: every captured row is older than an
+unretrained model, not younger than it. `--training-csv <path>` on
+`install.sh` or `update.sh` installs a systemd timer that retrains the
+RandomForest and the second model together against the same CSV, on a
+configurable interval (`--retrain-interval`, default `7d`), so their
+mtimes move together and the freshness check has something to clear. No
+default path is guessed: there is no CSV every deployment should
+retrain against, so the timer is only installed when an operator names
+one explicitly. It runs at the same low priority as the labeling timer
+(`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`), since a weekly
+retrain job takes meaningfully longer under that throttling than an
+unthrottled manual run, a deliberate tradeoff so it cannot contend with
+live enforcement during a real flood.
+
 ### The Second Model
 
 **File:** `stage2/train_second_model.py`

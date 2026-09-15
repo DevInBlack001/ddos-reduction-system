@@ -6,6 +6,51 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+On branch `v8`, not yet merged or tagged.
+
+### Added
+
+- Confidence gated automatic labeling: `stage2/auto_label.py`, run
+  periodically by `ddos-stage2-auto-label.timer`, auto-labels a captured
+  window into `stage2/auto_labeled_capture.csv` only when the RandomForest
+  and a newly introduced second model (`stage2/train_second_model.py`, a
+  `HistGradientBoostingClassifier`) agree on the class, are both confident,
+  and were both trained after the row was captured. Covers both
+  `anomalous_capture.csv` (Isolation Forest flagged windows) and the new
+  `pretraining_capture.csv` (windows captured before any RandomForest
+  existed on a deployment). Staged rows still require an operator to merge
+  them into `training.csv`, never automatic.
+- `ddos-stage2-retrain.timer`, an opt-in periodic job (`--training-csv` on
+  `install.sh`/`update.sh`, no default) that retrains the RandomForest and
+  second model together, so the freshness safeguard above does not become
+  a permanent block once a model stops changing.
+- `is_row_degenerate()`, refusing to auto-label a zero-traffic window
+  (every one of `entropy`, `proto_ratio`, `dominant_ip_ratio`,
+  `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity`
+  reading exactly `0.0`) regardless of model agreement or confidence.
+  Found on a real VM run: this pattern occurs across all three labels in
+  the training corpus, so agreement on it reflects a shared blind spot,
+  not a real signal.
+- `--auto-label-interval` and `--retrain-interval` flags on
+  `install.sh`/`update.sh`, both operator configurable rather than
+  hardcoded.
+
+### Security
+
+- File locking (`fcntl.flock`) between `ipc_receiver.py`'s live appends
+  and `auto_label.py`'s periodic rewrites of the same capture files,
+  closing a race that could silently drop a written row.
+- Both capture files bounded, by row count (`AUTO_LABEL_MAX_QUEUE_ROWS`)
+  and by file size (`PRETRAINING_MAX_BYTES`), so an unbounded deployment
+  cannot grow either file without limit.
+- `ddos-stage2-auto-label.timer` and `ddos-stage2-retrain.timer` both run
+  at low priority (`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`),
+  so neither can contend with live enforcement during a real flood.
+- `uninstall.sh` now stops, disables, and removes both new timers and
+  their oneshot services.
+
 ## 1.2.0, 2026-08-30
 
 ### Added
