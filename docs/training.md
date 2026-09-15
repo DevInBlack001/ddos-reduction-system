@@ -367,9 +367,10 @@ to catch the absence of traffic-shape signal, not a particular rate.
 The freshness safeguard above means a model that never changes eventually
 blocks auto-labeling permanently: every captured row is older than an
 unretrained model, not younger than it. `--training-csv <path>` on
-`install.sh` or `update.sh` installs a systemd timer that retrains the
-RandomForest and the second model together against the same CSV, on a
-configurable interval (`--retrain-interval`, default `7d`), so their
+`install.sh` or `update.sh` installs a systemd timer that retrains all
+three models, RandomForest, Isolation Forest, and the second model,
+together against the same CSV, on a configurable interval
+(`--retrain-interval`, default `7d`), so the RF and second model's
 mtimes move together and the freshness check has something to clear. No
 default path is guessed: there is no CSV every deployment should
 retrain against, so the timer is only installed when an operator names
@@ -378,6 +379,16 @@ one explicitly. It runs at the same low priority as the labeling timer
 retrain job takes meaningfully longer under that throttling than an
 unthrottled manual run, a deliberate tradeoff so it cannot contend with
 live enforcement during a real flood.
+
+The Isolation Forest is included for a different reason than the
+freshness safeguard: it does not gate on freshness at all, but a model
+whose contamination rate and decision boundary were selected against an
+old capture keeps scoring new live traffic against that stale boundary
+indefinitely otherwise. A live functional test on the sensor VM found
+exactly this: genuinely benign traffic against a months-old Isolation
+Forest read as `Anomalous` on effectively every logged window. Retraining
+it on the same schedule and the same CSV as the other two models keeps
+its boundary current without adding a second operator-facing setting.
 
 ### The Second Model
 

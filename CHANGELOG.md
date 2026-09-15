@@ -23,9 +23,13 @@ On branch `v8`, not yet merged or tagged.
   existed on a deployment). Staged rows still require an operator to merge
   them into `training.csv`, never automatic.
 - `ddos-stage2-retrain.timer`, an opt-in periodic job (`--training-csv` on
-  `install.sh`/`update.sh`, no default) that retrains the RandomForest and
-  second model together, so the freshness safeguard above does not become
-  a permanent block once a model stops changing.
+  `install.sh`/`update.sh`, no default) that retrains all three models,
+  the RandomForest, the Isolation Forest, and the second model, together.
+  The RF and second model retrain so the freshness safeguard above does
+  not become a permanent block once a model stops changing; the
+  Isolation Forest retrains so its contamination boundary does not go
+  stale against live traffic, found live on the sensor VM scoring
+  genuinely benign traffic as `Anomalous` on effectively every window.
 - `is_row_degenerate()`, refusing to auto-label a zero-traffic window
   (every one of `entropy`, `proto_ratio`, `dominant_ip_ratio`,
   `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity`

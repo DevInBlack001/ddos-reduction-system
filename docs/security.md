@@ -178,7 +178,11 @@ never against a guessed or default path. It runs as root under the same
 `Nice`/`CPUWeight`/`IOSchedulingClass` throttling as the labeling timer,
 and its `ExecStart` resolves the given CSV path to an absolute path before
 baking it into the unit, so a relative path typed at install time cannot
-silently break once the working directory changes.
+silently break once the working directory changes. It retrains all three
+models, the RandomForest, the Isolation Forest, and the second model,
+against the same CSV: see [training.md](training.md#periodic-retraining)
+for why the Isolation Forest is included even though it does not depend
+on the freshness safeguard the RF and second model retrain for.
 
 ## Request Handling
 
