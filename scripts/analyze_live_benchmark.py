@@ -126,6 +126,17 @@ def counters_at_or_before(samples, target_ts):
 
 
 def traffic_delta(samples, start_ts, end_ts):
+    # The pcap status line carries running totals, so a phase is the last
+    # sample minus the one before it. The kernel status line resets after
+    # every log, each one is that interval's own count, so a phase is the
+    # sum of the samples inside it.
+    in_phase = [(b, c) for ts, b, c in samples if start_ts <= ts < end_ts]
+    if in_phase and in_phase[0][0] == "kernel":
+        total = {k: 0 for k in in_phase[0][1]}
+        for _, counters in in_phase:
+            for k, v in counters.items():
+                total[k] += v
+        return "kernel", total
     before = counters_at_or_before(samples, start_ts)
     after = counters_at_or_before(samples, end_ts)
     if before is None or after is None or before[0] != after[0]:
