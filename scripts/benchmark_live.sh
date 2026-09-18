@@ -56,8 +56,10 @@ source "$CONFIG"
 : "${PAIR_SECS:=150}"
 : "${ALL_THREE_SECS:=180}"
 : "${OUTPUT_DIR:=./benchmark-live-results}"
+: "${SYSTEM_SAMPLE_INTERVAL_SECS:=5}"
 
 GW_SSH="ssh -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 $GATEWAY_HOST"
+GW_SCP="scp -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 mkdir -p "$OUTPUT_DIR"
 PHASES_FILE="$OUTPUT_DIR/phase_boundaries.tsv"
 : > "$PHASES_FILE"
@@ -122,6 +124,28 @@ stop_attack() {
     if [ -n "${ATTACK_STOP_CMD:-}" ]; then run_remote "$ATTACK_HOST" "$ATTACK_SSH_KEY" "$ATTACK_STOP_CMD"; fi
 }
 
+# --- System-health sampling on the gateway itself: CPU time and memory for
+# both services, polled independently of the traffic phases so a session
+# shows whether the pipeline stayed healthy under load, not only what it
+# classified. Runs the whole session, started before Phase 1 and stopped
+# only once all phases are done. ---
+SAMPLER_LOCAL="$(dirname "$0")/benchmark_system_sampler.sh"
+SAMPLER_REMOTE="/tmp/flod_benchmark_system_sampler.sh"
+SAMPLER_PIDFILE="/tmp/flod_benchmark_system_sampler.pid"
+SAMPLER_OUT_REMOTE="/tmp/flod_benchmark_system_samples.csv"
+start_system_sampling() {
+    if ! $GW_SCP "$SAMPLER_LOCAL" "$GATEWAY_HOST:$SAMPLER_REMOTE" >/dev/null 2>&1; then
+        log "WARNING: could not copy $SAMPLER_LOCAL to the gateway, system-health sampling will be skipped"
+        return
+    fi
+    $GW_SSH "chmod +x $SAMPLER_REMOTE; nohup $SAMPLER_REMOTE $SYSTEM_SAMPLE_INTERVAL_SECS $STAGE1_UNIT $STAGE2_UNIT $SAMPLER_OUT_REMOTE >/tmp/flod_benchmark_sampler.log 2>&1 & echo \$! > $SAMPLER_PIDFILE" >/dev/null 2>&1
+    log "system-health sampler started (interval ${SYSTEM_SAMPLE_INTERVAL_SECS}s)"
+}
+stop_system_sampling() {
+    $GW_SSH "kill \$(cat $SAMPLER_PIDFILE 2>/dev/null) 2>/dev/null; pkill -f '$SAMPLER_REMOTE' 2>/dev/null" >/dev/null 2>&1
+    log "system-health sampler stopped"
+}
+
 # goto_phase <name> <normal 0|1> <flashcrowd 0|1> <attack 0|1>
 # Starts or stops only what changed from the previous phase's active set,
 # then marks the phase boundary.
@@ -146,6 +170,7 @@ goto_phase() {
 log "=== FLOD live benchmark starting ==="
 log "Targets: $TARGET_IPS"
 mark_phase "session_start"
+start_system_sampling
 
 log "--- Phase 1: Normal ---"
 goto_phase "normal" 1 0 0
@@ -204,6 +229,7 @@ log "--- Stopping all traffic ---"
 stop_normal
 stop_flashcrowd
 stop_attack
+stop_system_sampling
 mark_phase "session_end"
 
 SESSION_START=$(awk -F'\t' '$1=="session_start"{print $2}' "$PHASES_FILE")
@@ -212,6 +238,9 @@ log "--- Capturing logs and firewall state ---"
 $GW_SSH "journalctl -u $STAGE1_UNIT --no-pager --since '$SESSION_START'" > "$OUTPUT_DIR/stage1.log" 2>&1
 $GW_SSH "journalctl -u $STAGE2_UNIT --no-pager --since '$SESSION_START'" > "$OUTPUT_DIR/stage2.log" 2>&1
 $GW_SSH "ipset list $BLOCKLIST_SET; echo; ipset list $RATELIMIT_SET" > "$OUTPUT_DIR/firewall.log" 2>&1
+$GW_SSH "cat $SAMPLER_OUT_REMOTE 2>/dev/null" > "$OUTPUT_DIR/system_samples.csv" 2>&1
+$GW_SSH "getconf CLK_TCK" > "$OUTPUT_DIR/clk_tck.txt" 2>&1
+$GW_SSH "rm -f $SAMPLER_REMOTE $SAMPLER_OUT_REMOTE $SAMPLER_PIDFILE /tmp/flod_benchmark_sampler.log" >/dev/null 2>&1
 
 log "=== Session complete. Logs in $OUTPUT_DIR ==="
 log "Running analysis..."

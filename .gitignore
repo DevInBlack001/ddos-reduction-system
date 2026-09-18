@@ -229,3 +229,9 @@ scratch/
 # scripts/benchmark_live.sh's default output directory: per-run logs and
 # a generated report, not project history.
 benchmark-live-results/
+
+# Real scripts/benchmark_live.sh configs, filled in from the example with
+# actual lab host addresses and private key paths. Never the shared remote.
+scripts/benchmark_live.env
+scripts/*.env
+!scripts/benchmark_live.example.env
