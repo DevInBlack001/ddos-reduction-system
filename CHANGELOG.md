@@ -6,6 +6,18 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Added
+
+- Confidence gated automatic labeling now has a real path to new DDoS
+  training examples. A window the RandomForest already confidently
+  calls DDoS is captured to a new `stage2/ddos_capture.csv`, and
+  `auto_label.py` re-scores it exactly like the other two capture
+  files, same dual-model agreement, same confidence threshold, same
+  freshness check. Previously the pipeline only ever grew the Normal
+  and Flash Crowd share of the training corpus.
+
 ## 1.4.1, 2026-09-18
 
 ### Fixed

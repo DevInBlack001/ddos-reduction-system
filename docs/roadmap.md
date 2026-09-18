@@ -481,30 +481,37 @@ avoiding an unpaced flood mode in favour of short, randomised bursts.
 Confirmed on a real recapture, real `sigma_r` variation across every label
 rather than a value pinned at the floor. See [training.md](training.md).
 
-**Confidence gated automatic labeling only ever grows Normal and Flash
-Crowd, never DDoS, and repeated runs make that worse than a raw count
-imbalance.** `ipc_receiver.py` only consults the Isolation Forest, and
-therefore only ever writes to `anomalous_capture.csv`, when the
-RandomForest already called a window Normal or Flash Crowd
-(`pred_class in (0, 1)`); a window it calls DDoS never reaches that
-check. `pretraining_capture.csv`, the other file `auto_label.py`
-processes, only captures before any RandomForest exists on a
-deployment, a one time condition already closed on this one. DDoS's
-only path into the training corpus is a deliberate, manually captured
-and merged attack campaign.
+**Confidence gated automatic labeling used to only grow Normal and
+Flash Crowd, never DDoS.** `ipc_receiver.py` only ever consulted the
+Isolation Forest, and therefore only ever wrote to
+`anomalous_capture.csv`, when the RandomForest already called a window
+Normal or Flash Crowd (`pred_class in (0, 1)`); a window it called
+DDoS never reached that check. `pretraining_capture.csv`, the other
+file `auto_label.py` processes, only captures before any RandomForest
+exists on a deployment, a one time condition already closed on this
+one. Confirmed 2026-09-18 against a real run before the fix: 338 rows
+auto-labeled from `anomalous_capture_vm.csv`, 477 Normal and 1,584
+Flash Crowd cumulative in the staging file, zero DDoS, exactly as the
+mechanism predicted.
 
-This compounds at training time, not just at capture time.
+It compounded at training time too, not just at capture time.
 `train.py`'s `balance_classes()` upsamples every class with
-replacement to match whichever class is currently largest. As Normal
-and Flash Crowd keep growing from real auto-labeling runs, DDoS's
-non-growing pool gets duplicated further each retrain to keep pace,
-balanced in row count, increasingly stale in diversity. Confirmed
-2026-09-18 against a real run: 338 rows auto-labeled from
-`anomalous_capture_vm.csv`, 477 Normal and 1,584 Flash Crowd cumulative
-in the staging file, zero DDoS, exactly as the mechanism above
-predicts. Not fixed. Needs a decision (a cap on the upsampling ratio,
-a periodic reminder to run a real DDoS capture campaign, or something
-else) before this pipeline runs unattended for long enough to matter.
+replacement to match whichever class is currently largest, so as
+Normal and Flash Crowd kept growing from real auto-labeling runs,
+DDoS's non-growing pool would have been duplicated further each
+retrain just to keep pace, balanced in row count, increasingly stale
+in diversity.
+
+Fixed the same day: a third capture path,
+`config.DDOS_CAPTURE_CSV_PATH`, writes a window whenever the
+RandomForest confidently calls it DDoS, same 13 base columns as the
+other two capture files, no Isolation Forest verdict to carry along
+since DDoS never reaches that check. `auto_label.py` re-scores it the
+same way as the other two: same dual-model agreement, same confidence
+threshold, same freshness check, nothing about the safety gate
+weakened. DDoS now has a real, automated path into the training
+corpus, gated exactly as carefully as Normal and Flash Crowd already
+were. See [training.md](training.md#confidence-gated-automatic-labeling).
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

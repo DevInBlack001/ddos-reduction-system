@@ -310,7 +310,7 @@ def main():
             second_clf = None
 
     total_labeled = 0
-    for path in (config.PRETRAINING_CSV_PATH, config.ANOMALOUS_CSV_PATH):
+    for path in (config.PRETRAINING_CSV_PATH, config.ANOMALOUS_CSV_PATH, config.DDOS_CAPTURE_CSV_PATH):
         try:
             if clf is not None and second_clf is not None:
                 # Both models present: score and label.

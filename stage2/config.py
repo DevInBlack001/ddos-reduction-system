@@ -89,6 +89,15 @@ ANOMALOUS_CSV_PATH = os.environ.get("ANOMALOUS_CSV_PATH", os.path.join(_STATE_DI
 # once a model exists to score it. See docs/specs/2026-09-13-confidence-
 # gated-labeling-design.md.
 PRETRAINING_CSV_PATH = os.environ.get("PRETRAINING_CSV_PATH", os.path.join(_STATE_DIR, "pretraining_capture.csv"))
+# Windows the RandomForest already confidently calls DDoS. The Isolation
+# Forest is never consulted for these (see the pred_class in (0, 1) check
+# around ANOMALOUS_CSV_PATH's own write site), so without this path DDoS
+# never had any way into confidence gated automatic labeling, the training
+# corpus only ever grew Normal and Flash Crowd. auto_label.py re-scores
+# these the same way, same agreement, confidence, and freshness checks,
+# before any of it reaches training data. See docs/roadmap.md#known-gaps
+# for the full reasoning this closes.
+DDOS_CAPTURE_CSV_PATH = os.environ.get("DDOS_CAPTURE_CSV_PATH", os.path.join(_STATE_DIR, "ddos_capture.csv"))
 # Rows auto_label.py has confidently labeled, staged here rather than
 # written into training_data.csv directly: nothing enters the
 # authoritative training set without a deliberate, recorded merge, the

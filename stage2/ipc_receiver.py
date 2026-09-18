@@ -97,6 +97,17 @@ PRETRAINING_CSV_HEADER = [
     "fingerprint_diversity", "timestamp", "label",
 ]
 
+# Windows the RandomForest already confidently calls DDoS, so confidence
+# gated automatic labeling has a real path to new DDoS examples too, not
+# only Normal and Flash Crowd. Same 13 base columns, no context columns:
+# there is no Isolation Forest verdict to carry along here, DDoS is never
+# checked against it. See docs/roadmap.md#known-gaps.
+DDOS_CAPTURE_CSV_HEADER = [
+    "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+    "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
+    "fingerprint_diversity", "timestamp", "label",
+]
+
 
 def _append_csv_row(path, header, row):
     """Append one row to a capture CSV, writing the header first if the
@@ -172,6 +183,17 @@ def _write_pretraining_row(**feature_values):
     to config.PRETRAINING_CSV_PATH for auto_label.py to score once a model
     exists. label is left blank, same reasoning as _write_anomalous_row."""
     _append_csv_row(config.PRETRAINING_CSV_PATH, PRETRAINING_CSV_HEADER, _base_feature_row(feature_values))
+
+
+def _write_ddos_capture_row(**feature_values):
+    """Append one confidently classified DDoS window to
+    config.DDOS_CAPTURE_CSV_PATH for auto_label.py to re-score. label is
+    left blank, same reasoning as _write_anomalous_row and
+    _write_pretraining_row: nothing here decides what this traffic is on
+    its own, only that the deployed classifier currently reads it as
+    DDoS, which a fresher pair of models still has to independently
+    confirm before it becomes training data."""
+    _append_csv_row(config.DDOS_CAPTURE_CSV_PATH, DDOS_CAPTURE_CSV_HEADER, _base_feature_row(feature_values))
 
 
 def _should_capture_pretraining_row(clf, is_warmup):
@@ -474,6 +496,23 @@ def run_ipc_receiver():
                             ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
                             timestamp=timestamp,
                         )
+
+                # Confidence gated automatic labeling's only path to new DDoS
+                # examples: the RandomForest already confidently calling this
+                # window DDoS is a real, current signal worth capturing for a
+                # fresher pair of models to independently re-confirm later,
+                # the same safety bar every other automatically labeled row
+                # clears. Unlike the Anomalous check above, this needs no
+                # Isolation Forest opinion, the RF's own verdict is already
+                # the thing being captured.
+                if not is_warmup and pred_class == 2:
+                    _write_ddos_capture_row(
+                        entropy=entropy, ewma_rate=ewma_rate, mean_h=mean_h, mean_r=mean_r,
+                        sigma_h=sigma_h, sigma_r=sigma_r, proto_ratio=proto_ratio,
+                        dominant_ip_ratio=dominant_ip_ratio, source_port_entropy=source_port_entropy,
+                        ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
+                        timestamp=timestamp,
+                    )
 
                 # Alert on DDoS classification transitions only (not every
                 # window a victim stays classified DDoS, and not on

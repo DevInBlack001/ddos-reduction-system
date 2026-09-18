@@ -182,7 +182,8 @@ rm -f "$STAGE2_DIR/stage2.db" "$STAGE2_DIR/whitelist.json" "$STAGE2_DIR/victims.
       "$STAGE2_DIR/alerts_config.json" "$STAGE2_DIR/stage2.log" \
       "$STAGE2_DIR/anomalous_capture.csv" "$STAGE2_DIR/ddos_rf_model.joblib" \
       "$STAGE2_DIR/ddos_if_model.joblib" "$STAGE2_DIR/pretraining_capture.csv" \
-      "$STAGE2_DIR/auto_labeled_capture.csv" "$STAGE2_DIR/ddos_gb_model.joblib"
+      "$STAGE2_DIR/auto_labeled_capture.csv" "$STAGE2_DIR/ddos_gb_model.joblib" \
+      "$STAGE2_DIR/ddos_capture.csv"
 rm -rf "/run/ddos_stage1"
 success "Database and configurations removed."
 

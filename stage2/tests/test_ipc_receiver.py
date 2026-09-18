@@ -186,6 +186,46 @@ class WritePretrainingRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)  # header + two data rows
 
 
+class WriteDdosCaptureRowTests(unittest.TestCase):
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)  # start from "file does not exist"
+        self.original_path = config.DDOS_CAPTURE_CSV_PATH
+        config.DDOS_CAPTURE_CSV_PATH = self.path
+
+    def tearDown(self):
+        config.DDOS_CAPTURE_CSV_PATH = self.original_path
+        unlink(self.path)
+
+    def _rows(self):
+        with open(self.path) as handle:
+            return list(csv.reader(handle))
+
+    def test_creates_the_file_on_the_first_confident_ddos_window(self):
+        ipc_receiver._write_ddos_capture_row(**FEATURES)
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_the_thirteen_columns_match_trainingcsvs_own_order(self):
+        ipc_receiver._write_ddos_capture_row(**FEATURES)
+        header = self._rows()[0]
+        self.assertEqual(header, [
+            "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
+            "proto_ratio", "dominant_ip_ratio", "source_port_entropy",
+            "ttl_variance", "fingerprint_diversity", "timestamp", "label",
+        ])
+
+    def test_the_label_column_is_left_blank(self):
+        ipc_receiver._write_ddos_capture_row(**FEATURES)
+        row = self._rows()[1]
+        self.assertEqual(row[12], "")
+
+    def test_a_second_confident_ddos_window_appends_rather_than_overwriting(self):
+        ipc_receiver._write_ddos_capture_row(**FEATURES)
+        ipc_receiver._write_ddos_capture_row(**FEATURES)
+        rows = self._rows()
+        self.assertEqual(len(rows), 3)  # header + two data rows
+
+
 class ShouldCapturePretrainingRowTests(unittest.TestCase):
     def test_true_when_no_random_forest_model_is_loaded_and_not_warming_up(self):
         self.assertTrue(ipc_receiver._should_capture_pretraining_row(clf=None, is_warmup=False))
@@ -200,11 +240,17 @@ class ShouldCapturePretrainingRowTests(unittest.TestCase):
 class SharedCsvAppendHelperTests(unittest.TestCase):
     """The refactor must not change _write_anomalous_row's own behaviour;
     WriteAnomalousRowTests above already pins its output format, this
-    class only pins that the two writers now share one low-level append
-    so a future third capture point does not need a third copy of it."""
+    class only pins that all three writers now share one low-level append,
+    including the DDoS capture point added to close confidence gated
+    automatic labeling's DDoS gap, so a fourth capture point still would
+    not need its own copy of it."""
 
     def test_write_anomalous_row_and_write_pretraining_row_share_the_append_helper(self):
         self.assertIs(ipc_receiver._write_anomalous_row.__globals__["_append_csv_row"],
+                       ipc_receiver._write_pretraining_row.__globals__["_append_csv_row"])
+
+    def test_write_ddos_capture_row_shares_the_same_append_helper_too(self):
+        self.assertIs(ipc_receiver._write_ddos_capture_row.__globals__["_append_csv_row"],
                        ipc_receiver._write_pretraining_row.__globals__["_append_csv_row"])
 
 

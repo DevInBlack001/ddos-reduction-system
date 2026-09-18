@@ -309,31 +309,35 @@ call them the same thing a person would. This automates the easy majority
 of that review while leaving the same manual path above for whatever it
 cannot confidently resolve.
 
-Two capture files feed it. `stage2/pretraining_capture.csv` holds windows
-captured before any RandomForest model existed at all, the cold-start
-case: no model ran at capture time, so there is no verdict to reconsider,
-only the thirteen base feature columns. `stage2/anomalous_capture.csv` is
-the same file [Reviewing Anomalous Traffic](#reviewing-anomalous-traffic)
+Three capture files feed it. `stage2/pretraining_capture.csv` holds
+windows captured before any RandomForest model existed at all, the
+cold-start case: no model ran at capture time, so there is no verdict to
+reconsider, only the thirteen base feature columns. `stage2/anomalous_capture.csv`
+is the same file [Reviewing Anomalous Traffic](#reviewing-anomalous-traffic)
 above describes, reused here rather than duplicated, with its three
 context columns (`victim_ip`, `if_score`, `rf_verdict`) carried along but
-never written into the staged output.
+never written into the staged output. `stage2/ddos_capture.csv` holds
+windows the RandomForest already confidently calls DDoS, the same
+thirteen base columns as `pretraining_capture.csv`, no context columns
+since there is no Isolation Forest verdict attached to a DDoS window.
 
 `auto_label.py` runs periodically, via the `ddos-stage2-auto-label.timer`
 systemd timer rather than as a thread inside the long running Stage 2
 service, so a stuck or slow run cannot affect classification or
-enforcement. On each run it re-scores every eligible row in both files
-against the RandomForest and a second, independently trained model (see
-[The Second Model](#the-second-model) below), and stages a row into
+enforcement. On each run it re-scores every eligible row in all three
+files against the RandomForest and a second, independently trained model
+(see [The Second Model](#the-second-model) below), and stages a row into
 `stage2/auto_labeled_capture.csv` only when:
 
 - Both models pick the same class.
 - Both are confident in it, at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD`.
 - Both were trained after the row was captured.
 
-Both capture files are bounded to prevent unbounded growth: by row count via
-`AUTO_LABEL_MAX_QUEUE_ROWS` when `auto_label.py` trims them on each run, and
-by total file size via `PRETRAINING_MAX_BYTES` at write time in
-`ipc_receiver.py`, so the files stay within operator configured limits.
+All three capture files are bounded to prevent unbounded growth: by row
+count via `AUTO_LABEL_MAX_QUEUE_ROWS` when `auto_label.py` trims them on
+each run, and by total file size via `PRETRAINING_MAX_BYTES` at write
+time in `ipc_receiver.py`, so the files stay within operator configured
+limits.
 
 The freshness check is the core safeguard, not a secondary one. Re-scoring
 a row with the same model that already has a blind spot for it, or with a
@@ -353,20 +357,21 @@ Label](#more-than-one-session-per-label): staged rows are not
 automatically part of the training set, an operator still decides when to
 fold them in.
 
-**This pipeline never auto-labels DDoS.** `anomalous_capture.csv` is only
-ever written when the Isolation Forest is consulted, which only happens
-when the RandomForest already called the window Normal or Flash Crowd; a
-window it calls DDoS never reaches that check. `pretraining_capture.csv`
-only fills before any RandomForest exists on a deployment, closed for
-good once one has been trained. Repeated runs of this pipeline grow the
-Normal and Flash Crowd share of the training corpus, never the DDoS
-share, and since [Training](#training)'s `balance_classes()` upsamples
-every class to match whichever is currently largest, DDoS's contribution
-to each retrain becomes an increasingly duplicated copy of the same
-non-growing pool rather than staying genuinely diverse. See
-[roadmap.md](roadmap.md#known-gaps) for the full reasoning. Not
-addressed by anything in this file: DDoS training data still needs a
-deliberate, manually captured and merged attack campaign to keep pace.
+**A third file, `stage2/ddos_capture.csv`, is how DDoS gets in.**
+`anomalous_capture.csv` is only ever written when the Isolation Forest
+is consulted, which only happens when the RandomForest already called
+the window Normal or Flash Crowd; a window it calls DDoS never reaches
+that check, and `pretraining_capture.csv` only fills before any
+RandomForest exists on a deployment, closed for good once one has been
+trained. Neither ever carried a DDoS row. `ddos_capture.csv` closes
+that gap directly: `ipc_receiver.py` writes a window here whenever the
+RandomForest confidently calls it DDoS, the same 13 base columns as
+the other two files, no Isolation Forest context column since DDoS
+never reaches that check. `auto_label.py` processes it exactly like
+the other two, same dual-model agreement, same confidence threshold,
+same freshness check, before any of it reaches `training.csv`. See
+[roadmap.md](roadmap.md#known-gaps) for the full history of the gap
+this closed.
 
 ### Reviewing From the Dashboard
 
