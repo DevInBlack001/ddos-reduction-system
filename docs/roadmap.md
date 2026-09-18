@@ -41,10 +41,8 @@ the sigma floors from the sensor's own window log rather than leaving an
 operator to read journal excerpts by hand, and every value it can set is a
 flag with a documented default rather than a constant.
 
-## Planned
-
-**V7, evasion resistant features and a second model.** On branch `v7`, code
-complete, not yet merged or tagged. Two parts.
+**V7, evasion resistant features and a second model.** Shipped as
+`1.2.0`. Two parts.
 
 Part one adds source port entropy, TTL variance, and TCP fingerprint
 diversity as features. Those three are invariant under source address
@@ -91,15 +89,6 @@ variation confirmed across every label, RandomForest LOSO accuracy
 [Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
 recapture made possible.
 
-V8 through V12 below are ordered by difficulty rather than by any priority
-between them, easiest first, so the milestone number is a build-order
-estimate, not a ranking of importance. Kernel level work has consistently
-been the most expensive part of this project to get right (the eBPF
-milestone's own "compiled, passed its own tests, and did nothing" episode,
-recorded elsewhere in this project's notes, is the cautionary example),
-which is why the firewall backend work below sits behind the playbook work
-despite being smaller in surface area.
-
 **V8, confidence gated automatic labeling.** Passively collected network
 logs, including Isolation Forest output and traffic captured before any
 model has been trained on this deployment, are labeled automatically after
@@ -123,7 +112,7 @@ large volume of traffic that is not ambiguous.
 
 Self contained inside Stage 2: no new kernel level code and no new protocol,
 built directly on models and a review queue that already exist. The easiest
-of the five below for exactly that reason.
+of the milestones that followed V7 for exactly that reason.
 
 Shipped as `1.3.0`. "Confident" turned
 out to need a second model rather than a threshold on the RandomForest's own
@@ -185,6 +174,23 @@ time, memory, and packet throughput for both services over a session,
 not only detection outcomes. See [Live Benchmark:
 v1.3.0](benchmark-live-v1.3.0.md#system-health-recording-first-real-world-run)
 for the first real run's results.
+
+`1.4.1` made the depth and leaf node sweeps prefer the simplest candidate
+within a tolerance of the best accuracy. `1.5.0` added `ddos_capture.csv`, a
+third capture file, so automatic labeling can stage DDoS rows. `1.6.0` added
+paging to the Auto Label review page, so a staged queue larger than 500 rows
+can be reviewed in full.
+
+## Planned
+
+V9 through V12 below are ordered by difficulty rather than by any priority
+between them, easiest first, so the milestone number is a build-order
+estimate, not a ranking of importance. Kernel level work has consistently
+been the most expensive part of this project to get right (the eBPF
+milestone's own "compiled, passed its own tests, and did nothing" episode,
+recorded elsewhere in this project's notes, is the cautionary example),
+which is why the firewall backend work below sits behind the playbook work
+despite being smaller in surface area.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window
@@ -333,6 +339,15 @@ changes both capture backends and the wire format a second time since V7,
 real kernel and verifier risk on top of an already ordered set of
 milestones, and is a new addition to the roadmap rather than a reordering
 of what it already said.
+
+**Dashboard redesign.** No milestone number yet. The console is functional
+and plain: static styling, no motion, and nothing that gives a first time
+visitor a reason to keep looking. That limits how many people will try the
+project, however well the detection works. A visual redesign is planned,
+covering the layout, typography and color, the charts, and motion where it
+helps someone read the state of the gateway. Not designed yet, and
+deliberately after the detection and training work in flight settles, so the
+redesign covers pages that have stopped changing.
 
 ## Relative Sigma Floors
 
@@ -512,6 +527,39 @@ threshold, same freshness check, nothing about the safety gate
 weakened. DDoS now has a real, automated path into the training
 corpus, gated exactly as carefully as Normal and Flash Crowd already
 were. See [training.md](training.md#confidence-gated-automatic-labeling).
+
+**The training corpus and the deployed sigma floors are captured under
+different tuning.** The canonical corpus has `sigma_h` near 0.05 to 0.08 and
+`sigma_r` pinned at 50.0 in 57% of rows. A gateway running recalibrated
+floors writes `sigma_h` 0.4944, later 0.2263 and about 0.08, and a different
+`sigma_r` range. The Random Forest ignores both columns, the Isolation Forest
+does not: measured 2026-09-18, it flags 100% of the gateway's Normal and
+Flash Crowd rows as outliers, and 27.3% and 0.0% with only those two
+columns swapped into the corpus's range. This accounts for most of the
+Isolation Forest labeling nearly every live window `Anomalous`. Fixing it
+takes a recapture of all three labels under the floors that will be deployed,
+or training the Isolation Forest on rows from the deployed regime. Until
+then, do not merge gateway captures into the older corpus. See
+[training.md](training.md#capture-under-the-tuning-you-deploy).
+
+**The confidence gate depends on tree depth.** The depth sweep picks depth 3
+(tied with 4 and 5 at 0.997). At depth 3 the Random Forest's probability on
+live DDoS windows tops out near 0.86, so a 0.90 gate accepts 2.7% to 26% of
+them depending on which rows a run sees, and 71% of the rejected rows sit
+between 0.85 and 0.90. At depth 4 the same rows clear 0.90 93% of the time
+with the same accuracy. The gate at depth 3 is close to arbitrary, and at
+depth 4 it passes nearly everything the two models agree on. The independent
+check is the second model. Open: choose a depth rule, or a threshold, that
+makes the gate mean something. See
+[training.md](training.md#confidence-and-tree-depth).
+
+**Benchmark sessions must not change the sensor.** Three reruns on 2026-09-18
+recalibrated the floors during their own first phase, restarted `ddos-stage1`
+several times, and had NetworkManager restarted every two minutes on the
+gateway. Escalation went from 0 to 2% to 36 to 73%, and those changes are
+enough to explain it, so the runs cannot be compared. Set the floors, restart
+once, warm up, then run. The repeated NetworkManager restarts hint that
+capture stalls, which has not been investigated.
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

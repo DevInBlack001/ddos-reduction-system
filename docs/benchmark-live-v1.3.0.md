@@ -37,6 +37,13 @@ UTC, roughly 34 minutes, warm-up included.
 
 Firewall state at close: 0 blocked, 198 rate-limited.
 
+The Normal + Flash Crowd row follows the Attacker phase directly. Runs on
+2026-09-18 showed that verdicts logged in the first second or two of a phase
+that follows an attack come from the previous generator still stopping, not
+from the traffic the phase is meant to test. Some of this row's 33 verdicts
+may be of that kind. The original logs were not kept, so it cannot be
+checked.
+
 The Attacker phase's 5.2% figure counts only hysteresis gated "Class-2
 window" log lines, a narrower metric than actual enforcement volume.
 2,459 real rate-limit actions fired in that phase; most mitigation on a
@@ -46,15 +53,26 @@ before the hysteresis threshold is ever reached.
 ## The Isolation Forest's "Anomalous" label
 
 The Isolation Forest labeled nearly every Normal and Flash Crowd window
-`Anomalous` in its own log, even freshly retrained the same day. That is
-correct, intentional operation, not a defect: its whole purpose is
-flagging traffic unlike anything in its training data, and this lab
-network's live traffic profile genuinely differs from a captured
-session. The label never drives enforcement on its own; the zero
-enforcement actions during Normal and Flash Crowd above confirm that
-directly. The blocking decision belongs entirely to the RandomForest,
-whose 0% false positive rate on real Flash Crowd traffic is the number
-that matters.
+`Anomalous` in its own log, even freshly retrained the same day. An earlier
+version of this section called that correct operation, on the reasoning that
+the lab's live traffic profile differs from a captured session. A check on
+2026-09-18 points to a tuning mismatch as the main cause.
+
+The training corpus was captured under the old sigma floors (`sigma_h`
+around 0.05 to 0.08, `sigma_r` pinned at 50.0 in 57% of rows). The gateway
+runs recalibrated floors, so its rows carry `sigma_h` 0.4944 and a different
+`sigma_r` range. The Random Forest barely uses those two columns (importance
+0.0015 and 0.0020). The Isolation Forest fits on all of them. Scored against
+3,000 auto-labeled Normal rows from the gateway, it flags 100% as outliers
+as they stand and 27.3% once only `sigma_h` and `sigma_r` are swapped into
+the corpus's range. For Flash Crowd rows the figures are 100% and 0.0%.
+
+The label never drives enforcement on its own, and the zero enforcement
+actions during Normal and Flash Crowd above confirm that directly. The
+blocking decision belongs to the RandomForest, whose 0% false positive rate
+on real Flash Crowd traffic is the number that matters. The corpus and the
+deployed floors need to be captured under the same tuning for `Anomalous` to
+mean what it says. See [Training](training.md#capture-under-the-tuning-you-deploy).
 
 This is exactly the situation confidence gated automatic labeling
 (`stage2/auto_label.py`, this release's own milestone) exists to resolve
@@ -162,7 +180,11 @@ run, and real packet throughput and drop counts parsed from the
 capture backend's own existing periodic log line. A run against the
 gateway on 2026-09-18 confirms the tooling itself works correctly
 against a real deployment, not just the synthetic test it was built
-against.
+against. The packet counts for the kernel backend were wrong at first: the
+kernel status line resets its counters every interval, so each line is that
+interval's own count, and the analysis read it as a running total. Fixed
+after the 1.5.0 reruns by summing the samples inside a phase, and checked
+against an independent sum of the raw log.
 
 **Confirmed from the raw session output**, independently reproducible
 with `python3 scripts/analyze_live_benchmark.py <output-dir>`:
@@ -189,3 +211,40 @@ cannot be reconstructed from this session's artifacts. The totals above
 are real; which phase produced which verdict is not known for most of
 this run. A clean rerun with working phase attribution is planned
 before this run's numbers are treated as a detection-accuracy result.
+
+## Reruns on 2026-09-18
+
+Four more full campaigns ran the same day. Only one has intact files to check
+against (17:10 to 17:28 UTC, "run 4"), and the first rerun (14:14 to 14:32,
+"run 1") was checked before its files were overwritten.
+
+| Phase | Run 1 flags / verdicts | Run 4 flags / verdicts |
+|---|---:|---:|
+| Normal | 0 / 0 | 0 / 0 |
+| Flash Crowd | 0 / 0 | 0 / 0 |
+| Attacker | 1,689 / 28 | 1,670 / 600 |
+| Normal + Flash Crowd | 296 / 0 | 52 / 0 |
+| Normal + Attacker | 1,444 / 32 | 1,432 / 560 |
+| Flash Crowd + Attacker | 1,428 / 0 | 1,375 / 1,003 |
+| All three | 1,715 / 2 | 1,667 / 1,199 |
+
+Every phase without an attacker has no real false positive verdict in either
+run. The 7 verdict lines in run 4's Normal + Flash Crowd phase are stamped in
+its first 1.2 seconds, the attacker generator stopping.
+
+**The two runs cannot be compared for escalation.** Run 1 changed nothing
+during the session. Each later run recalibrated the sigma floors during its
+own first phase from about 35 windows (rate floor 29.4, then 2.9, then 3.2,
+against about 6,200 windows per target in the calibration behind the original
+7.8), restarted `ddos-stage1` several times, and had NetworkManager restarted
+on the gateway every two minutes. Run 4's journal shows five clean
+`ddos-stage1` restarts, two of them inside the attacker phase. Escalation
+rose from 0 to 2% in run 1 to 36 to 73% in run 4, and the tuning changes and
+restarts are enough to account for that without any change in detection
+quality. A benchmark that shows a real difference needs the sigma floors set
+before the session starts and left alone until it ends.
+
+Total kernel ingress per run varied from 1.8 million to 5.6 million packets
+across the reruns. Restarting NetworkManager to keep packets flowing suggests
+capture stalled at times, the silent failure described above for `tc`
+changes. That has not been investigated.

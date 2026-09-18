@@ -28,7 +28,7 @@ cd stage1
 cargo test
 ```
 
-68 tests across the online variance accumulator, the smoothed rate, entropy,
+75 tests across the online variance accumulator, the smoothed rate, entropy,
 IPC serialisation, baseline persistence, victim target and exclusion
 matching, the kernel backend's address
 handling, and the analysis loop.
@@ -55,8 +55,9 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-240 tests across storage, configuration, request models, the database schema,
-the audit writers, enforcement, authentication, the Anomalous review CSV,
+315 tests across storage, configuration, request models, the database schema,
+the audit writers, enforcement, authentication, the three capture CSV writers
+(Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
 the deterministic safety overrides, and IPC peer verification.
 
 Written against the standard library's `unittest`. Keep it that way: the suite

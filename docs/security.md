@@ -153,8 +153,8 @@ under `ddos-stage2-auto-label.timer`, root, once an hour by default, rather
 than as a thread inside the long running Stage 2 process or anything
 network facing. It reads and rewrites the same root owned capture files
 under `FLOD_STATE_DIR` that Stage 2 itself already owns
-(`pretraining_capture.csv`, `anomalous_capture.csv`, and the staged
-`auto_labeled_capture.csv`), through the same atomic rewrite as every
+(`pretraining_capture.csv`, `anomalous_capture.csv`, `ddos_capture.csv`,
+and the staged `auto_labeled_capture.csv`), through the same atomic rewrite as every
 other JSON config write in this section (`storage._atomic_write`, a temp
 file in the same directory then an atomic rename). It opens no new
 network surface and accepts no external input of its own; the only data
@@ -191,7 +191,10 @@ route uses, no separate check needed.** Both reuse `auto_label.py`'s own
 rewrite every other capture-file write in this project already goes
 through, rather than a new, separately-reviewed write path. Merge is
 refused outright, at the API layer, while `TRAINING_CSV_PATH` is unset;
-nothing ever writes to a guessed location.
+nothing ever writes to a guessed location. The review endpoint that feeds
+the page returns at most 500 rows per request (`offset` and `limit`, the
+limit capped and a negative offset refused), so the size of a staged queue
+does not set the size of a response.
 
 ## Request Handling
 

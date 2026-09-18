@@ -168,6 +168,13 @@ anything in the training distribution. It does not drive enforcement; see
 combine and [training.md](training.md#the-isolation-forest) for how it is
 trained.
 
+The Isolation Forest fits on every feature column, including the sensor's own
+learned standard deviations (`sigma_h` and `sigma_r`). Trained on a corpus
+captured under different sigma floors than the ones deployed, it flags most
+live windows as outliers because those two columns sit outside anything it
+saw. Capture under the tuning you will deploy; see
+[training.md](training.md#capture-under-the-tuning-you-deploy).
+
 ## The Anomaly Boundary
 
 **Files:** `stage1/src/welford.rs`, `analysis.rs`, `state.rs`

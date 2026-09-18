@@ -175,7 +175,17 @@ Write a subject line that says what changed, then a body explaining why if the
 reason is not obvious. Reference an issue number when one exists.
 
 Do not use em dashes or double hyphens as punctuation anywhere in commits,
-comments, or documentation.
+comments, or documentation. Leave attribution trailers such as
+`Co-Authored-By` off commits unless a maintainer asks for one.
+
+### Versions and releases
+
+`version.json` at the repository root is the one place the version number
+lives, plus the git tag. A fix is a patch bump and a new feature is a minor
+bump, even a small one. Release titles read `v<version>: <short description>`,
+with the description in sentence case, for example
+`v1.3.0: Confidence gated automatic labeling`. Maintainers cut releases, so a
+pull request does not need to bump the version.
 
 ## Submitting a Change
 

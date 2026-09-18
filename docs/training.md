@@ -471,3 +471,78 @@ or `-w all` to train the RandomForest, Isolation Forest, and second model
 together. Like the other two models, `scripts/train.sh` detects a
 production install and writes to `/var/lib/flod` with `sudo` in that
 case, the checkout otherwise, per [Training](#training) above.
+
+## Capture Under the Tuning You Deploy
+
+The classifier and the Isolation Forest are trained on feature rows, and two
+of those columns, `sigma_h` and `sigma_r`, are not measurements of traffic.
+They are the sensor's learned standard deviations, clamped between the
+configured sigma floors and ceilings. A corpus captured under one set of
+floors and a sensor running another hold the same traffic at different
+values in those two columns.
+
+The Random Forest and the second model barely use them (importance 0.0015 and
+0.0020 for `sigma_h` and `sigma_r` in the Random Forest). The Isolation Forest
+fits on every column, so it is affected. Measured on 2026-09-18: the
+canonical corpus was captured with `sigma_h` near 0.05 to 0.08 and `sigma_r`
+pinned at 50.0 in 57% of rows, and rows from a gateway running recalibrated
+floors carry `sigma_h` 0.4944. An Isolation Forest trained on the corpus
+flagged 100% of those gateway rows as outliers. With only those two columns
+swapped into the corpus's range, it flagged 27.3% of the Normal rows and 0.0%
+of the Flash Crowd rows.
+
+Practical rules:
+
+- Run `scripts/calibrate.py` first, apply the floors, and leave them alone
+  for the whole capture. Calibrating again mid-session splits the file into
+  regimes.
+- Rows captured on a deployed gateway (`ddos_capture.csv`,
+  `anomalous_capture.csv`, the auto-labeled file) are in the deployed
+  regime. Do not pool them with an older corpus without checking the two
+  columns first: `sigma_h` and `sigma_r` per label, distinct values, and
+  the share sitting exactly on a floor.
+- A sensor restart re-runs warm-up for every target, and baselines restore
+  from disk. Restarting during a capture mixes warm-up rows and restored
+  baselines into one session.
+
+## Confidence and Tree Depth
+
+`auto_label.py` accepts a row only when both models pick the same class with
+probability at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD` (default 0.90). A
+Random Forest's probability is the average of its trees' leaf purities, so
+its ceiling depends on tree depth. The depth sweep above picks the simplest
+depth within `ACCURACY_TOLERANCE` of the best accuracy, which on the current
+corpus is depth 3, tied with depths 4 and 5 at 0.997.
+
+On live DDoS windows from the gateway, the depth 3 forest tops out near 0.86
+and calls every one of them DDoS. Refitting on the same data at depth 4 puts
+93% of the same rows at or above 0.90, with the same 100% called DDoS and the
+same leave one session out accuracy. At depth 3 the 0.90 gate sorts rows by
+which coarse leaf they land in. In the 2026-09-18 runs it accepted 445 of
+16,585 DDoS rows in one pass and 6,788 of 26,317 in another, and 71% of the
+rejected rows sat between 0.85 and 0.90. Lowering the threshold to 0.85
+would have accepted 20,642.
+
+Neither depth turns the confidence gate into a quality filter. The check that
+adds independent information is the second model, a different algorithm, and
+the freshness rule below.
+
+The freshness rule compares file modification times: a row is eligible only
+if both models were saved after it was captured. Retraining on unchanged data
+saves new files with functionally identical models, so passing the rule shows
+only that the models were re-saved.
+
+## Where Merge Writes
+
+The dashboard's Merge appends into `TRAINING_CSV_PATH`, and the periodic
+retrain job trains on the same file. `install.sh` and `update.sh` set both
+from one `--training-csv` flag, so a merge lands in the data the next retrain
+reads. Point the flag at a file you are prepared to grow, and keep any reference
+dataset elsewhere.
+
+`update.sh` regenerates the `ddos-stage2` unit on every run and writes
+`TRAINING_CSV_PATH` only when the flag is given. Running it without the flag
+removes the setting, and the dashboard then reports "No training CSV is
+configured" and disables Merge. That is the intended behavior for an
+unset path, and it also happens by accident after a plain `update.sh`.
+

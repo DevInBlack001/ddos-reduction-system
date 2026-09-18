@@ -2,8 +2,8 @@
 
 A record of real bugs found during development, kept because most of them
 generalize past this specific project. Grouped by shape, not by date. Every
-entry here shipped a fix; nothing below is still open (see
-[Roadmap](roadmap.md#known-gaps) for what still is).
+entry here ends in a fix or a rule adopted afterward. What is still open is
+in [Roadmap](roadmap.md#known-gaps).
 
 ## A fix that compiled, passed its own tests, and did nothing
 
@@ -170,3 +170,53 @@ shipped. The fix extracted the safety logic into its own
 function that takes no warm-up parameter at all, specifically so a future
 change to warm-up handling has no path back into gating enforcement by
 accident the way one `if` wrapping too much code did the first time.
+
+## A test that covered one input format
+
+The live benchmark's analysis read the two capture backends' periodic status
+lines the same way. One backend logs running totals and the other resets its
+counters after every line, so each line is that interval's own count. The
+test built lines in one format only. The first real run on the other backend
+printed negative packet counts, which cannot happen and should have been
+read as a sign the parsing was wrong. The fix sums the
+per-interval samples and differences the cumulative ones, and it was checked
+against an independent sum of the raw log. The rule: build test input for
+every format a parser accepts, and treat an impossible value as a bug in the
+reader until shown otherwise.
+
+## Comparing runs after changing the instrument
+
+Three benchmark reruns in one day each recalibrated the sensor's sigma floors
+during their own first phase, restarted the sensor several times, and had the
+network manager restarted on the gateway every two minutes. The escalation
+figures moved from about 2% to about 36 to 73%, and the changes to the
+instrument were enough to produce that on their own. The runs also wrote to
+one results directory, so each overwrote the last one's phase markers before
+they could be checked. The rules: fix the instrument before a session and
+leave it alone until it ends, write each run to its own directory, and check
+every reported figure against the raw files before it goes into a document.
+Two figures in one hand-off report were wrong (a CPU maximum and a row count
+that included the header) and were caught only by doing that.
+
+## Data captured under a different configuration than the one deployed
+
+A training corpus captured under one set of sigma floors was used to train an
+Isolation Forest that then ran on a sensor with other floors. Two of its
+inputs, the learned standard deviations, sat in a range it had never seen,
+and it flagged every live window as an outlier. A benchmark write-up first
+explained that as the lab's traffic differing from a captured session, which
+was plausible and untested. Swapping just those two columns into the corpus's
+range changed the flag rate from 100% to 27% and 0%, which was the test that
+should have come first. The rule: when a model misbehaves on live data, change
+one input at a time before writing an explanation, and capture training data
+under the tuning that will be deployed.
+
+## A count written from arithmetic
+
+A release note gave the Python test count as 312, worked out by adding the
+tests written that day to the total the run had already reported. The run
+had counted them already: the suite went from 303 to 308. The release notes
+and two artifacts were corrected afterward, and the commit message that
+carried the wrong number stayed, because rewriting pushed history costs more
+than the error does. The rule: quote a test count from the run's own output,
+and quote it after the last change to the tests.

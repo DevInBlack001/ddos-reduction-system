@@ -49,6 +49,19 @@ serves the web dashboard.
 The two are connected by a Unix domain socket.
 
 
+## Learning From Its Own Traffic
+
+The models are trained on captured, labeled traffic, and a deployment keeps
+capturing more. Windows the Isolation Forest finds unfamiliar, and windows
+the Random Forest confidently calls DDoS, are written to capture files. A
+periodic job re-scores them with the Random Forest and a second, differently
+built model, and stages a row for training only when both pick the same class
+with high confidence and both were trained after the row was captured. A
+review page in the dashboard shows the staged rows, 500 to a page, and a
+person decides whether to merge them into the training data or discard them.
+Nothing reaches the training set on its own.
+
+
 ## Scope
 
 FLOD works on Layer 4 volumetric floods visible from packet headers alone:
@@ -176,6 +189,9 @@ should behave were mine.
 A personal, open source project, and a working system, but not one that has
 been through the adversarial testing a production security product needs.
 Deploy it on a lab network or somewhere you can afford to have it be wrong.
+
+The dashboard is functional and plain. A visual redesign is planned; see the
+[roadmap](docs/roadmap.md#planned).
 
 
 ## Licence
