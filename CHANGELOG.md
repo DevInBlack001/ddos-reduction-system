@@ -6,6 +6,20 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Fixed
+
+- `train.py`'s `max_depth` sweep and `train_second_model.py`'s
+  `max_leaf_nodes` sweep both picked whichever candidate scored the
+  strict-highest LOSO accuracy, with no penalty for complexity, the
+  same failure shape already fixed once for the entropy floor and again
+  for the Isolation Forest's `contamination` sweep. Both now select the
+  simplest candidate within a new `ACCURACY_TOLERANCE` (0.005) of the
+  best accuracy actually seen, so a fraction of a point of difference,
+  often noise from a small held-out session, no longer selects a
+  needlessly complex model.
+
 ## 1.4.0, 2026-09-18
 
 ### Added

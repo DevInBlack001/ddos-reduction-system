@@ -175,6 +175,20 @@ of generalising, and will report a hollow perfect score.
 balanced by upsampling, and saved as the file Stage 2 loads. The evaluation
 above never produces the shipped model.
 
+**Tree depth (and, for the second model below, `max_leaf_nodes`) is swept
+across a candidate range and picked from the LOSO results above, not
+fixed.** The right value depends on how many independent sessions the
+current CSV actually has per class, not a number tuned once on a
+different capture set. The winner is the *simplest* candidate within
+`ACCURACY_TOLERANCE` (0.005, a starting point not a proven value) of the
+best LOSO accuracy seen across the whole sweep, not whichever candidate
+scored strictly highest: an unconstrained "pick the max" criterion has no
+penalty for complexity, so a fraction of a point of difference, often
+noise from a small held-out fold, used to be enough to select a needlessly
+deep tree. Both `train.py` and `train_second_model.py` print every
+candidate's accuracy and which one was selected and why, each time they
+run.
+
 ### Reading the Result
 
 Read the confusion matrix, not the headline accuracy. The numbers that matter
@@ -338,6 +352,21 @@ above, appendable to `training.csv` following [More Than One Session Per
 Label](#more-than-one-session-per-label): staged rows are not
 automatically part of the training set, an operator still decides when to
 fold them in.
+
+**This pipeline never auto-labels DDoS.** `anomalous_capture.csv` is only
+ever written when the Isolation Forest is consulted, which only happens
+when the RandomForest already called the window Normal or Flash Crowd; a
+window it calls DDoS never reaches that check. `pretraining_capture.csv`
+only fills before any RandomForest exists on a deployment, closed for
+good once one has been trained. Repeated runs of this pipeline grow the
+Normal and Flash Crowd share of the training corpus, never the DDoS
+share, and since [Training](#training)'s `balance_classes()` upsamples
+every class to match whichever is currently largest, DDoS's contribution
+to each retrain becomes an increasingly duplicated copy of the same
+non-growing pool rather than staying genuinely diverse. See
+[roadmap.md](roadmap.md#known-gaps) for the full reasoning. Not
+addressed by anything in this file: DDoS training data still needs a
+deliberate, manually captured and merged attack campaign to keep pace.
 
 ### Reviewing From the Dashboard
 
