@@ -353,6 +353,14 @@ row-by-row selection: reviewing one alert and reviewing all of them is
 the same action, since every pending run points at the same shared
 queue.
 
+![The Auto Label review page, real staged rows from a completed confidence-gated run, showing every feature column and the class each row was assigned](images/auto-labelled.png)
+
+![The same page scrolled to the bottom of the staged table, showing the row count and that Merge or Discard applies to the whole file, not just what's currently shown](images/auto-labelled-1.png)
+
+![The browser's own confirmation prompt before a merge, since appending into the real training CSV cannot be undone from the page itself](images/merging.png)
+
+![The page immediately after a real merge: 9,538 rows appended into the training CSV, the staged queue now empty](images/merged.png)
+
 ### Degenerate Windows Are Never Auto-Labeled
 
 A real run against a sensor VM's captured data auto-labeled 32,597 rows on
