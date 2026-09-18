@@ -183,9 +183,9 @@ can be reviewed in full.
 
 ## Planned
 
-V9 through V12 below are ordered by difficulty rather than by any priority
-between them, easiest first, so the milestone number is a build-order
-estimate, not a ranking of importance. Kernel level work has consistently
+V9 through V12 below are ordered by difficulty, easiest first, so the
+milestone number is a build-order estimate that carries no ranking of
+importance. Kernel level work has consistently
 been the most expensive part of this project to get right (the eBPF
 milestone's own "compiled, passed its own tests, and did nothing" episode,
 recorded elsewhere in this project's notes, is the cautionary example),
