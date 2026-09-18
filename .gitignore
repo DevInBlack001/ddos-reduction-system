@@ -193,6 +193,35 @@ wiki/
 CLAUDE.md
 CLAUDE (1).md
 
+# Local session handoff notes for each AI assistant used on this repo,
+# never committed: progress state and next steps between sessions, may
+# reference in-progress work not ready to share.
+agy.md
+copilot.md
+
+# Cross-assistant working notes: shared conventions, the assistants'
+# own workload-split discussion, current status, and the ongoing report
+# log. Kept local to this machine, for the project owner only, never
+# pushed to the shared remote.
+MEMORY.md
+WORKLOAD.md
+STATUS.md
+REPORTS.md
+
+# Those same tools' own machine-specific settings and scratch state.
+.agy/
+.antigravity/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.copilot/
+
+# Private SSH keys for the four lab VMs (gateway, attacker, flash crowd
+# generator, victim), copied here so every assistant working in this
+# repo can reach them without needing the project owner's own home
+# directory. Never pushed to the shared remote under any circumstance.
+.lab-ssh/
+
 # scripts/benchmark_live.sh's default output directory: per-run logs and
 # a generated report, not project history.
 benchmark-live-results/
