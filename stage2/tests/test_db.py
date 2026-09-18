@@ -4,7 +4,7 @@ import sqlite3
 import unittest
 
 import _support
-from _support import make_logs_db, reset_db_module, unlink
+from _support import make_logs_db, reset_db_module, temp_path, unlink
 
 import config
 import db
@@ -329,6 +329,53 @@ class ConnectionTests(unittest.TestCase):
         finally:
             reader.close()
         self.assertEqual(count, 2)
+
+
+class RecordAutoLabelRunTests(unittest.TestCase):
+    def setUp(self):
+        self._db = config.DB_PATH
+        self.path = make_logs_db()
+        config.DB_PATH = self.path
+        reset_db_module()
+
+    def tearDown(self):
+        reset_db_module()
+        config.DB_PATH = self._db
+        unlink(self.path)
+
+    def rows(self):
+        conn = sqlite3.connect(self.path)
+        rows = conn.execute(
+            "SELECT timestamp, rows_labeled, resolved FROM auto_label_runs ORDER BY id"
+        ).fetchall()
+        conn.close()
+        return rows
+
+    def test_writes_one_unresolved_row(self):
+        db.record_auto_label_run(1000.0, 42)
+        self.assertEqual(self.rows(), [(1000.0, 42, 0)])
+
+    def test_each_call_is_its_own_row(self):
+        db.record_auto_label_run(1000.0, 10)
+        db.record_auto_label_run(2000.0, 5)
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_a_second_call_does_not_need_the_schema_reapplied_by_hand(self):
+        # record_auto_label_run applies the schema itself, so this works
+        # even against a bare, freshly created database file, not just one
+        # make_logs_db() already ran schema.apply() against.
+        bare_path = temp_path(".db")
+        try:
+            sqlite3.connect(bare_path).close()
+            config.DB_PATH = bare_path
+            reset_db_module()
+            db.record_auto_label_run(1000.0, 7)
+            conn = sqlite3.connect(bare_path)
+            count = conn.execute("SELECT COUNT(*) FROM auto_label_runs").fetchone()[0]
+            conn.close()
+            self.assertEqual(count, 1)
+        finally:
+            unlink(bare_path)
 
 
 if __name__ == "__main__":

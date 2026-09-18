@@ -184,6 +184,15 @@ against the same CSV: see [training.md](training.md#periodic-retraining)
 for why the Isolation Forest is included even though it does not depend
 on the freshness safeguard the RF and second model retrain for.
 
+**The dashboard's Merge and Discard buttons write to the filesystem too,
+through the same session-gated middleware every other authenticated
+route uses, no separate check needed.** Both reuse `auto_label.py`'s own
+`_read_rows`/`_rewrite_csv` helpers, the same symlink-refusing, atomic
+rewrite every other capture-file write in this project already goes
+through, rather than a new, separately-reviewed write path. Merge is
+refused outright, at the API layer, while `TRAINING_CSV_PATH` is unset;
+nothing ever writes to a guessed location.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

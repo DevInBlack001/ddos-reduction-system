@@ -128,11 +128,32 @@
             .catch(function () {});
     }
 
+    // Same reasoning as showVersion(): one place fills a badge every page's
+    // nav can carry, rather than duplicating the poll into each page. Silent
+    // on failure or when a page has no #autoLabelBadge element at all.
+    function showAutoLabelBadge() {
+        var el = document.getElementById('autoLabelBadge');
+        if (!el) return;
+        fetch('/api/auto-label/runs')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+                if (!d || !d.runs || !d.runs.length) {
+                    el.style.display = 'none';
+                    return;
+                }
+                var total = d.runs.reduce(function (sum, run) { return sum + run.rows_labeled; }, 0);
+                el.textContent = total;
+                el.style.display = '';
+            })
+            .catch(function () {});
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         updateToggleButton();
         var btn = document.getElementById('themeToggle');
         if (btn) btn.addEventListener('click', toggleTheme);
         initSidebarDrawer();
         showVersion();
+        showAutoLabelBadge();
     });
 })();

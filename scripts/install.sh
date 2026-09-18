@@ -695,6 +695,16 @@ WantedBy=multi-user.target
 EOF
 
     if [[ -d "$STAGE2_DIR" ]]; then
+        # The dashboard's Merge button needs to know the same training CSV
+        # path the retrain timer below uses, so one operator choice controls
+        # both. Only set on the running service's own environment when
+        # given; an empty TRAINING_CSV_PATH disables Merge in the UI rather
+        # than guessing a path.
+        STAGE2_TRAINING_ENV=""
+        if [[ -n "$TRAINING_CSV" ]]; then
+            STAGE2_TRAINING_ENV="Environment=\"TRAINING_CSV_PATH=$TRAINING_CSV\""
+        fi
+
         cat > "$SERVICE_DIR/ddos-stage2.service" << EOF
 # =============================================================================
 # ddos-stage2.service, systemd unit for the DDoS mitigation Stage 2 daemon
@@ -721,6 +731,7 @@ Environment="PYTHONUNBUFFERED=1"
 # it because setup_admin.py and config.py resolve it independently.
 Environment="FLOD_STATE_DIR=$STAGE2_STATE_DIR"
 Environment="DB_PATH=$STAGE2_STATE_DIR/stage2.db"
+$STAGE2_TRAINING_ENV
 
 [Install]
 WantedBy=multi-user.target

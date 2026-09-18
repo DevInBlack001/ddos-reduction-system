@@ -536,6 +536,19 @@ tr:hover td {
     background-color: var(--status-anomaly-bg);
 }
 
+/* A count badge on a nav item, e.g. auto-labeled rows awaiting review.
+   Hidden by default, JS shows it once a count is known. */
+.nav-badge {
+    display: none;
+    margin-left: auto;
+    padding: 1px 7px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    border-radius: 999px;
+    color: var(--status-warning);
+    background-color: var(--status-warning-bg);
+}
+
 /* Charts */
 .chart-container {
     height: 320px;

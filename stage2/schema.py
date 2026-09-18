@@ -43,6 +43,17 @@ TABLES = {
             k_multiplier REAL,
             victim_ip TEXT
         )""",
+    # One row per auto_label.py run that actually staged rows. resolved
+    # flips to 1 the moment an operator merges or discards the staged
+    # file, which always resolves every pending run at once: the
+    # underlying CSV is one shared queue, not partitioned per run.
+    "auto_label_runs": """
+        CREATE TABLE IF NOT EXISTS auto_label_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            rows_labeled INTEGER NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0
+        )""",
 }
 
 LOGS_COLUMNS = "timestamp, src_ip, dst_ip, proto, rate, entropy, classification"
@@ -52,6 +63,7 @@ LOGS_COLUMNS = "timestamp, src_ip, dst_ip, proto, rate, entropy, classification"
 # most recent ones on every poll.
 INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_logs_classification_id ON logs (classification, id)",
+    "CREATE INDEX IF NOT EXISTS idx_auto_label_runs_resolved ON auto_label_runs (resolved, id)",
 )
 
 

@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import db
 from storage import _atomic_write
 
 FEATURE_COLS = [
@@ -321,6 +322,15 @@ def main():
             logging.error(f"[-] Error processing {path}: {e}. Continuing to next file.")
 
     logging.info(f"[+] Auto-labeled {total_labeled} row(s) into {config.AUTO_LABELED_CSV_PATH}.")
+
+    if total_labeled:
+        # Only a run that actually staged something needs a dashboard alert;
+        # a routine zero-row run (the common case, freshness/delay gating
+        # everything) would just be noise in the review queue.
+        try:
+            db.record_auto_label_run(time.time(), total_labeled)
+        except Exception as e:
+            logging.error(f"[-] Failed to record the run for the dashboard: {e}")
 
 
 if __name__ == "__main__":

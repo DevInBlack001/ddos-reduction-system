@@ -216,6 +216,10 @@ REPORTS.md
 .claude/worktrees/
 .copilot/
 
+# Ad hoc, one-off analysis scripts and their output, any assistant's own,
+# not project history.
+scratch/
+
 # Private SSH keys for the four lab VMs (gateway, attacker, flash crowd
 # generator, victim), copied here so every assistant working in this
 # repo can reach them without needing the project owner's own home

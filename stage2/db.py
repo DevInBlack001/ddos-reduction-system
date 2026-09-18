@@ -112,6 +112,28 @@ def log_incident(timestamp, src_ip, classification, victim_ip="Unknown", src_rat
             logging.error(f"[-] Failed to write incident to SQLite: {e}")
 
 
+def record_auto_label_run(timestamp, rows_labeled):
+    """Record one auto_label.py run that staged rows, for the dashboard's
+    review alert. Called from auto_label.py, a separate one-shot process
+    from the running service, so it uses its own short-lived connection
+    (connect() above) rather than the service's shared writer lock, and
+    applies the schema defensively in case this ever runs before the
+    service has started once."""
+    import schema
+    conn = connect()
+    try:
+        schema.apply(conn)
+        conn.execute(
+            "INSERT INTO auto_label_runs (timestamp, rows_labeled) VALUES (?, ?)",
+            (timestamp, rows_labeled)
+        )
+        conn.commit()
+    except Exception as e:
+        logging.error(f"[-] Failed to record auto-label run: {e}")
+    finally:
+        conn.close()
+
+
 def log_metrics_history(timestamp, rate, entropy, mean_h, mean_r, sigma_h, sigma_r, k, victim_ip):
     with _lock:
         try:

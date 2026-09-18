@@ -6,6 +6,20 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Added
+
+- A dashboard page for reviewing `auto_label.py`'s staged output:
+  timestamped alerts for each completed run with rows to review (a
+  matching badge on every page's sidebar), a table of the staged rows,
+  and Merge or Discard buttons, so reviewing and resolving a run no
+  longer needs the terminal. Merge appends into `TRAINING_CSV_PATH`, a
+  new environment variable `install.sh`/`update.sh`'s existing
+  `--training-csv` flag also sets on the running service; Discard clears
+  the staged file without merging. Both act on the whole queue at once,
+  the same file every pending alert points at.
+
 ## 1.3.0, 2026-09-15
 
 ### Added

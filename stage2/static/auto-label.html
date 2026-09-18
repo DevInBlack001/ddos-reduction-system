@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        (function () {
+            var t = localStorage.getItem('flod-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <title>FLOD System - Auto Label</title>
+    <link rel="stylesheet" href="/static/base.css">
+    <style>
+        .info-note {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            background: var(--bg-surface-alt);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            margin-bottom: 20px;
+        }
+        .run-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+        .run-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: var(--bg-surface-alt);
+            border-left: 3px solid var(--status-warning);
+            border-radius: var(--radius-sm);
+            font-size: 0.82rem;
+        }
+        .run-item .run-time { color: var(--text-secondary); }
+        .review-actions { display: flex; gap: 10px; margin: 16px 0; }
+        .review-table-wrap { overflow-x: auto; }
+        .truncated-note { font-size: 0.78rem; color: var(--text-tertiary); margin-top: 8px; }
+        .empty-state { color: var(--text-tertiary); font-size: 0.85rem; padding: 20px 0; }
+        .config-warning {
+            font-size: 0.78rem;
+            color: var(--status-warning);
+            background: var(--status-warning-bg);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">F</div>
+            <div class="logo-text">FLOD System</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item active"><a href="/auto-label.html"><span>■</span> Auto Label <span class="nav-badge" id="autoLabelBadge"></span></a></li>
+            <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+        </ul>
+        <div class="sidebar-footer">
+            FLOD System Console <span id="flodVersion"></span>
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Auto Label Review</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="info-note">
+                Rows here were auto-labeled because two independently trained
+                models agreed on the class confidently, on traffic newer than
+                either model's own training run. Nothing reaches the real
+                training set until you merge it here; discard clears the
+                queue without merging any of it.
+            </div>
+
+            <div id="pendingRuns" class="run-list"></div>
+            <div id="configWarning" class="config-warning" style="display: none;">
+                No training CSV is configured (<code>TRAINING_CSV_PATH</code>),
+                so Merge is unavailable. Discard still works.
+            </div>
+
+            <div class="review-actions">
+                <button type="button" class="btn" id="mergeBtn" onclick="mergeStaged()">Merge into training data</button>
+                <button type="button" class="btn btn-danger" id="discardBtn" onclick="discardStaged()">Discard</button>
+                <span id="actionResult" style="font-size: 0.82rem;"></span>
+            </div>
+
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Staged rows</div>
+                </div>
+                <div id="reviewTableWrap" class="review-table-wrap">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        async function loadPendingRuns() {
+            const container = document.getElementById('pendingRuns');
+            try {
+                const res = await fetch('/api/auto-label/runs');
+                if (res.status === 401) {
+                    window.location.href = '/static/login.html';
+                    return;
+                }
+                const data = await res.json();
+                document.getElementById('configWarning').style.display =
+                    data.training_csv_configured ? 'none' : '';
+                document.getElementById('mergeBtn').disabled = !data.training_csv_configured;
+
+                if (!data.runs.length) {
+                    container.innerHTML = '<div class="empty-state">No auto-labeling runs awaiting review.</div>';
+                    return;
+                }
+                container.innerHTML = data.runs.map(function (run) {
+                    const when = new Date(run.timestamp * 1000).toLocaleString();
+                    return '<div class="run-item">'
+                        + '<span>Auto-labeled <strong>' + run.rows_labeled + '</strong> row(s)</span>'
+                        + '<span class="run-time">' + FlodSafe.escapeHtml(when) + '</span>'
+                        + '</div>';
+                }).join('');
+            } catch (err) {
+                container.innerHTML = '<div class="empty-state">Failed to load pending runs.</div>';
+            }
+        }
+
+        async function loadReviewTable() {
+            const wrap = document.getElementById('reviewTableWrap');
+            try {
+                const res = await fetch('/api/auto-label/review');
+                const data = await res.json();
+                if (!data.rows.length) {
+                    wrap.innerHTML = '<div class="empty-state">Nothing staged right now.</div>';
+                    return;
+                }
+                let html = '<table class="log-table"><thead><tr>';
+                data.header.forEach(function (col) { html += '<th>' + FlodSafe.escapeHtml(col) + '</th>'; });
+                html += '</tr></thead><tbody>';
+                data.rows.forEach(function (row) {
+                    html += '<tr>';
+                    row.forEach(function (cell) { html += '<td>' + FlodSafe.escapeHtml(cell) + '</td>'; });
+                    html += '</tr>';
+                });
+                html += '</tbody></table>';
+                wrap.innerHTML = html;
+                if (data.truncated) {
+                    wrap.innerHTML += '<div class="truncated-note">Showing '
+                        + data.rows.length + ' of ' + data.total_rows
+                        + ' staged rows. Merge or discard applies to all of them, not just what is shown.</div>';
+                }
+            } catch (err) {
+                wrap.innerHTML = '<div class="empty-state">Failed to load staged rows.</div>';
+            }
+        }
+
+        async function mergeStaged() {
+            if (!confirm('Merge every staged row into the configured training CSV? This cannot be undone from here.')) return;
+            await runAction('/api/auto-label/merge', 'merged');
+        }
+
+        async function discardStaged() {
+            if (!confirm('Discard every staged row without merging? This cannot be undone.')) return;
+            await runAction('/api/auto-label/discard', 'discarded');
+        }
+
+        async function runAction(url, key) {
+            const resultEl = document.getElementById('actionResult');
+            resultEl.textContent = 'Working...';
+            try {
+                const res = await fetch(url, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) {
+                    resultEl.textContent = data.detail || 'Failed.';
+                    resultEl.style.color = 'var(--status-danger)';
+                    return;
+                }
+                resultEl.textContent = data[key] + ' row(s) ' + key + '.';
+                resultEl.style.color = 'var(--status-success)';
+                await loadPendingRuns();
+                await loadReviewTable();
+            } catch (err) {
+                resultEl.textContent = 'Request failed.';
+                resultEl.style.color = 'var(--status-danger)';
+            }
+        }
+
+        loadPendingRuns();
+        loadReviewTable();
+    </script>
+</body>
+</html>

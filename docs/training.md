@@ -339,6 +339,20 @@ Label](#more-than-one-session-per-label): staged rows are not
 automatically part of the training set, an operator still decides when to
 fold them in.
 
+### Reviewing From the Dashboard
+
+The Auto Label page does the same review, from a browser instead of the
+terminal. A completed run with rows to review shows up as a timestamped
+entry there, and on the sidebar as a badge everywhere else in the
+console. Merge appends every staged row into `TRAINING_CSV_PATH`
+(unset by default, the same environment variable `install.sh`/
+`update.sh`'s `--training-csv` flag sets for the retrain timer, so one
+choice covers both); Discard clears the staged file without merging
+any of it. Both act on the whole staged file at once, not a
+row-by-row selection: reviewing one alert and reviewing all of them is
+the same action, since every pending run points at the same shared
+queue.
+
 ### Degenerate Windows Are Never Auto-Labeled
 
 A real run against a sensor VM's captured data auto-labeled 32,597 rows on
