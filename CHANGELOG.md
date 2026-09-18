@@ -6,7 +6,7 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
-## Unreleased
+## 1.4.0, 2026-09-18
 
 ### Added
 
@@ -18,7 +18,16 @@ minor bump adds a feature, milestones are numbered separately from tags.
   new environment variable `install.sh`/`update.sh`'s existing
   `--training-csv` flag also sets on the running service; Discard clears
   the staged file without merging. Both act on the whole queue at once,
-  the same file every pending alert points at.
+  the same file every pending alert points at. Confirmed against a real
+  merge on a live deployment: 9,538 staged rows appended into the real
+  training CSV from the dashboard.
+- `scripts/benchmark_live.sh` now records system health alongside
+  detection outcomes: a new `scripts/benchmark_system_sampler.sh` polls
+  both services' real CPU time and memory on the gateway for the whole
+  session, and `analyze_live_benchmark.py` reports real packet
+  throughput and drop counts per phase, parsed from the capture
+  backend's own existing periodic log line, no new instrumentation
+  needed there.
 
 ## 1.3.0, 2026-09-15
 

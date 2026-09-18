@@ -175,8 +175,16 @@ mix, then all three together) then ran against the freshly calibrated,
 freshly retrained deployment: zero Stage 1 flags on pure Normal traffic,
 0% of Flash Crowd traffic escalated to DDoS, 100% escalation once all
 three traffic types combined. Full results:
-[Live Benchmark: v1.3.0](benchmark-live-v1.3.0.md). All fixes and the
-benchmark script rewrite are on `v8`.
+[Live Benchmark: v1.3.0](benchmark-live-v1.3.0.md).
+
+Shipped as `1.4.0`: a dashboard page for reviewing and merging or
+discarding a completed run's staged rows without needing the terminal
+(see [training.md](training.md#reviewing-from-the-dashboard)), and
+`scripts/benchmark_live.sh` gained a system-health sampler, real CPU
+time, memory, and packet throughput for both services over a session,
+not only detection outcomes. See [Live Benchmark:
+v1.3.0](benchmark-live-v1.3.0.md#system-health-recording-first-real-world-run)
+for the first real run's results.
 
 **V9, operator defined playbooks and granular incident reporting.** The
 four existing enforcement tiers keep running automatically on every window

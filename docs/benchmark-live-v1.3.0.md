@@ -153,3 +153,39 @@ clean seven-phase numbers above.
 loss, MTU, an added routing hop, remains untested. It needs either
 internet access on the generator VMs to install `tc` there, or applying
 `netem` somewhere that is not the sensor's own XDP-bound interface.
+
+## System-health recording: first real-world run
+
+`scripts/benchmark_live.sh` gained a system-health sampler this
+session: real CPU time and memory for both services over the whole
+run, and real packet throughput and drop counts parsed from the
+capture backend's own existing periodic log line. A run against the
+gateway on 2026-09-18 confirms the tooling itself works correctly
+against a real deployment, not just the synthetic test it was built
+against.
+
+**Confirmed from the raw session output**, independently reproducible
+with `python3 scripts/analyze_live_benchmark.py <output-dir>`:
+
+| Service | Avg CPU (whole session) | Peak RSS | Restarts |
+|---|---:|---:|---:|
+| Stage 1 | ~2.3% | 7.2 MB | 0 |
+| Stage 2 | ~28% | 306.4 MB | 0 |
+
+774 samples over roughly 33 minutes, PID unchanged throughout for both
+services. Total detection activity for the session: 73 Class-2 (DDoS)
+verdicts, 2,492 mitigation actions, ending at 32 hard blocks and 132
+rate-limits, all directly reproducible from `stage2.log` and the final
+`ipset` dump.
+
+**What this run does not establish.** `benchmark_live.sh`'s own phase
+tracking stopped recording four phases early, `phase_boundaries.tsv`
+has no boundary past "Normal + Flash Crowd," while the real detection
+activity above continued for roughly 35 more minutes after that. That
+means the phase-by-phase breakdown a normal run reports, and
+specifically the number that matters most for this project's own
+thesis, whether Flash Crowd traffic ever escalated to a DDoS verdict,
+cannot be reconstructed from this session's artifacts. The totals above
+are real; which phase produced which verdict is not known for most of
+this run. A clean rerun with working phase attribution is planned
+before this run's numbers are treated as a detection-accuracy result.
