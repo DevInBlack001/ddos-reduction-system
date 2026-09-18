@@ -88,6 +88,13 @@ def balance_classes(X, y):
 # THIS dataset has per class, not a value tuned once on a different
 # capture set. sklearn's own default is 31.
 CANDIDATE_MAX_LEAF_NODES = [3, 7, 15, 31, 63, 127, None]
+# Same fix as train.py's ACCURACY_TOLERANCE, for the same reason: picking
+# the strict-highest LOSO accuracy has no penalty for complexity, the same
+# failure shape already fixed once in this project for the entropy floor
+# and again for the Isolation Forest's contamination sweep. The simplest
+# max_leaf_nodes within this tolerance of the best accuracy seen wins
+# instead. A starting point, not a proven value.
+ACCURACY_TOLERANCE = 0.005
 
 
 def main():
@@ -169,6 +176,7 @@ def main():
         print("[-] No label currently has >=2 sessions, LOSO cannot run yet. "
               f"Falling back to an UNVALIDATED default max_leaf_nodes={best_max_leaf_nodes}.")
     else:
+        candidates = []  # (max_leaf_nodes, overall_acc, fold_true, fold_pred)
         for max_leaf_nodes in CANDIDATE_MAX_LEAF_NODES:
             fold_true, fold_pred = [], []
             for sess_id in eligible_sessions:
@@ -187,12 +195,18 @@ def main():
 
             overall_acc = float(np.mean(np.array(fold_true) == np.array(fold_pred)))
             print(f"[+] max_leaf_nodes={max_leaf_nodes}: LOSO accuracy={overall_acc:.3f}")
-            if overall_acc > best_acc:
-                best_acc, best_max_leaf_nodes = overall_acc, max_leaf_nodes
-                best_fold_true, best_fold_pred = fold_true, fold_pred
+            candidates.append((max_leaf_nodes, overall_acc, fold_true, fold_pred))
 
-        print(f"\n[+] Selected max_leaf_nodes={best_max_leaf_nodes} (LOSO accuracy={best_acc:.3f}) "
-              "for the production model below.")
+        peak_acc = max(acc for _, acc, _, _ in candidates)
+        within_tolerance = [c for c in candidates if c[1] >= peak_acc - ACCURACY_TOLERANCE]
+        # None (unlimited leaf nodes) sorts as the most complex, not the simplest.
+        best_max_leaf_nodes, best_acc, best_fold_true, best_fold_pred = min(
+            within_tolerance, key=lambda c: c[0] if c[0] is not None else float("inf")
+        )
+
+        print(f"\n[+] Peak LOSO accuracy {peak_acc:.3f}. Selected max_leaf_nodes="
+              f"{best_max_leaf_nodes} (LOSO accuracy={best_acc:.3f}), the simplest value "
+              f"within {ACCURACY_TOLERANCE:.1%} of the peak, for the production model below.")
         print("\n== LOSO Aggregate Classification Report (selected max_leaf_nodes, all held-out folds combined) ==")
         print(classification_report(best_fold_true, best_fold_pred, target_names=["Normal (0)", "Flash Crowd (1)", "DDoS (2)"], zero_division=0))
         print("\n== LOSO Aggregate Confusion Matrix (selected max_leaf_nodes) ==")

@@ -245,6 +245,15 @@ def main():
             eligible_sessions.append(sess_id)
 
     CANDIDATE_MAX_DEPTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, None]
+    # Picking the strict-highest LOSO accuracy has no penalty for complexity,
+    # the same failure shape already fixed once in this project for the
+    # entropy floor and again for the Isolation Forest's contamination sweep:
+    # an unconstrained criterion that looks like an optimum is often noise, a
+    # handful of small folds pushing a deeper, more complex tree a fraction
+    # of a point ahead of a shallower one that generalizes just as well. The
+    # simplest depth within this tolerance of the best accuracy seen wins
+    # instead. A starting point, not a proven value.
+    ACCURACY_TOLERANCE = 0.005
     best_depth = 5  # undocumented-data fallback if LOSO can't run at all below
     best_acc = -1.0
     best_fold_true, best_fold_pred, best_per_session = [], [], []
@@ -254,6 +263,7 @@ def main():
               "Every label needs at least one more independent session before tree depth "
               f"can be validated. Falling back to an UNVALIDATED default max_depth={best_depth}.")
     else:
+        candidates = []  # (depth, overall_acc, fold_true, fold_pred, per_session)
         for depth in CANDIDATE_MAX_DEPTHS:
             fold_true, fold_pred, per_session = [], [], []
             for sess_id in eligible_sessions:
@@ -275,14 +285,21 @@ def main():
 
             overall_acc = float(np.mean(np.array(fold_true) == np.array(fold_pred)))
             print(f"[+] max_depth={depth}: LOSO accuracy={overall_acc:.3f}")
-            if overall_acc > best_acc:
-                best_acc, best_depth = overall_acc, depth
-                best_fold_true, best_fold_pred, best_per_session = fold_true, fold_pred, per_session
+            candidates.append((depth, overall_acc, fold_true, fold_pred, per_session))
 
-        print(f"\n[+] Selected max_depth={best_depth} (LOSO accuracy={best_acc:.3f}) for the "
-              "production model below. This was chosen fresh from the sessions currently in "
-              "the CSV, a different or expanded capture set may select a different depth, "
-              "so re-run this script (not just reuse this number) whenever sessions change.")
+        peak_acc = max(acc for _, acc, _, _, _ in candidates)
+        within_tolerance = [c for c in candidates if c[1] >= peak_acc - ACCURACY_TOLERANCE]
+        # None (unlimited depth) sorts as the most complex, not the simplest.
+        best_depth, best_acc, best_fold_true, best_fold_pred, best_per_session = min(
+            within_tolerance, key=lambda c: c[0] if c[0] is not None else float("inf")
+        )
+
+        print(f"\n[+] Peak LOSO accuracy {peak_acc:.3f}. Selected max_depth={best_depth} "
+              f"(LOSO accuracy={best_acc:.3f}), the simplest depth within "
+              f"{ACCURACY_TOLERANCE:.1%} of the peak, for the production model below. This "
+              "was chosen fresh from the sessions currently in the CSV, a different or "
+              "expanded capture set may select a different depth, so re-run this script "
+              "(not just reuse this number) whenever sessions change.")
         print("\n== Per-Session Results at Selected Depth ==")
         for sess_id, label, n, acc in best_per_session:
             print(f"    Session {sess_id} (label {label}, {n} rows): accuracy={acc:.3f}")
