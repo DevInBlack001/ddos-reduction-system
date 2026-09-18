@@ -62,6 +62,7 @@ stage2/models/
 
 # Training data (often large and/or sensitive, store separately)
 stage2/data/
+training_data/
 *.csv
 *.bak
 *.parquet
@@ -80,6 +81,11 @@ logs/
 
 # PID files (created by some daemonisation wrappers)
 *.pid
+
+# Lock files auto_label.py and ipc_receiver.py create beside each capture
+# CSV to serialise appends and rewrites. Runtime state, never tracked.
+# Scoped to .csv.lock so Cargo.lock stays tracked.
+*.csv.lock
 
 # OS-generated files
 
