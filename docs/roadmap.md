@@ -125,7 +125,7 @@ Self contained inside Stage 2: no new kernel level code and no new protocol,
 built directly on models and a review queue that already exist. The easiest
 of the five below for exactly that reason.
 
-On branch `v8`, code complete, not yet merged or tagged. "Confident" turned
+Shipped as `1.3.0`. "Confident" turned
 out to need a second model rather than a threshold on the RandomForest's own
 `predict_proba`: a `RandomForest` re-confirming its own margin on a row it
 already has a blind spot for just reproduces that blind spot with new-found

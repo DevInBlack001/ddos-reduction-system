@@ -6,9 +6,7 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
-## Unreleased
-
-On branch `v8`, not yet merged or tagged.
+## 1.3.0, 2026-09-15
 
 ### Added
 
