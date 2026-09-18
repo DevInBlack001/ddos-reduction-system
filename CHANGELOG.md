@@ -6,6 +6,26 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Added
+
+- The Auto Label review page now pages through the staged rows, 500 at
+  a time, with Previous and Next buttons and a "Rows 1 to 500 of N"
+  line. `/api/auto-label/review` takes `offset` and `limit` (limit
+  capped at 500, a negative offset is refused). Previously only the
+  first 500 rows of a larger queue could be seen.
+
+### Fixed
+
+- `scripts/analyze_live_benchmark.py` read the kernel backend's
+  `Kernel: status` ingress and egress as running totals and reported the
+  difference between two samples, which produced negative packet counts.
+  Stage 1 resets those counters after every status line, so each one is
+  that interval's own count. The kernel backend now sums the samples
+  inside a phase, and the pcap backend, whose line is cumulative, keeps
+  the difference. Checked against an independent sum of the raw log.
+
 ## 1.5.0, 2026-09-18
 
 ### Added

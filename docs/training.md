@@ -387,6 +387,10 @@ row-by-row selection: reviewing one alert and reviewing all of them is
 the same action, since every pending run points at the same shared
 queue.
 
+The staged rows are shown 500 to a page, with Previous and Next buttons
+under the table and a "Rows 1 to 500 of N" line. Paging changes only
+what is displayed. Merge and Discard still apply to every staged row.
+
 ![The Auto Label review page, real staged rows from a completed confidence-gated run, showing every feature column and the class each row was assigned](images/auto-labelled.png)
 
 ![The same page scrolled to the bottom of the staged table, showing the row count and that Merge or Discard applies to the whole file, not just what's currently shown](images/auto-labelled-1.png)

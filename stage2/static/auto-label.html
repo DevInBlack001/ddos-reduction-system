@@ -37,6 +37,8 @@
         .review-actions { display: flex; gap: 10px; margin: 16px 0; }
         .review-table-wrap { overflow-x: auto; }
         .truncated-note { font-size: 0.78rem; color: var(--text-tertiary); margin-top: 8px; }
+        .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 0.78rem; color: var(--text-tertiary); }
+        .pager .pager-info { flex: 1; }
         .empty-state { color: var(--text-tertiary); font-size: 0.85rem; padding: 20px 0; }
         .config-warning {
             font-size: 0.78rem;
@@ -146,11 +148,18 @@
             }
         }
 
-        async function loadReviewTable() {
+        const PAGE_SIZE = 500;
+        let pageOffset = 0;
+
+        async function loadReviewTable(offset) {
+            if (typeof offset === 'number') pageOffset = offset;
             const wrap = document.getElementById('reviewTableWrap');
             try {
-                const res = await fetch('/api/auto-label/review');
+                const res = await fetch('/api/auto-label/review?offset=' + pageOffset + '&limit=' + PAGE_SIZE);
                 const data = await res.json();
+                if (!data.rows.length && pageOffset > 0 && data.total_rows > 0) {
+                    return loadReviewTable(Math.max(0, data.total_rows - PAGE_SIZE));
+                }
                 if (!data.rows.length) {
                     wrap.innerHTML = '<div class="empty-state">Nothing staged right now.</div>';
                     return;
@@ -164,12 +173,21 @@
                     html += '</tr>';
                 });
                 html += '</tbody></table>';
+                const first = data.offset + 1;
+                const last = data.offset + data.rows.length;
+                html += '<div class="pager">'
+                    + '<button type="button" class="btn" id="prevBtn"' + (data.has_prev ? '' : ' disabled') + '>Previous</button>'
+                    + '<span class="pager-info">Rows ' + first + ' to ' + last + ' of ' + data.total_rows
+                    + '. Merge or discard applies to all staged rows, not just this page.</span>'
+                    + '<button type="button" class="btn" id="nextBtn"' + (data.has_next ? '' : ' disabled') + '>Next</button>'
+                    + '</div>';
                 wrap.innerHTML = html;
-                if (data.truncated) {
-                    wrap.innerHTML += '<div class="truncated-note">Showing '
-                        + data.rows.length + ' of ' + data.total_rows
-                        + ' staged rows. Merge or discard applies to all of them, not just what is shown.</div>';
-                }
+                document.getElementById('prevBtn').onclick = function () {
+                    loadReviewTable(Math.max(0, data.offset - PAGE_SIZE));
+                };
+                document.getElementById('nextBtn').onclick = function () {
+                    loadReviewTable(data.offset + PAGE_SIZE);
+                };
             } catch (err) {
                 wrap.innerHTML = '<div class="empty-state">Failed to load staged rows.</div>';
             }
@@ -199,7 +217,7 @@
                 resultEl.textContent = data[key] + ' row(s) ' + key + '.';
                 resultEl.style.color = 'var(--status-success)';
                 await loadPendingRuns();
-                await loadReviewTable();
+                await loadReviewTable(0);
             } catch (err) {
                 resultEl.textContent = 'Request failed.';
                 resultEl.style.color = 'var(--status-danger)';
@@ -207,7 +225,7 @@
         }
 
         loadPendingRuns();
-        loadReviewTable();
+        loadReviewTable(0);
     </script>
 </body>
 </html>

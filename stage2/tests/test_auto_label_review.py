@@ -118,6 +118,68 @@ class ReviewStagedRowsTests(AutoLabelReviewTestCase):
         self.assertTrue(result["truncated"])
 
 
+class ReviewStagedRowsPaginationTests(AutoLabelReviewTestCase):
+    def _stage_numbered(self, count):
+        rows = [self._row(timestamp=str(1000000.0 + i)) for i in range(count)]
+        self._stage_rows(rows)
+        return rows
+
+    def test_the_first_page_has_no_previous_and_a_next_when_more_remain(self):
+        limit = auto_label_review.REVIEW_ROW_LIMIT
+        self._stage_numbered(limit + 5)
+        result = auto_label_review.review_staged_rows()
+        self.assertEqual(result["offset"], 0)
+        self.assertFalse(result["has_prev"])
+        self.assertTrue(result["has_next"])
+
+    def test_the_second_page_returns_the_remaining_rows(self):
+        limit = auto_label_review.REVIEW_ROW_LIMIT
+        rows = self._stage_numbered(limit + 5)
+        result = auto_label_review.review_staged_rows(offset=limit)
+        self.assertEqual(len(result["rows"]), 5)
+        self.assertEqual(result["rows"][0][11], rows[limit][11])
+        self.assertTrue(result["has_prev"])
+        self.assertFalse(result["has_next"])
+        self.assertEqual(result["total_rows"], limit + 5)
+
+    def test_pages_do_not_overlap_or_skip_rows(self):
+        rows = self._stage_numbered(25)
+        seen = []
+        offset = 0
+        while True:
+            page = auto_label_review.review_staged_rows(offset=offset, limit=10)
+            seen.extend(r[11] for r in page["rows"])
+            if not page["has_next"]:
+                break
+            offset += 10
+        self.assertEqual(seen, [r[11] for r in rows])
+
+    def test_an_offset_past_the_end_returns_no_rows_but_the_real_total(self):
+        self._stage_numbered(3)
+        result = auto_label_review.review_staged_rows(offset=50)
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["total_rows"], 3)
+        self.assertFalse(result["has_next"])
+
+    def test_a_negative_offset_is_refused(self):
+        self._stage_numbered(3)
+        with self.assertRaises(HTTPException) as ctx:
+            auto_label_review.review_staged_rows(offset=-1)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_a_limit_above_the_cap_is_clamped_to_it(self):
+        limit = auto_label_review.REVIEW_ROW_LIMIT
+        self._stage_numbered(limit + 5)
+        result = auto_label_review.review_staged_rows(limit=limit * 10)
+        self.assertEqual(len(result["rows"]), limit)
+        self.assertEqual(result["limit"], limit)
+
+    def test_a_limit_below_one_is_raised_to_one(self):
+        self._stage_numbered(3)
+        result = auto_label_review.review_staged_rows(limit=0)
+        self.assertEqual(len(result["rows"]), 1)
+
+
 class MergeStagedRowsTests(AutoLabelReviewTestCase):
     def test_refuses_when_no_training_csv_is_configured(self):
         self._stage_rows([self._row()])

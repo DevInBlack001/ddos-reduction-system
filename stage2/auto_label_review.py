@@ -51,22 +51,33 @@ def list_pending_runs():
 
 
 @router.get("/api/auto-label/review")
-def review_staged_rows():
-    """The current contents of the staged file, bounded. Every unresolved
-    run in auto_label_runs points at this same file, so there is nothing
-    to distinguish per-run; reviewing any one alert means reviewing all
-    of it."""
+def review_staged_rows(offset: int = 0, limit: int = REVIEW_ROW_LIMIT):
+    """One page of the staged file, at most REVIEW_ROW_LIMIT rows. Every
+    unresolved run in auto_label_runs points at this same file, so there
+    is nothing to distinguish per-run; reviewing any one alert means
+    reviewing all of it."""
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must not be negative.")
+    limit = max(1, min(limit, REVIEW_ROW_LIMIT))
+
     header, rows, _ = _read_rows(config.AUTO_LABELED_CSV_PATH)
     if header is None:
-        return {"header": BASE_CSV_HEADER, "rows": [], "total_rows": 0, "truncated": False}
+        return {
+            "header": BASE_CSV_HEADER, "rows": [], "total_rows": 0, "offset": 0,
+            "limit": limit, "has_prev": False, "has_next": False, "truncated": False,
+        }
 
     total = len(rows)
-    shown = rows[:REVIEW_ROW_LIMIT]
+    page = rows[offset:offset + limit]
     return {
         "header": header,
-        "rows": shown,
+        "rows": page,
         "total_rows": total,
-        "truncated": total > len(shown),
+        "offset": offset,
+        "limit": limit,
+        "has_prev": offset > 0,
+        "has_next": offset + len(page) < total,
+        "truncated": total > len(page),
     }
 
 
