@@ -6,7 +6,7 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
-## Unreleased
+## 1.6.0, 2026-09-18
 
 ### Added
 
@@ -25,6 +25,29 @@ minor bump adds a feature, milestones are numbered separately from tags.
   that interval's own count. The kernel backend now sums the samples
   inside a phase, and the pcap backend, whose line is cumulative, keeps
   the difference. Checked against an independent sum of the raw log.
+
+### Documentation
+
+- `docs/benchmark-live-v1.3.0.md` and the benchmark report no longer call the
+  Isolation Forest labeling nearly every live window `Anomalous` correct
+  operation. Most of it comes from the training corpus and the deployed sensor
+  running different sigma floors, which changes two of the Isolation Forest's
+  inputs. Scored against 3,000 gateway rows it flagged 100% as they stand and
+  27.3% (Normal) and 0.0% (Flash Crowd) with just those two columns swapped.
+- New sections in `docs/training.md`: capturing under the tuning you deploy,
+  how tree depth sets what the auto-label confidence gate means, and where
+  Merge writes (the same file the retrain timer trains on, and `update.sh`
+  drops it when `--training-csv` is not passed).
+- `docs/benchmark-live-v1.3.0.md` records the 2026-09-18 reruns and why they
+  cannot be compared for escalation.
+- `docs/roadmap.md`: V7 and V8, both shipped, moved from Planned to Completed.
+  New Known Gaps for the tuning mismatch, the depth and confidence gate, and
+  benchmark hygiene. A dashboard visual redesign is now listed as planned.
+- `docs/lessons-learned.md` gains four entries, `docs/testing.md` has the
+  current test counts (75 Rust, 315 Python), and `README.md` describes the
+  capture and review loop.
+- `SECURITY.md` lists 1.5.x and later as the supported line. `CONTRIBUTING.md`
+  documents the version and release title conventions.
 
 ## 1.5.0, 2026-09-18
 
