@@ -183,7 +183,7 @@ can be reviewed in full.
 
 ## Planned
 
-V9 through V12 below are ordered by difficulty, easiest first, so the
+V9 through V14 below are ordered by difficulty, easiest first, so the
 milestone number is a build-order estimate that carries no ranking of
 importance. Kernel level work has consistently
 been the most expensive part of this project to get right (the eBPF
@@ -339,6 +339,55 @@ changes both capture backends and the wire format a second time since V7,
 real kernel and verifier risk on top of an already ordered set of
 milestones, and is a new addition to the roadmap rather than a reordering
 of what it already said.
+
+**V14, kernel space inference and enforcement.** Since V6 the kernel counts
+packets and user space decides. V14 moves the decision and the drop into the
+kernel together: the trained Random Forest is compiled into an eBPF program,
+so a verdict and the drop it triggers both happen at XDP, before the kernel
+builds a socket buffer for the packet. The goal is fast inference and fast
+enforcement at once.
+
+The user space Random Forest stays in place as a fallback. If the kernel
+program fails to load, is rejected by the verifier, fails its equivalence
+check, or errors at runtime, the sensor reverts to the user space classifier
+and enforcement path that runs today and keeps protecting the hosts. A kernel
+fault degrades to V6 behaviour with a logged reason and a dashboard
+indicator, and never takes the sensor down. The time that switch takes is a
+number worth setting a target for. The live benchmark already measures the
+same quantities for a capture mode change: downtime while the sensor
+restarts, and rollback time back to the previous mode.
+
+Placement. V14 comes after V13 for two reasons. It reuses what V10 builds:
+the XDP blocking path, verifier experience, map based policy lookup, and
+swapping a program in place. And it compiles against a fixed feature set, and
+V13 is the last milestone on the roadmap that changes the features. The
+fixed feature set stops being a blocker once the program is regenerated every
+time the model retrains, potentially daily. A feature change from V13 then
+becomes one more reason to recompile. The compile step joins the retrain
+cycle V8 built, so it cannot drift into a separate file that goes stale:
+
+1. Retrain the model (the V8 timer).
+2. Compile it to an eBPF program.
+3. Check the program against the user space model on identical inputs, and
+   proceed only when the answers match. This check is a requirement for the
+   design and is not built yet.
+4. Swap the program into XDP through the V10 path.
+
+Risks to check early. First, where the time goes. FLOD classifies once per
+window and classifies no individual packet. If the slow part is collecting
+the window, moving the classifier alone will not cut response time. The live
+benchmark records the pieces of that path (window close to Stage 2 handoff,
+inference, the enforcement call, and window close to rule applied) so the
+breakdown can be measured during a real attack before any kernel work starts.
+Second, floating point. Entropy and rates use it and BPF has none, so the
+design needs an answer for how those features are produced inside the
+kernel. Third, program size: a forest of trees per window has to fit the
+verifier's instruction and stack limits.
+
+Suggested order of work: prototype on its own branch after V10 lands, and
+prove that the kernel output matches the user space model before anything
+else. Treat the prototype as exploration. It becomes a committed milestone
+once it earns that.
 
 **Dashboard redesign.** No milestone number yet. The console is functional
 and plain: static styling, no motion, and nothing that gives a first time
