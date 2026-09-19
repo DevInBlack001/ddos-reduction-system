@@ -132,5 +132,66 @@ class SaveJsonFileTests(unittest.TestCase):
         self.assertEqual(second_read, ["second"])
 
 
+class LoadTrustedModelTests(unittest.TestCase):
+    """A model file is unpickled, which runs code, so a file another account
+    could have written must never be loaded."""
+
+    def setUp(self):
+        import joblib
+        import tempfile
+        self.directory = tempfile.mkdtemp()
+        os.chmod(self.directory, 0o755)
+        self.path = os.path.join(self.directory, "model.joblib")
+        joblib.dump({"trees": 3}, self.path)
+        os.chmod(self.path, 0o644)
+        self._euid = os.geteuid
+
+    def tearDown(self):
+        import shutil
+        storage.os.geteuid = self._euid
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def test_a_model_written_by_the_running_account_is_loaded(self):
+        self.assertEqual(storage.load_trusted_model(self.path), {"trees": 3})
+
+    def test_a_world_writable_model_is_refused(self):
+        os.chmod(self.path, 0o666)
+        with self.assertRaises(PermissionError):
+            storage.load_trusted_model(self.path)
+
+    def test_a_model_in_a_world_writable_directory_is_refused(self):
+        os.chmod(self.directory, 0o777)
+        with self.assertRaises(PermissionError):
+            storage.load_trusted_model(self.path)
+
+    def test_a_group_writable_model_is_accepted_for_an_operator_but_refused_for_root(self):
+        os.chmod(self.path, 0o664)
+        self.assertEqual(storage.load_trusted_model(self.path), {"trees": 3})
+        storage.os.geteuid = lambda: 0
+        with self.assertRaises(PermissionError):
+            storage.load_trusted_model(self.path)
+
+    def test_a_root_service_refuses_a_model_owned_by_another_account(self):
+        if os.geteuid() == 0:
+            self.skipTest("the test account is root")
+        storage.os.geteuid = lambda: 0
+        with self.assertRaises(PermissionError):
+            storage.load_trusted_model(self.path)
+
+    def test_a_symlink_in_place_of_the_model_is_refused(self):
+        link = os.path.join(self.directory, "link.joblib")
+        os.symlink(self.path, link)
+        with self.assertRaises(OSError):
+            storage.load_trusted_model(link)
+
+    def test_a_directory_in_place_of_the_model_is_refused(self):
+        with self.assertRaises(OSError):
+            storage.load_trusted_model(self.directory)
+
+    def test_a_missing_model_raises_file_not_found(self):
+        with self.assertRaises(FileNotFoundError):
+            storage.load_trusted_model(os.path.join(self.directory, "absent.joblib"))
+
+
 if __name__ == "__main__":
     unittest.main()

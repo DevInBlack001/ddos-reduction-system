@@ -53,6 +53,22 @@ require_path() {
 require_mode() { [[ "$2" =~ ^(pcap|kernel)$ ]] || die "invalid $1: '$2'"; }
 refuse_symlink() { [ ! -L "$1" ] || die "refusing to write through a symlink: $1"; }
 
+# The tuning file and everything written beside it are read and replaced as
+# root, so the directory must belong to the account running this helper and be
+# closed to group and others, and none of the files may be a symlink.
+check_tuning_path() {
+    local dir perm
+    dir=$(dirname "$TUNING_FILE")
+    [ -d "$dir" ] && [ ! -L "$dir" ] || die "$dir is not a real directory"
+    [ "$(stat -c %u "$dir")" = "$(id -u)" ] || die "$dir is not owned by the account running this helper"
+    perm=$(stat -c %a "$dir")
+    [ $(( 8#$perm & 8#022 )) -eq 0 ] || die "$dir is writable by group or others (mode $perm)"
+    local f
+    for f in "$TUNING_FILE" "$BACKUP" "$ABSENT_MARK" "$DROPIN_MARK" "${TUNING_FILE}.new" "${TUNING_FILE}.restore"; do
+        refuse_symlink "$f"
+    done
+}
+
 now() { date +%s.%N; }
 diff_secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", b - a }'; }
 
@@ -133,6 +149,7 @@ cmd_switch() {
     echo "action=switch" >> "$out"
     echo "mode=$mode" >> "$out"
     mkdir -p "$(dirname "$TUNING_FILE")"
+    check_tuning_path
     if [ ! -e "$BACKUP" ] && [ ! -e "$ABSENT_MARK" ]; then
         if [ -f "$TUNING_FILE" ]; then cp -p "$TUNING_FILE" "$BACKUP"; else : > "$ABSENT_MARK"; fi
         if [ -e "$DEBUG_DROPIN" ]; then : > "$DROPIN_MARK"; else rm -f "$DROPIN_MARK"; fi
@@ -167,6 +184,7 @@ cmd_apply_floors() {
     require_path out-file "$out"
     [ -z "$mode" ] || require_mode mode "$mode"
     [ -f "$TUNING_FILE" ] || die "no tuning file to extend, run switch first"
+    check_tuning_path
     refuse_symlink "$out"
     before=$(grep -E '^FLOD_TUNING=' "$TUNING_FILE" | tail -1 | cut -d= -f2-)
     : > "$out"
@@ -197,6 +215,7 @@ cmd_rollback() {
     require_optional blocklist-set "$blocklist" "$SET_RE"
     require_optional ratelimit-set "$ratelimit" "$SET_RE"
     refuse_symlink "$out"
+    check_tuning_path
     : > "$out"
     echo "action=rollback" >> "$out"
     reset_enforcement "$unit2" "$blocklist" "$ratelimit"

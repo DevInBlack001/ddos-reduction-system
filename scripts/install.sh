@@ -144,6 +144,28 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Validate arguments ────────────────────────────────────────────────────────
+# Everything that lands in the sensor unit's ExecStart is checked, whether it
+# came from a flag or a prompt: the unit's command line is parsed by systemd,
+# so a space or a quote would add arguments. Runs once after the flags are read
+# and again after the prompts.
+validate_service_inputs() {
+    local _pair
+    if [[ -n "$INTERFACE" && ! "$INTERFACE" =~ ^[A-Za-z0-9_.:-]{1,15}$ ]]; then
+        error "The interface name has characters an interface cannot have. Got: '$INTERFACE'."
+    fi
+    for _pair in "victim IPs:$VICTIM_IPS" "victim subnet:$VICTIM_SUBNET" "excluded IPs:$EXCLUDE_IPS"; do
+        if [[ -n "${_pair#*:}" && ! "${_pair#*:}" =~ ^[0-9A-Fa-f:.,/]+$ ]]; then
+            error "The ${_pair%%:*} may only hold addresses, commas and slashes. Got: '${_pair#*:}'."
+        fi
+    done
+    for _pair in "--k:$TUNE_K" "--entropy-sigma-floor:$TUNE_ENTROPY_SIGMA_FLOOR" "--rate-sigma-floor:$TUNE_RATE_SIGMA_FLOOR" "--entropy-min-packets:$TUNE_ENTROPY_MIN_PACKETS"; do
+        if [[ -n "${_pair#*:}" && ! "${_pair#*:}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            error "${_pair%%:*} takes a number. Got: '${_pair#*:}'."
+        fi
+    done
+}
+
+validate_service_inputs
 if ! [[ "$AUTO_LABEL_INTERVAL" =~ ^[0-9]+(s|m|min|h|hr|d|w)$ ]]; then
     error "--auto-label-interval must look like a systemd time span, e.g. 30m, 1h, 6h. Got: '$AUTO_LABEL_INTERVAL'."
 fi
@@ -158,6 +180,12 @@ if [[ -n "$TRAINING_CSV" ]]; then
     # was invoked, so a relative path here would silently stop resolving to
     # the file the operator meant. Same fix as scripts/train.sh's CSV_PATH.
     TRAINING_CSV="$(cd "$(dirname "$TRAINING_CSV")" && pwd)/$(basename "$TRAINING_CSV")"
+    # The path is written into root run systemd units (an Environment line and
+    # a bash -c command), so it may hold only characters that mean nothing to
+    # systemd or the shell.
+    if ! [[ "$TRAINING_CSV" =~ ^/[A-Za-z0-9_./+@=,:-]+$ ]]; then
+        error "--training-csv may only contain letters, digits and _ . / + @ = , : - (it is written into a root run systemd unit). Got: '$TRAINING_CSV'."
+    fi
 fi
 
 # ── Root check ────────────────────────────────────────────────────────────────
@@ -614,6 +642,8 @@ fi
 # =============================================================================
 # Install systemd service units (optional, Linux only)
 # =============================================================================
+validate_service_inputs
+
 if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
     info "Installing systemd service units..."
 

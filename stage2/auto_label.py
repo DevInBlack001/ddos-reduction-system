@@ -22,12 +22,12 @@ import logging
 import fcntl
 from collections import deque
 
-import joblib
 import numpy as np
 import pandas as pd
 
 import config
 import db
+import storage
 from storage import _atomic_write
 
 FEATURE_COLS = [
@@ -300,9 +300,9 @@ def main():
     model_mtimes = []
     if os.path.exists(config.MODEL_PATH) and os.path.exists(config.SECOND_MODEL_PATH):
         try:
-            clf = joblib.load(config.MODEL_PATH)
+            clf = storage.load_trusted_model(config.MODEL_PATH)
             clf.n_jobs = 1
-            second_clf = joblib.load(config.SECOND_MODEL_PATH)
+            second_clf = storage.load_trusted_model(config.SECOND_MODEL_PATH)
             model_mtimes = [os.path.getmtime(config.MODEL_PATH), os.path.getmtime(config.SECOND_MODEL_PATH)]
         except Exception as e:
             logging.error(f"[-] Failed to load models: {e}. Trimming only.")

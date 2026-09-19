@@ -102,6 +102,12 @@ if [[ -n "$TRAINING_CSV" ]]; then
     # was invoked, so a relative path here would silently stop resolving to
     # the file the operator meant. Same fix as scripts/train.sh's CSV_PATH.
     TRAINING_CSV="$(cd "$(dirname "$TRAINING_CSV")" && pwd)/$(basename "$TRAINING_CSV")"
+    # The path is written into root run systemd units (an Environment line and
+    # a bash -c command), so it may hold only characters that mean nothing to
+    # systemd or the shell.
+    if ! [[ "$TRAINING_CSV" =~ ^/[A-Za-z0-9_./+@=,:-]+$ ]]; then
+        error "--training-csv may only contain letters, digits and _ . / + @ = , : - (it is written into a root run systemd unit). Got: '$TRAINING_CSV'."
+    fi
 fi
 
 # ── Root check ────────────────────────────────────────────────────────────────

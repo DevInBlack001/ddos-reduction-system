@@ -61,6 +61,17 @@ if [ -z "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
     echo "See scripts/benchmark_live.example.env for the format." >&2
     exit 1
 fi
+# The config is sourced as shell, so it must belong to this account or root and
+# must not be writable by everyone.
+config_owner=$(stat -c %u "$CONFIG")
+if [ "$config_owner" != "$(id -u)" ] && [ "$config_owner" != 0 ]; then
+    echo "Config error: $CONFIG belongs to another account" >&2
+    exit 1
+fi
+if [ $(( 8#$(stat -c %a "$CONFIG") & 8#002 )) -ne 0 ]; then
+    echo "Config error: $CONFIG is writable by everyone" >&2
+    exit 1
+fi
 # shellcheck source=/dev/null
 source "$CONFIG"
 

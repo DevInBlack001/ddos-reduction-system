@@ -18,9 +18,8 @@ import pwd
 import time
 import fcntl
 
-import joblib
-
 import config
+import storage
 import state
 import db
 import enforcement
@@ -269,7 +268,7 @@ def run_ipc_receiver():
         clf = None
     else:
         try:
-            clf = joblib.load(config.MODEL_PATH)
+            clf = storage.load_trusted_model(config.MODEL_PATH)
             # n_jobs=-1 from training is pickled into the model, but
             # inference here predicts one row at a time; parallelizing a
             # single row costs more in worker setup than it saves.
@@ -292,7 +291,7 @@ def run_ipc_receiver():
         if_clf = None
     else:
         try:
-            if_clf = joblib.load(config.IF_MODEL_PATH)
+            if_clf = storage.load_trusted_model(config.IF_MODEL_PATH)
             if_clf.n_jobs = 1
             logging.info("[+] Isolation Forest loaded successfully.")
         except Exception as e:

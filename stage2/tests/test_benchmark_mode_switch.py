@@ -189,6 +189,31 @@ class BenchmarkModeSwitchTests(unittest.TestCase):
         self.run_helper("rollback", "s1.service", self.out("rb.txt"), "")
         self.assertTrue(os.path.exists(dropin))
 
+    def test_a_tuning_file_that_is_a_symlink_is_refused(self):
+        real = os.path.join(self.dir, "real.env")
+        os.replace(self.tuning, real)
+        os.symlink(real, self.tuning)
+        result = self.run_helper("switch", "pcap", "/b.json", "s1.service", self.out())
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.calls(), "")
+
+    def test_a_tuning_directory_open_to_group_or_others_is_refused(self):
+        os.chmod(self.dir, 0o775)
+        result = self.run_helper("switch", "pcap", "/b.json", "s1.service", self.out())
+        os.chmod(self.dir, 0o700)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.calls(), "")
+
+    def test_a_planted_symlink_at_the_backup_path_is_refused(self):
+        target = os.path.join(self.dir, "victim.txt")
+        with open(target, "w") as handle:
+            handle.write("keep")
+        os.symlink(target, self.tuning + ".flod-benchmark-backup")
+        result = self.run_helper("switch", "pcap", "/b.json", "s1.service", self.out())
+        self.assertEqual(result.returncode, 2)
+        with open(target) as handle:
+            self.assertEqual(handle.read(), "keep")
+
 
 class BenchmarkLiveConfigTests(unittest.TestCase):
     BASE = (
@@ -228,6 +253,19 @@ class BenchmarkLiveConfigTests(unittest.TestCase):
         result = self.run_live('INGRESS_IFACE="eth0 && id"\n')
         self.assertEqual(result.returncode, 1)
         self.assertIn("Config error: INGRESS_IFACE", result.stderr)
+
+    def test_a_config_file_writable_by_everyone_is_rejected_before_it_is_sourced(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        marker = os.path.join(directory, "ran")
+        config = os.path.join(directory, "bench.env")
+        with open(config, "w") as handle:
+            handle.write(self.BASE + 'touch "%s"\n' % marker)
+        os.chmod(config, 0o666)
+        result = subprocess.run(["bash", LIVE, config], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("writable by everyone", result.stderr)
+        self.assertFalse(os.path.exists(marker))
 
     def test_a_variant_name_with_shell_characters_is_rejected(self):
         result = self.run_live('ATTACK_VARIANTS="mixed shapeb;id"\n')
