@@ -1125,8 +1125,10 @@ def print_agreement(by_mode, modes, phases):
             agree, ok1, ok2 = totals[key]
             print(f"  {label}: the backends agree on {agree} of {total} phases; {first} matches the expected "
                   f"outcome in {ok1}, {second} in {ok2}.")
-    print("  A phase counts as expected to act only when it holds an attack. A clean phase where a backend")
-    print("  acted is a false positive, whatever the verdicts say.")
+    print("  A phase is expected to act only when it holds an attack. A DDoS verdict in a clean phase is a")
+    print("  false positive. An action there needs reading: rate limits on the sources of a concentrated Flash")
+    print("  Crowd are a designed, reversible precaution, and a phase with no traffic at all (a generator that")
+    print("  failed) counts as a miss.")
     print()
 
 
