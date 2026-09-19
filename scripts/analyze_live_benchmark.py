@@ -42,6 +42,9 @@ ATTACK_PHASES = ("attacker", "normal_attacker", "flashcrowd_attacker", "all_thre
 FRESH_ATTACK_PHASES = ("attacker", "normal_attacker")
 SWEEP_RE = re.compile(r"^(attacker|normal_attacker)_([a-z0-9_]{1,20})$")
 BIN_SECS = 10
+# Older than this, a boundary sample of a cumulative counter is treated as
+# missing. The status lines come every 5 seconds while packets flow.
+MAX_SAMPLE_AGE_SECS = 30
 LATENCY_KINDS = ("handoff", "inference", "enforcement", "window_to_rule")
 
 CLASS2_PATTERNS = (
@@ -153,12 +156,27 @@ KERNEL_STATUS_RE = re.compile(
 )
 
 
-def parse_traffic_samples(stage1_events):
+def first_capture_interface(stage1_events):
+    """The interface named by the first capture status line."""
+    for _, line in stage1_events:
+        m = CAPTURE_STATUS_RE.search(line) or KERNEL_STATUS_RE.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def parse_traffic_samples(stage1_events, interface=None):
     # Both capture backends already log a periodic status line at info level,
-    # inside the same journalctl window this script already reads.
+    # inside the same journalctl window this script already reads. With an
+    # egress interface configured the libpcap backend runs one capture thread
+    # per interface and each logs its own counters, so the lines of the two
+    # interfaces interleave and must be kept apart: mixing them makes the
+    # cumulative counters jump between two unrelated series.
     samples = []
     for ts, line in stage1_events:
         m = CAPTURE_STATUS_RE.search(line)
+        if m and interface is not None and m.group(1) != interface:
+            continue
         if m:
             samples.append((ts, "pcap", {
                 "raw_captured": int(m.group(2)),
@@ -170,6 +188,8 @@ def parse_traffic_samples(stage1_events):
             }))
             continue
         m = KERNEL_STATUS_RE.search(line)
+        if m and interface is not None and m.group(1) != interface:
+            continue
         if m:
             samples.append((ts, "kernel", {
                 "ingress": int(m.group(2)),
@@ -192,7 +212,7 @@ def counters_at_or_before(samples, target_ts):
     for ts, backend, counters in samples:
         if ts > target_ts:
             break
-        result = (backend, counters)
+        result = (backend, counters, ts)
     return result
 
 
@@ -208,12 +228,19 @@ def traffic_delta(samples, start_ts, end_ts):
             for k, v in counters.items():
                 total[k] += v
         return "kernel", total
+    # The libpcap status line is only logged when a packet arrives, so a quiet
+    # spell leaves a hole in the samples. A total taken across such a hole
+    # would credit the previous phase's traffic to this one, so a boundary
+    # sample that is too old is not used.
     before = counters_at_or_before(samples, start_ts)
     after = counters_at_or_before(samples, end_ts)
     if before is None or after is None or before[0] != after[0]:
         return None
-    backend, before_counters = before
-    _, after_counters = after
+    if (seconds_between(before[2], start_ts) > MAX_SAMPLE_AGE_SECS
+            or seconds_between(after[2], end_ts) > MAX_SAMPLE_AGE_SECS):
+        return None
+    backend, before_counters = before[0], before[1]
+    after_counters = after[1]
     return backend, {k: after_counters[k] - before_counters[k] for k in before_counters}
 
 
@@ -510,7 +537,12 @@ def analyze_run(run_dir):
     year_hint = windows[0][1].split("-")[0]
     stage1_events = load_events(os.path.join(run_dir, "stage1.log"), year_hint)
     stage2_events = load_events(os.path.join(run_dir, "stage2.log"), year_hint)
-    traffic_samples = parse_traffic_samples(stage1_events)
+    info_early = load_key_values(os.path.join(run_dir, "run_info.txt"))
+    ingress_iface = info_early.get("ingress_iface") or first_capture_interface(stage1_events)
+    egress_iface = info_early.get("egress_iface") or None
+    traffic_samples = parse_traffic_samples(stage1_events, ingress_iface)
+    egress_capture_samples = (parse_traffic_samples(stage1_events, egress_iface)
+                              if egress_iface and egress_iface != ingress_iface else [])
     system_samples = load_system_samples(run_dir)
     clk_tck = load_clk_tck(run_dir)
     firewall = firewall_drops(load_firewall_rows(run_dir), [w[0] for w in windows] + ["session_end"])
@@ -576,6 +608,10 @@ def analyze_run(run_dir):
                 m["drains"] = counts["drains"]
             if duration > 0:
                 m["captured_pps"] = m["captured_packets"] / duration
+            if backend == "pcap" and egress_capture_samples:
+                egress_delta = traffic_delta(egress_capture_samples, start_ts, end_ts)
+                if egress_delta and egress_delta[0] == "pcap":
+                    m["egress_captured_packets"] = egress_delta[1]["raw_captured"]
 
         if system_samples:
             m["stage1"] = process_metrics(system_samples, start_ts, end_ts, clk_tck, "stage1")
@@ -747,7 +783,9 @@ def print_run_report(result):
         if "captured_packets" not in m:
             print("  Traffic: no capture status samples in this phase window")
         elif m["capture_backend"] == "pcap":
-            print(f"  Traffic (pcap): {m['captured_packets']} captured ({fmt(m.get('captured_pps'), ',.0f')} pps), "
+            egress_part = (f" ({m['egress_captured_packets']} more on the egress interface)"
+                           if "egress_captured_packets" in m else "")
+            print(f"  Traffic (pcap): {m['captured_packets']} captured ({fmt(m.get('captured_pps'), ',.0f')} pps){egress_part}, "
                   f"{m['forwarded_packets']} forwarded, {m['capture_dropped']} dropped "
                   f"({m['capture_unparseable']} unparseable, {m['capture_non_ip']} non-IP, "
                   f"{m['capture_truncated']} truncated), {m['capture_timeouts']} read timeouts")
@@ -1051,29 +1089,44 @@ def phase_verdict(m):
 
 
 def print_agreement(by_mode, modes, phases):
+    """Per phase: did each backend issue a DDoS verdict, and did it act (a block
+    or a rate limit)? Most mitigation comes from the enforcement tiers, which
+    can act without a class 2 verdict, so both are shown."""
     if len(modes) < 2:
         return
     first, second = modes[0], modes[1]
     print(f"--- Detection agreement between {first} and {second} ---")
-    print(f"  {'phase':<22}{'expected':>10}{first:>10}{second:>10}{'agree':>8}")
-    agree, total, correct = 0, 0, {mode: 0 for mode in modes[:2]}
+    print(f"  {'phase':<28}{'expected':>9}  {'DDoS verdict':<20}{'enforcement action':<22}")
+    print(f"  {'':<28}{'':>9}  {first:>9}{second:>9}{'':>2}{first:>9}{second:>9}")
+    totals = {"verdict": [0, 0, 0], "action": [0, 0, 0]}
+    total = 0
     for phase in phases:
-        a = mean_over_runs(by_mode[first], phase, lambda m: float(m["class2_verdicts"]))
-        b = mean_over_runs(by_mode[second], phase, lambda m: float(m["class2_verdicts"]))
-        if a is None or b is None:
+        v1 = mean_over_runs(by_mode[first], phase, lambda m: float(m["class2_verdicts"]))
+        v2 = mean_over_runs(by_mode[second], phase, lambda m: float(m["class2_verdicts"]))
+        a1 = mean_over_runs(by_mode[first], phase, lambda m: float(m["enforcement_actions"]))
+        a2 = mean_over_runs(by_mode[second], phase, lambda m: float(m["enforcement_actions"]))
+        if v1 is None or v2 is None:
             continue
         expected = phase_info(phase)[1]
-        va, vb = a > 0, b > 0
         total += 1
-        agree += int(va == vb)
-        correct[first] += int(va == expected)
-        correct[second] += int(vb == expected)
-        label = {True: "attack", False: "clean"}
-        print(f"  {phase:<22}{label[expected]:>10}{('detected' if va else 'quiet'):>10}"
-              f"{('detected' if vb else 'quiet'):>10}{('yes' if va == vb else 'NO'):>8}")
+        marks = []
+        for key, x, y in (("verdict", v1, v2), ("action", a1 or 0.0, a2 or 0.0)):
+            hit1, hit2 = x > 0, y > 0
+            totals[key][0] += int(hit1 == hit2)
+            totals[key][1] += int(hit1 == expected)
+            totals[key][2] += int(hit2 == expected)
+            marks.append(("acted" if hit1 else "quiet", "acted" if hit2 else "quiet"))
+        v_words = ("verdict" if v1 > 0 else "quiet", "verdict" if v2 > 0 else "quiet")
+        differ = " NO" if ((a1 or 0) > 0) != ((a2 or 0) > 0) or (v1 > 0) != (v2 > 0) else ""
+        print(f"  {phase:<28}{('attack' if expected else 'clean'):>9}  {v_words[0]:>9}{v_words[1]:>9}{'':>2}"
+              f"{marks[1][0]:>9}{marks[1][1]:>9}{differ}")
     if total:
-        print(f"  The backends agree on {agree} of {total} phases; "
-              f"{first} matches the expected verdict in {correct[first]}, {second} in {correct[second]}.")
+        for key, label in (("verdict", "DDoS verdict"), ("action", "enforcement action")):
+            agree, ok1, ok2 = totals[key]
+            print(f"  {label}: the backends agree on {agree} of {total} phases; {first} matches the expected "
+                  f"outcome in {ok1}, {second} in {ok2}.")
+    print("  A phase counts as expected to act only when it holds an attack. A clean phase where a backend")
+    print("  acted is a false positive, whatever the verdicts say.")
     print()
 
 

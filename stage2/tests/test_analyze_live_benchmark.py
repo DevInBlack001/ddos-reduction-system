@@ -290,5 +290,48 @@ class CalibrationLogTests(unittest.TestCase):
         self.assertIsNone(bench.load_calibration("/nonexistent"))
 
 
+class InterleavedInterfaceTests(unittest.TestCase):
+    def status(self, iface, raw, second):
+        return (f"2026-09-19 08:00:{second:02d}",
+                f"Sep 19 08:00:{second:02d} gw ddos_stage1[1]: [x INFO  ddos_stage1::capture] Capture: status | "
+                f"interface={iface} | raw_captured={raw} | timeouts=0 | parse_failed=0 | non_ip=0 | "
+                f"truncated=0 | forwarded={raw}")
+
+    def events(self):
+        return [self.status("ens256", 3000, 5), self.status("ens192", 100, 5),
+                self.status("ens256", 3500, 10), self.status("ens192", 250, 10)]
+
+    def test_lines_are_kept_apart_by_interface(self):
+        samples = bench.parse_traffic_samples(self.events(), "ens192")
+        self.assertEqual([c["raw_captured"] for _, _, c in samples], [100, 250])
+
+    def test_a_phase_delta_uses_one_interfaces_counters_only(self):
+        samples = bench.parse_traffic_samples(self.events(), "ens192")
+        backend, total = bench.traffic_delta(samples, "2026-09-19 08:00:07", "2026-09-19 08:00:12")
+        self.assertEqual(total["raw_captured"], 150)
+
+    def test_without_an_interface_every_line_is_read(self):
+        self.assertEqual(len(bench.parse_traffic_samples(self.events())), 4)
+
+    def test_the_first_status_line_names_the_default_interface(self):
+        self.assertEqual(bench.first_capture_interface(self.events()), "ens256")
+
+
+class StaleSampleTests(unittest.TestCase):
+    def counters(self, raw):
+        return {"raw_captured": raw, "timeouts": 0, "parse_failed": 0, "non_ip": 0, "truncated": 0, "forwarded": raw}
+
+    def test_a_phase_after_a_quiet_gap_in_the_status_lines_gets_no_total(self):
+        samples = [("2026-09-19 08:00:00", "pcap", self.counters(1000)),
+                   ("2026-09-19 08:02:30", "pcap", self.counters(9000))]
+        self.assertIsNone(bench.traffic_delta(samples, "2026-09-19 08:01:00", "2026-09-19 08:02:40"))
+
+    def test_a_phase_with_fresh_boundary_samples_still_gets_its_total(self):
+        samples = [("2026-09-19 08:00:55", "pcap", self.counters(1000)),
+                   ("2026-09-19 08:02:35", "pcap", self.counters(1500))]
+        backend, total = bench.traffic_delta(samples, "2026-09-19 08:01:00", "2026-09-19 08:02:40")
+        self.assertEqual(total["raw_captured"], 500)
+
+
 if __name__ == "__main__":
     unittest.main()
