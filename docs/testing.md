@@ -55,7 +55,7 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-427 tests across storage, configuration, request models, the database schema,
+460 tests across storage, configuration, request models, the database schema,
 the audit writers, enforcement, authentication, the three capture CSV writers
 (Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
 the deterministic safety overrides, IPC peer verification, the latency summary
@@ -64,7 +64,8 @@ log, the live benchmark's analysis functions
 the benchmark helper's input checks and rollback
 (`test_benchmark_mode_switch.py`, which runs the shell scripts against stubbed
 `systemctl`, `journalctl` and `ipset`), the model loader's ownership checks
-(in `test_storage.py`), and the installers' argument checks
+(in `test_storage.py`), the capture lock handling and batch scoring in `auto_label.py`, the
+victim scoped flow loader, the tree depth rule, `scripts/label_from_benchmark.py`, and the installers' argument checks
 (`test_install_scripts.py`, which runs `install.sh` and `update.sh` without root
 and so reaches only the argument checks that come before the root check).
 

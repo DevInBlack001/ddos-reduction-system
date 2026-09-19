@@ -100,7 +100,11 @@ tier, for sources that are elevated but ambiguous.
 **Tier 4, aggregate fallback.** If a window is classified as an attack but
 nothing above matched any individual source, traffic is distributed finely
 enough that no single source stands out. Every active flow to that host is
-throttled.
+throttled. The flow list comes from the sensor's snapshot, which it rewrites about
+every 10 seconds and which covers every protected host. Stage 2 keeps only the
+flows to the window's host and ignores a snapshot older than 30 seconds
+(`FLOD_FLOWS_MAX_AGE_SECS`), so an earlier phase's flows are never throttled for
+the current one.
 
 The progression is deliberate: blocking is only used where attribution is
 confident.

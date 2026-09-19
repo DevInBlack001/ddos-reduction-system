@@ -329,7 +329,8 @@ the second). Read the attach time for the restart.
   floods produced verdicts on one backend and none on the other, which shows how
   much the verdict count depends on timing at those rates.
 - In an attack-only phase of the first session both backends rate limited the 97
-  Flash Crowd addresses from the phase before. The cause is not established.
+  Flash Crowd addresses from the phase before. The cause was found afterwards:
+  see "Flow snapshot" below.
 
 ### Entropy (second session)
 
@@ -380,3 +381,82 @@ Normal traffic added.
   session had none.
 - **One run per backend.** The spread between identical runs is still unknown,
   and the latency stalls above show that some figures move a lot from run to run.
+
+### Follow-up on the open findings (2026-09-19)
+
+These come from the two sessions above, the gateway's capture files and models,
+and a replay of the captured windows. Nothing here needed a new run.
+
+- **Stage 2 falling behind.** One cause is confirmed. `auto_label.py` held the
+  capture file lock for a whole read, score and rewrite pass and scored one row at
+  a time. `ipc_receiver.py` waited on that lock inside its receive loop, so the
+  IPC socket filled and window handoff jumped from milliseconds to tens of
+  seconds. In the second session the only auto-label run (15:27:07 to 15:30:50,
+  3 min 42 s of CPU) matches the stalls logged at 15:28:26, 15:29:44 and 15:30:49.
+  A run on the gateway at 16:43 to 17:01 took about 18 minutes for a
+  50,000 row queue. Scoring the same 50,000 rows in one batch per model takes 2.0
+  seconds on the workstation and stages the same 21,867 rows as the gateway run.
+  The job now takes the lock only to read the file and to swap in the result with
+  any rows appended meanwhile, and the receive loop tries the lock without waiting
+  and queues rows in a bounded buffer.
+- **A stall with no auto-label run.** The libpcap run stalled from about 15:45:40
+  to 15:46:08 (handoff maximum 24.7 s). Stage 2 used about 7 CPU ticks per 5
+  seconds in that stretch against about 200 around it, so it was waiting and not
+  computing, and its log has nothing between 15:45:40 and 15:46:07. It then used
+  about a full core to catch up. The burst of 97 rate limits at 15:46:09 ran at
+  about 2 ms each after the stall ended, so that is a consequence. What Stage 2
+  waited on is not identified. Stage 2 now records the time it spends handling
+  each window (`busy` in the latency summary) and logs any window that takes a
+  second or more, which separates a stall inside Stage 2 from windows arriving
+  late.
+- **Flow snapshot.** Stage 1 writes every flow to every protected host into one
+  file about every 10 seconds, and Stage 2 read all of it on each DDoS window,
+  whatever host a flow targeted and however old the snapshot was. The aggregate
+  cap fallback therefore rate limited flows to other hosts and flows from the
+  phase before, which explains the 97 Flash Crowd addresses limited in an
+  attack-only phase. Enforcement now keeps only flows to the window's victim and
+  ignores a snapshot older than 30 seconds.
+- **Concentrated Flash Crowd.** The captured hot variant windows were replayed
+  through the deployed RandomForest and the safety overrides. The RandomForest
+  called them DDoS. The overrides changed no verdict. The hot windows have a
+  dominant source share of 0.2 to 0.3 (median 0.21 to 0.32 per run) where the Flash
+  Crowd corpus has 0.03 to 0.09, so a shallow forest reads them as concentrated.
+  `scripts/label_from_benchmark.py` labels captured windows from the traffic the
+  benchmark recorded for each phase. Adding one session's labeled rows (Normal, Flash
+  Crowd and DDoS windows, repeated 5 times) to the corpus and testing on the other
+  session, hot and even Flash Crowd windows called DDoS fell from 39 of 45 to 3 of 45
+  and from 20 of 27 to 0 of 27 (depth 5). DDoS windows in the attack phases were
+  still called DDoS (20,099 of 20,099, and 5,906 against 5,982 of 6,217).
+  These are small, biased sets, since the capture files hold only windows the
+  models called DDoS or doubted, so the figures show the direction and need the
+  final run to confirm them.
+- **Depth and the confidence gate.** The depth rule picked depth 3 because depths
+  3 to 5 tie at 0.997 accuracy. At depth 3, 75% of correctly classified held-out
+  rows reach 0.90 confidence, and 64% of the correctly called live DDoS windows do.
+  Depth 6 gives 88% and 96%. The rule now prefers the depth that clears the gate
+  more often among depths that tie on accuracy, and picks depth 6 on the current
+  corpus with 0.995 accuracy.
+- **Isolation Forest flag rate.** Under the deployed tuning the Isolation Forest
+  flagged 0.3% to 1.2% of Normal windows and 0.0% to 1.7% of Flash Crowd windows in
+  the four runs (1 to 3 of 257 to 300 windows in Normal, 15 of 876 at most in Flash
+  Crowd). The 100% and 27% figures came from the corpus and the deployed sigma floors
+  disagreeing. The model retrained on 2026-09-19 at 16:43 has not been measured live.
+- **Egress against ingress.** In the second session legitimate phases had egress
+  packets at 94% to 100% of ingress on both backends. The 2.4 times gap recorded
+  in August does not appear. The attack phases show 7% to 11%, which is the
+  firewall dropping the attack.
+- **Entropy variance.** `sigma_h` takes 20 distinct values in the 50,000 captured
+  DDoS windows, and six of them cover 93%. They are the entropy floors and ceilings
+  that different calibrations set (0.078 and 0.0787 are floors and cover 56% of the
+  windows, 0.2263 to 0.2369 are ceilings). The floor comes from the spread measured
+  across 33 clean windows per host during calibration, so a window sitting on it is
+  at the measured baseline spread. Its weight in the RandomForest is 0.15%.
+- **A torn row.** The gateway's `anomalous_capture.csv` holds one row of 18 fields,
+  two rows interleaved, written on 2026-09-18 at 13:47. It made every auto-label run
+  log a warning. Rows with the wrong column count are now dropped, and rows with a
+  non-finite value stay out of the models.
+- **Auto-labeled rows and the gate.** The 21,867 rows staged on the gateway are all
+  labeled DDoS. 7,567 fall in attack-only phases, 14,297 in phases that mix attack
+  with other traffic, and 3 in Flash Crowd phases. Of the at least 108 Flash Crowd
+  window verdicts captured as DDoS, 3 passed the agreement and confidence gate.
+

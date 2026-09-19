@@ -56,8 +56,32 @@ minor bump adds a feature, milestones are numbered separately from tags.
   the `normal` phase holds only steady state. The report shows each run's
   calibration and compares the floors between backends.
 
+- `scripts/label_from_benchmark.py` labels captured windows from the traffic a
+  benchmark recorded for each phase, for training on shapes the corpus lacks
+  (the concentrated Flash Crowd read as DDoS in both backend sessions).
+- Stage 2 records how long it spends handling each window (`busy` in the latency
+  summary) and logs a warning for any window that takes a second or more.
+
+### Changed
+
+- `train.py` picks the tree depth that clears the auto-labeling confidence
+  threshold most often among the depths that tie on accuracy, so the gate is no
+  longer close to arbitrary (depth 6 on the current corpus, where depth 3 was
+  chosen before).
+
 ### Fixed
 
+- Stage 2 no longer waits on a capture file's lock in its receive loop.
+  `auto_label.py` held that lock through a whole read, score and rewrite pass and
+  scored one row at a time, so windows queued behind it and handoff reached tens of
+  seconds. The job now locks only to read and to swap in the result with any rows
+  appended meanwhile, and scores in batches (2.0 s for 50,000 rows, about 18
+  minutes before on the gateway). Rows waiting for the lock are held in a bounded
+  buffer. A row with the wrong number of columns is dropped and a row with a
+  non-finite value stays out of the models.
+- Enforcement used every flow in the sensor's snapshot, whatever host it targeted
+  and however old the snapshot was. It now keeps only flows to the window's host
+  and ignores a snapshot older than 30 seconds.
 - The benchmark refuses to start when the gateway's egress interface has no IPv4
   address, and the report warns about any phase where more than 20% of the
   sample intervals had incoming traffic and no egress traffic. A gateway whose

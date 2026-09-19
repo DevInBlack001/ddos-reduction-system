@@ -510,9 +510,14 @@ Practical rules:
 `auto_label.py` accepts a row only when both models pick the same class with
 probability at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD` (default 0.90). A
 Random Forest's probability is the average of its trees' leaf purities, so
-its ceiling depends on tree depth. The depth sweep above picks the simplest
+its ceiling depends on tree depth. The depth sweep used to pick the simplest
 depth within `ACCURACY_TOLERANCE` of the best accuracy, which on the current
-corpus is depth 3, tied with depths 4 and 5 at 0.997.
+corpus is depth 3, tied with depths 4 and 5 at 0.997. It now also measures,
+for every depth, the share of held-out rows classified correctly at or above
+`AUTO_LABEL_CONFIDENCE_THRESHOLD`. Among the depths within the accuracy
+tolerance it keeps those within 2 points of the best share and takes the
+simplest, which is depth 6 on the current corpus (0.995 accuracy, 88% of
+held-out rows correct at 0.90 or above, against 75% at depth 3).
 
 On live DDoS windows from the gateway, the depth 3 forest tops out near 0.86
 and calls every one of them DDoS. Refitting on the same data at depth 4 puts
@@ -521,7 +526,9 @@ same leave one session out accuracy. At depth 3 the 0.90 gate sorts rows by
 which coarse leaf they land in. In the 2026-09-18 runs it accepted 445 of
 16,585 DDoS rows in one pass and 6,788 of 26,317 in another, and 71% of the
 rejected rows sat between 0.85 and 0.90. Lowering the threshold to 0.85
-would have accepted 20,642.
+would have accepted 20,642. On the 26,316 DDoS windows the 2026-09-19 benchmark
+captured in its attack phases, 64% of those depth 3 calls reach 0.90, against 90%
+at depth 5 and 96% at depth 6.
 
 Neither depth turns the confidence gate into a quality filter. The check that
 adds independent information is the second model, a different algorithm, and
@@ -531,6 +538,38 @@ The freshness rule compares file modification times: a row is eligible only
 if both models were saved after it was captured. Retraining on unchanged data
 saves new files with functionally identical models, so passing the rule shows
 only that the models were re-saved.
+
+## Labeling From a Benchmark
+
+**File:** `scripts/label_from_benchmark.py`
+
+The live benchmark records which traffic classes ran in each phase and when the
+phase began, so a captured window inside a phase has a known label without any
+model's opinion. The script reads one or more benchmark run directories and the
+capture files copied from the gateway, and writes a 13 column CSV in the training
+format:
+
+```bash
+scripts/label_from_benchmark.py \
+    --run benchmark-live-results/session_X/kernel_run1 \
+    --run benchmark-live-results/session_X/pcap_run1 \
+    --capture ddos_capture.csv --capture anomalous_capture.csv \
+    --out benchmark_labeled.csv
+```
+
+A phase with attack traffic is DDoS, a phase with Flash Crowd and no attack is
+Flash Crowd, and a phase with only Normal traffic is Normal. Rows in the first 15
+seconds and last 15 seconds of a phase (`--margin`) and phases with no traffic
+are skipped. By default only labels 0 and 1 are written, since the capture files
+hold windows the models called DDoS or doubted, so a Normal or Flash Crowd row in
+them is one the models got wrong. `--labels 0,1,2` adds the DDoS rows.
+
+This is how a shape the corpus lacks gets into it. The benchmark's `hot` Flash
+Crowd variant (one source far above the rest) has a dominant source share of 0.2
+to 0.3, where the corpus's Flash Crowd rows have 0.03 to 0.09, and a depth 3
+forest calls it DDoS. Merge the output into the training CSV the way any other
+labeled rows are merged, then retrain. `train.py` drops Flash Crowd rows below
+100 packets per second, so a hot window below that rate does not reach training.
 
 ## Where Merge Writes
 
