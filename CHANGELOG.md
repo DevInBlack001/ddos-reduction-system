@@ -47,6 +47,15 @@ minor bump adds a feature, milestones are numbered separately from tags.
   phase which signal flagged the anomaly windows (rate, entropy, or both) with
   the mean entropy and dominant source share.
 
+- The live benchmark can run `scripts/calibrate.py` during each run's warm-up
+  stage (`CALIBRATE=measure` or `apply`, off by default). It measures only,
+  and with `apply` the derived sigma floors are added to the sensor's tuning
+  line by the gateway helper, which restarts the sensor under timing and waits
+  for the baseline again, so the capture mode and baseline path the run
+  depends on are kept. The warm-up stage is now its own phase (`warmup`), so
+  the `normal` phase holds only steady state. The report shows each run's
+  calibration and compares the floors between backends.
+
 ### Fixed
 
 - The benchmark scripts now validate every config value that reaches a command

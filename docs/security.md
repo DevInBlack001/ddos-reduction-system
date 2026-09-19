@@ -226,6 +226,15 @@ sit at predictable paths in `/tmp`, where another account could swap a file
 between the copy and the run. Output paths that are symlinks are refused.
 Regression tests cover each of these.
 
+The calibration step copies `scripts/calibrate.py` into the same private
+directory and runs it as root on the gateway. It only measures, so it cannot
+write `tuning.env`. When floors are applied, the helper accepts only the exact
+shape `--rate-sigma-floor N [--entropy-sigma-floor N] [--entropy-sigma-ceiling N]`
+and appends it to the existing tuning line, so no other flag can reach the
+sensor that way. The rollback removes the debug logging drop-in that an
+interrupted calibration can leave behind, unless it existed before the
+benchmark.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

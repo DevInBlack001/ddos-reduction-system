@@ -35,13 +35,15 @@ comparison:
 | `NORMAL_VARIANTS`, `FLASHCROWD_VARIANTS`, `ATTACK_VARIANTS` | empty | Named variants of each traffic class. See [Traffic variety](#traffic-variety). |
 | `ATTACK_SWEEP_SECS` | `0` | Seconds each attack type runs alone, and again with Normal traffic, after the seven phases. 0 skips the sweep. |
 | `ATTACK_SOURCE_FILE`, `ATTACK_SOURCES_MIN`, `ATTACK_SOURCES_MAX` | empty, `30`, `40` | The run counts the addresses in this file on the attack host and stops outside the range. |
+| `CALIBRATE`, `CALIBRATE_WINDOWS`, `CALIBRATE_TIMEOUT_MINS` | `off`, `1000`, `30` | Runs `scripts/calibrate.py` during each run's warm-up stage. `off`, `measure` or `apply`. See [Calibration](#calibration-during-the-warm-up-stage). |
 | `REMOTE_DIR` | `/root/.flod_benchmark` | Root only directory on the gateway for the helper scripts and their output. |
 | `INGRESS_IFACE`, `EGRESS_IFACE` | empty | Interfaces whose kernel counters the sampler reads. Empty skips the interface figures. |
 | `BASELINE_DIR` | `/var/lib/ddos_stage1` | Where each run's own baseline file lives. |
 
-A run takes the warm-up (up to `WARMUP_TIMEOUT_SECS`, 900 by default), 1,050
-seconds of phases at the default durations, the switch, and the attack type
-sweep when it is on. With five attack types at 90 seconds alone, 90 seconds
+A run takes the warm-up (up to `WARMUP_TIMEOUT_SECS`, 900 by default), the
+calibration when it is on (up to `CALIBRATE_TIMEOUT_MINS`, plus a second warm-up
+if the floors are applied), 1,050 seconds of phases at the default durations,
+the switch, and the attack type sweep when it is on. With five attack types at 90 seconds alone, 90 seconds
 with Normal traffic and a 30 second gap each, the sweep adds another 1,050
 seconds. Two backends take between one and a half and two hours.
 
@@ -66,10 +68,14 @@ For each run the script:
    scratch. The production baseline file is left alone.
 3. Verifies the switch (unit active, the capture backend the sensor logged,
    whether an XDP program is attached, both ipsets present).
-4. Waits for warm-up, then runs the seven phases: Normal, Flash Crowd,
-   Attacker, Normal plus Flash Crowd, Normal plus Attacker, Flash Crowd plus
-   Attacker, all three.
-5. When the sweep is on, runs each attack type alone and then with Normal
+4. Starts Normal traffic and waits for warm-up. This is the warm-up stage,
+   recorded as its own phase, `warmup`, so the `normal` phase that follows holds
+   only steady state.
+5. When calibration is on, runs `calibrate.py` under that Normal traffic
+   (see below).
+6. Runs the seven phases: Normal, Flash Crowd, Attacker, Normal plus Flash
+   Crowd, Normal plus Attacker, Flash Crowd plus Attacker, all three.
+7. When the sweep is on, runs each attack type alone and then with Normal
    traffic (see below).
 
 After the last run it restores the original `tuning.env` byte for byte,
@@ -81,6 +87,47 @@ The traffic comes from the simulated lab environment's generator machines:
 Locust for Normal, a curl loop for Flash Crowd, and hping3 based scripts for
 the attacks. The attacker and flash crowd machines each carry sub-interfaces
 with about 100 addresses, and Locust runs 100 users.
+
+## Calibration during the warm-up stage
+
+The sigma floors that Stage 1 uses are a property of the network, and
+`scripts/calibrate.py` measures them from the sensor's own window log under
+Normal load. With `CALIBRATE` set, each run does that inside its warm-up stage,
+after the sensor has warmed up and before any measured phase, so the floors in
+force during the phases match the Normal traffic of that run and the result is
+part of the record.
+
+`calibrate.py` runs on the gateway with `--auto-debug` (which turns on the
+per-window debug logging it reads, then turns it off again) and `--partial`
+(which uses whatever it collected if the timeout arrives). The benchmark only
+lets it measure. It never lets `calibrate.py --apply` write `tuning.env`,
+because that replaces the whole file and would drop the capture mode and the
+per run baseline path the benchmark set. Instead:
+
+- `measure` records what calibration derived and leaves the floors already in
+  force.
+- `apply` also adds the derived floors to the end of the sensor's tuning line
+  (the sensor takes the last value for a flag), restarts the sensor, times
+  that restart, and waits for the baseline again before the phases start.
+- If calibration fails or finds no usable windows, the run continues with the
+  floors already in force and the report says so.
+
+The debug logging is off again before the phases begin, so it never affects the
+measured CPU or throughput. If the script is interrupted mid calibration, the
+rollback removes the debug drop-in it left behind, unless that drop-in was there
+before the benchmark started.
+
+Each backend calibrates on its own. With `apply` the two backends can end up
+with different floors, so their phases then run under different thresholds. The
+report shows the floors side by side and says so when they differ by more than
+10%. Use `measure` to keep the floors identical across backends. Each run
+records `calibration.txt`, `calibration.log` (the tool's own output) and, for
+`apply`, `calibration_apply.txt` (the tuning line before and after, and the
+restart timing).
+
+Calibration needs clean Normal windows on every protected host. A host that
+receives no Normal traffic never reaches the requested count, and the run
+continues on the partial sample.
 
 ## Traffic variety
 
@@ -137,6 +184,7 @@ flagged windows and are not a sample of all traffic.
 | Attack types and variants | Every phase lists the variant of each class it ran. The attack types section compares the backends on each type alone and with Normal traffic: DDoS verdicts, time to first block, detection consistency, and the entropy figures above. |
 | Attack to drop | From the start of an attack phase to the first anomaly flag, the first DDoS verdict, the first block, and the first rate limit. Only the first two attack phases start the generator from off, so only they report it. |
 | Detection consistency | Each phase is split into 10 second bins. In a benign phase, the share of bins with no DDoS verdict. In an attack phase, the share of bins holding a DDoS verdict from the first detection onward. The report also lists whether the two backends agree on each phase, and with `RUNS_PER_MODE` above 1, the spread between repeated runs. |
+| Calibration | For each run: the outcome, how long it took, the per target clean windows, flagged share, mean and peak rate and derived floors, the floors recommended for all targets, the tuning line before and after, the restart time to apply them, and the time until the baseline was back. The comparison shows the recommended floors and the mean rate per target for each backend. |
 | Downtime | From the request to stop the sensor to capture attached (for the kernel backend, the XDP attach line) and to the first capture status line. The status line is logged every 5 seconds, so that figure is coarse. |
 | Rollback time | The same two measurements after restoring the original configuration, with the outcome of the restore and of the verification checks. |
 
