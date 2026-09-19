@@ -72,7 +72,7 @@ not drive enforcement in this milestone. See
 [enforcement.md](enforcement.md#classification) and
 [training.md](training.md#the-isolation-forest).
 
-Verified against a real 35,442 row, 12 session capture: RandomForest LOSO
+Verified against a 35,442 row, 12 session capture from the simulated lab environment: RandomForest LOSO
 accuracy 0.989, DDoS precision 0.97 and recall 0.98. The eBPF side has since
 loaded and run on the lab gateway: the verifier accepted both programs, all
 seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
@@ -83,7 +83,7 @@ three raw features is also done.
 A retrain against jittered traffic generators, rather than the scripted,
 mechanically regular timing the original 35,442 row capture used, is
 done: 25,449 new rows across nine fresh sessions, merged with the
-original capture into a 60,891 row, 21 session dataset, real `sigma_r`
+original capture into a 60,891 row, 21 session dataset, `sigma_r`
 variation confirmed across every label, RandomForest LOSO accuracy
 0.997 on the full merged set. See
 [Benchmark](#benchmark-flod-vs-fixed-threshold) below for what that
@@ -138,7 +138,7 @@ for the details.
 
 Confirmed in the simulated lab environment. The first unattended run of
 `ddos-stage2-auto-label.timer` against captured data auto-labeled
-32,597 rows, surfacing two real findings. The
+32,597 rows, surfacing two findings. The
 freshness safeguard first blocked labeling entirely, correctly: the
 deployed RandomForest predated every captured row, so nothing could clear
 the "trained after capture" check until `ddos-stage2-retrain.timer` (see

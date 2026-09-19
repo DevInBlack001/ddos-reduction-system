@@ -47,7 +47,7 @@ checked.
 
 The Attacker phase's 5.2% figure counts only hysteresis gated "Class-2
 window" log lines, a narrower metric than actual enforcement volume.
-2,459 real rate-limit actions fired in that phase; most mitigation on a
+2,459 rate-limit actions fired in that phase; most mitigation on a
 pure attack phase happens through immediate per-source rate-limiting
 before the hysteresis threshold is ever reached.
 
@@ -71,7 +71,7 @@ the corpus's range. For Flash Crowd rows the figures are 100% and 0.0%.
 The label never drives enforcement on its own, and the zero enforcement
 actions during Normal and Flash Crowd above confirm that directly. The
 blocking decision belongs to the RandomForest, whose 0% false positive rate
-on real Flash Crowd traffic is the number that matters. The corpus and the
+on generated Flash Crowd traffic is the number that matters. The corpus and the
 deployed floors need to be captured under the same tuning for `Anomalous` to
 mean what it says. See [Training](training.md#capture-under-the-tuning-you-deploy).
 
@@ -155,17 +155,17 @@ less mature baseline than the seven-phase run above had.
 |---|---:|---:|---:|---|
 | Normal (shape B) | 0 | 0 | 0 | Clean |
 | Flash Crowd (unchanged) | 2,065 | 2 | 92 | ~0.1% escalated, not 0% |
-| Attacker (shape B) | 1,983 | 0 | 2,147 | Real mitigation held |
+| Attacker (shape B) | 1,983 | 0 | 2,147 | Mitigation held |
 
 Normal held clean under a request-timing pattern the model had never
 seen. Attacker held under a protocol mix the model had never seen,
-2,147 real enforcement actions is comparable mitigation strength to the
+2,147 enforcement actions is comparable mitigation strength to the
 original run's 2,459, even though the hysteresis-gated Class-2 log line
 count reads lower here for the same reason noted above. Flash Crowd is
-the one real blemish: 2 windows escalated to DDoS this time, against a
+the one blemish: 2 windows escalated to DDoS this time, against a
 clean 0 in the original run. It cannot be cleanly attributed to shape
 variation alone, since Flash Crowd's own generator was not varied here;
-the freshly relearned baseline from the forced restart is a real,
+the freshly relearned baseline from the forced restart is an
 unresolved confound. It is recorded separately from the clean seven-phase
 numbers above.
 
@@ -177,8 +177,8 @@ internet access on the generator VMs to install `tc` there, or applying
 ## System-health recording: first run
 
 `scripts/benchmark_live.sh` gained a system-health sampler this
-session: real CPU time and memory for both services over the whole
-run, and real packet throughput and drop counts parsed from the
+session: CPU time and memory for both services over the whole
+run, and packet throughput and drop counts parsed from the
 capture backend's own existing periodic log line. A run against the
 gateway on 2026-09-18 confirms the tooling itself works correctly
 against the deployed gateway in the simulated lab environment, as well as the
@@ -204,13 +204,13 @@ rate-limits, all directly reproducible from `stage2.log` and the final
 
 **What this run does not establish.** `benchmark_live.sh`'s own phase
 tracking stopped recording four phases early, `phase_boundaries.tsv`
-has no boundary past "Normal + Flash Crowd," while the real detection
+has no boundary past "Normal + Flash Crowd," while the detection
 activity above continued for roughly 35 more minutes after that. That
 means the phase-by-phase breakdown a normal run reports, and
 specifically the number that matters most for this project's own
 thesis, whether Flash Crowd traffic ever escalated to a DDoS verdict,
 cannot be reconstructed from this session's artifacts. The totals above
-are real; which phase produced which verdict is not known for most of
+stand; which phase produced which verdict is not known for most of
 this run. A clean rerun with working phase attribution is planned
 before this run's numbers are treated as a detection-accuracy result.
 
@@ -230,7 +230,7 @@ against (17:10 to 17:28 UTC, "run 4"), and the first rerun (14:14 to 14:32,
 | Flash Crowd + Attacker | 1,428 / 0 | 1,375 / 1,003 |
 | All three | 1,715 / 2 | 1,667 / 1,199 |
 
-Every phase without an attacker has no real false positive verdict in either
+Every phase without an attacker has no false positive verdict in either
 run. The 7 verdict lines in run 4's Normal + Flash Crowd phase are stamped in
 its first 1.2 seconds, the attacker generator stopping.
 
@@ -243,7 +243,7 @@ on the gateway every two minutes. Run 4's journal shows five clean
 `ddos-stage1` restarts, two of them inside the attacker phase. Escalation
 rose from 0 to 2% in run 1 to 36 to 73% in run 4, and the tuning changes and
 restarts are enough to account for that without any change in detection
-quality. A benchmark that shows a real difference needs the sigma floors set
+quality. A benchmark that shows a difference needs the sigma floors set
 before the session starts and left alone until it ends.
 
 Total kernel ingress per run varied from 1.8 million to 5.6 million packets

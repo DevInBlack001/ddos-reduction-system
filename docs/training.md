@@ -32,12 +32,12 @@ switch needs `tee` instead of a plain shell redirect.
 This rule is easy to violate in an automated capture script without
 noticing, not just a manual one. A script that starts an attack
 generator, sleeps through a ramp period, and only then sets the label
-has real, already-flowing traffic landing in the CSV for that whole
+has already-flowing traffic landing in the CSV for that whole
 sleep, still stamped with the previous phase's label. Six sessions in
 one V7 capture were caught this way: short (a few hundred rows against
 a real session's thousands), an elevated rate that did not match their
 label, sitting exactly at a phase boundary. Confirmed by comparing each
-one against the real, correctly-labelled session immediately next to it
+one against the correctly-labelled session immediately next to it
 in the same capture, not from rate or entropy thresholds alone, since a
 distributed flood's entropy can look as high as a legitimate crowd's.
 Relabelled to match what the traffic actually was rather than discarded.
@@ -116,7 +116,7 @@ capture, group the CSV by label and look at `sigma_r`'s spread. If it is a
 single repeated value for a label, the generator is too regular and the
 session is not worth keeping as is.
 
-Confirmed fixed on a real recapture: jittered burst timing (randomised
+Confirmed fixed on a recapture in the simulated lab environment: jittered burst timing (randomised
 gaps and packet counts, no unpaced flood mode, no full-silence stretch)
 produced real `sigma_r` variation across every label rather than a value
 pinned at the configured floor.
@@ -223,7 +223,7 @@ instead of turning over inside it, because a larger `contamination` simply
 flags more of everything and DDoS rows carry a heavier tailed anomaly score
 than benign ones. Picking the candidate with the largest raw score would
 always land on the edge of whatever range is given, `contamination=0.25` on
-a real 34,727 row capture, which flags 6.3% of ordinary traffic, roughly one
+a 34,727 row capture, which flags 6.3% of ordinary traffic, roughly one
 window in sixteen, as `Anomalous`. That defeats the point of a state meant
 to be a rare signal, and it is the same failure shape this project already
 fixed once for the entropy floor: a criterion that looks like an optimum
@@ -391,13 +391,13 @@ The staged rows are shown 500 to a page, with Previous and Next buttons
 under the table and a "Rows 1 to 500 of N" line. Paging changes only
 what is displayed. Merge and Discard still apply to every staged row.
 
-![The Auto Label review page, real staged rows from a completed confidence-gated run, showing every feature column and the class each row was assigned](images/auto-labelled.png)
+![The Auto Label review page, staged rows from a completed confidence-gated run, showing every feature column and the class each row was assigned](images/auto-labelled.png)
 
 ![The same page scrolled to the bottom of the staged table, showing the row count and that Merge or Discard applies to the whole file, not just what's currently shown](images/auto-labelled-1.png)
 
-![The browser's own confirmation prompt before a merge, since appending into the real training CSV cannot be undone from the page itself](images/merging.png)
+![The browser's own confirmation prompt before a merge, since appending into the training CSV cannot be undone from the page itself](images/merging.png)
 
-![The page immediately after a real merge: 9,538 rows appended into the training CSV, the staged queue now empty](images/merged.png)
+![The page immediately after a merge: 9,538 rows appended into the training CSV, the staged queue now empty](images/merged.png)
 
 ### Degenerate Windows Are Never Auto-Labeled
 

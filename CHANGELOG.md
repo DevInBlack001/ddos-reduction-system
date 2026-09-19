@@ -126,8 +126,8 @@ minor bump adds a feature, milestones are numbered separately from tags.
   training CSV from the dashboard.
 - `scripts/benchmark_live.sh` now records system health alongside
   detection outcomes: a new `scripts/benchmark_system_sampler.sh` polls
-  both services' real CPU time and memory on the gateway for the whole
-  session, and `analyze_live_benchmark.py` reports real packet
+  both services' CPU time and memory on the gateway for the whole
+  session, and `analyze_live_benchmark.py` reports packet
   throughput and drop counts per phase, parsed from the capture
   backend's own existing periodic log line, no new instrumentation
   needed there.
@@ -210,14 +210,14 @@ minor bump adds a feature, milestones are numbered separately from tags.
   automatically.
 - `scripts/benchmark_fixed_threshold.py`, comparing both trained models
   against a fixed rate threshold under genuine Leave-One-Session-Out
-  evaluation, with real training time, prediction latency, and system
+  evaluation, with training time, prediction latency, and system
   resource measurements alongside the detection numbers.
 - `scripts/train.sh`, an interactive selector for training one or both
   models against a chosen CSV.
 - `scripts/build-stage1.sh`, building Stage 1 and its eBPF backend as the
   invoking user rather than as root.
 - `docs/explainer.md`, `docs/lessons-learned.md`, `docs/benchmark-results.md`,
-  and real dashboard and architecture screenshots throughout the README
+  and dashboard and architecture screenshots throughout the README
   and docs.
 
 ### Fixed
