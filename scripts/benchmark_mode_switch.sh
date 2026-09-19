@@ -38,7 +38,7 @@ first_line_time() {
 
 wait_for_line() {
     local unit="$1" since="$2" pattern="$3" deadline found
-    deadline=$(awk -v n="$(now)" -v t="$READY_TIMEOUT_SECS" 'BEGIN { print n + t }')
+    deadline=$(awk -v n="$(now)" -v t="$READY_TIMEOUT_SECS" 'BEGIN { printf "%.3f", n + t }')
     while true; do
         found=$(first_line_time "$unit" "$since" "$pattern")
         if [ -n "$found" ]; then echo "$found"; return 0; fi
