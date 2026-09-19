@@ -68,6 +68,35 @@ def balance_classes(X, y):
     balanced = pd.concat(upsampled, ignore_index=True)
     return balanced[FEATURE_COLS], balanced[LABEL_COL]
 
+# Same variable and default auto_label.py reads (config.py imports logging
+# setup and path constants, which a training run has no use for).
+AUTO_LABEL_CONFIDENCE_THRESHOLD = float(os.environ.get("AUTO_LABEL_CONFIDENCE_THRESHOLD", "0.90"))
+
+
+def confident_share(y_true, probas, classes, threshold):
+    """Fraction of held-out rows the model gets right with a top-class
+    probability of at least threshold. Rows below it can never pass the
+    auto-labeling gate however correct they are."""
+    top = np.max(probas, axis=1)
+    predicted = np.asarray(classes)[np.argmax(probas, axis=1)]
+    return float(np.mean((predicted == np.asarray(y_true)) & (top >= threshold)))
+
+
+def pick_depth(candidates, accuracy_tolerance, share_tolerance):
+    """candidates: (depth, accuracy, confident_share, ...) tuples. Among the
+    depths within accuracy_tolerance of the best accuracy, keep those within
+    share_tolerance of the best confident share, then take the simplest. A
+    forest too shallow to reach the auto-labeling confidence threshold on
+    rows it classifies correctly makes that gate close to arbitrary, and
+    LOSO accuracy alone cannot see that. None (unlimited depth) sorts as
+    the most complex."""
+    peak_acc = max(c[1] for c in candidates)
+    near_peak = [c for c in candidates if c[1] >= peak_acc - accuracy_tolerance]
+    best_share = max(c[2] for c in near_peak)
+    confident = [c for c in near_peak if c[2] >= best_share - share_tolerance]
+    return min(confident, key=lambda c: c[0] if c[0] is not None else float("inf"))
+
+
 def main():
     print("=== DDoS Reduction Project: Stage 2 Training ===")
     
@@ -254,6 +283,10 @@ def main():
     # simplest depth within this tolerance of the best accuracy seen wins
     # instead. A starting point, not a proven value.
     ACCURACY_TOLERANCE = 0.005
+    # Among the depths that tie on accuracy, the one whose held-out rows most
+    # often clear the auto-labeling confidence threshold wins, within this
+    # tolerance, and the simplest of those is taken. A starting point too.
+    CONFIDENT_SHARE_TOLERANCE = 0.02
     best_depth = 5  # undocumented-data fallback if LOSO can't run at all below
     best_acc = -1.0
     best_fold_true, best_fold_pred, best_per_session = [], [], []
@@ -263,9 +296,10 @@ def main():
               "Every label needs at least one more independent session before tree depth "
               f"can be validated. Falling back to an UNVALIDATED default max_depth={best_depth}.")
     else:
-        candidates = []  # (depth, overall_acc, fold_true, fold_pred, per_session)
+        candidates = []  # (depth, overall_acc, confident_share, fold_true, fold_pred, per_session)
         for depth in CANDIDATE_MAX_DEPTHS:
             fold_true, fold_pred, per_session = [], [], []
+            fold_probas = []
             for sess_id in eligible_sessions:
                 test_df = df[df["session_id"] == sess_id]
                 train_df = df[df["session_id"] != sess_id]
@@ -276,7 +310,9 @@ def main():
 
                 fold_clf = RandomForestClassifier(n_estimators=100, max_depth=depth, random_state=42, n_jobs=-1)
                 fold_clf.fit(X_fold_train, y_fold_train)
-                y_fold_pred = fold_clf.predict(X_fold_test)
+                fold_proba = fold_clf.predict_proba(X_fold_test)
+                y_fold_pred = fold_clf.classes_[np.argmax(fold_proba, axis=1)]
+                fold_probas.append(fold_proba)
 
                 acc = (y_fold_pred == y_fold_test.values).mean()
                 per_session.append((sess_id, label, len(test_df), acc))
@@ -284,19 +320,23 @@ def main():
                 fold_pred.extend(y_fold_pred)
 
             overall_acc = float(np.mean(np.array(fold_true) == np.array(fold_pred)))
-            print(f"[+] max_depth={depth}: LOSO accuracy={overall_acc:.3f}")
-            candidates.append((depth, overall_acc, fold_true, fold_pred, per_session))
+            share = confident_share(
+                fold_true, np.vstack(fold_probas), fold_clf.classes_, AUTO_LABEL_CONFIDENCE_THRESHOLD
+            )
+            print(f"[+] max_depth={depth}: LOSO accuracy={overall_acc:.3f}, "
+                  f"held-out rows correct at >={AUTO_LABEL_CONFIDENCE_THRESHOLD:.2f} confidence={share:.3f}")
+            candidates.append((depth, overall_acc, share, fold_true, fold_pred, per_session))
 
-        peak_acc = max(acc for _, acc, _, _, _ in candidates)
-        within_tolerance = [c for c in candidates if c[1] >= peak_acc - ACCURACY_TOLERANCE]
-        # None (unlimited depth) sorts as the most complex, not the simplest.
-        best_depth, best_acc, best_fold_true, best_fold_pred, best_per_session = min(
-            within_tolerance, key=lambda c: c[0] if c[0] is not None else float("inf")
+        peak_acc = max(c[1] for c in candidates)
+        best_depth, best_acc, best_share, best_fold_true, best_fold_pred, best_per_session = pick_depth(
+            candidates, ACCURACY_TOLERANCE, CONFIDENT_SHARE_TOLERANCE
         )
 
         print(f"\n[+] Peak LOSO accuracy {peak_acc:.3f}. Selected max_depth={best_depth} "
-              f"(LOSO accuracy={best_acc:.3f}), the simplest depth within "
-              f"{ACCURACY_TOLERANCE:.1%} of the peak, for the production model below. This "
+              f"(LOSO accuracy={best_acc:.3f}, {best_share:.1%} of held-out rows correct at "
+              f">={AUTO_LABEL_CONFIDENCE_THRESHOLD:.2f} confidence): the simplest depth within "
+              f"{ACCURACY_TOLERANCE:.1%} of the peak accuracy and {CONFIDENT_SHARE_TOLERANCE:.0%} of "
+              "the best confident share, for the production model below. This "
               "was chosen fresh from the sessions currently in the CSV, a different or "
               "expanded capture set may select a different depth, so re-run this script "
               "(not just reuse this number) whenever sessions change.")
