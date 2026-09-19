@@ -35,6 +35,28 @@ minor bump adds a feature, milestones are numbered separately from tags.
   `docs/roadmap.md` gains V14, kernel space inference and enforcement, with a
   user space Random Forest fallback if the in-kernel program fails.
 
+- The live benchmark varies its traffic. Normal, Flash Crowd and the attack
+  each take named variants (`NORMAL_VARIANTS`, `FLASHCROWD_VARIANTS`,
+  `ATTACK_VARIANTS`) that rotate every time the class starts, offset by the run
+  number. With `ATTACK_SWEEP_SECS` set, every attack type also runs alone and
+  then with Normal traffic after the seven phases, with traffic stopped, both
+  ipsets emptied and Stage 2 restarted before each type. The report shows which
+  variant every phase ran and compares the backends on each attack type.
+- The benchmark checks the attacker's source address count against a
+  configured range (30 to 40 by default) and records it, and reports for each
+  phase which signal flagged the anomaly windows (rate, entropy, or both) with
+  the mean entropy and dominant source share.
+
+### Fixed
+
+- The benchmark scripts now validate every config value that reaches a command
+  line on the gateway, delete only `flod_benchmark_*.json` files in one named
+  directory instead of expanding a glob, keep their helper and output files in
+  a root only directory instead of `/tmp`, and refuse to write through a
+  symlink. Raised by an independent security review. A wait deadline that lost
+  precision, which could let a missing log line hold the helper for hours, was
+  also fixed.
+
 ### Changed
 
 - Documentation describes results as coming from the simulated lab

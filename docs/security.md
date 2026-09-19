@@ -210,6 +210,22 @@ generator machines. Do not point the script at a gateway that protects traffic
 you care about, and keep the config file (and its key paths) out of the
 repository, which `.gitignore` already does for `scripts/*.env`.
 
+An independent review on 2026-09-19 (Copilot) raised the shell handling in
+these scripts. The generator start and stop commands are shell you wrote, and
+the config file is sourced as shell, so it is trusted input and stays out of
+reach of anyone else. Three things were tightened. Every other config value
+that reaches a command line on the gateway (unit and ipset names, interfaces,
+paths, durations, variant names) is checked against a strict pattern, both when
+the config is read and again inside the helper, so a space or a wildcard in a
+path cannot add a sensor flag such as `--bpf-object` or widen a delete. The
+rollback deletes only files named `flod_benchmark_*.json` inside the one
+directory it is given and no longer takes a glob. And the helper, the sampler
+and their output files live in a root only 700 directory
+(`/root/.flod_benchmark`) that the script re-checks each time, and no longer
+sit at predictable paths in `/tmp`, where another account could swap a file
+between the copy and the run. Output paths that are symlinks are refused.
+Regression tests cover each of these.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

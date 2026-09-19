@@ -529,8 +529,10 @@ No throughput comparison has been made yet. That is a separate question from
 whether detection is preserved, and V14 makes it matter more. The tooling for
 it now exists: `scripts/benchmark_live.sh` runs the seven phase set against
 each backend in one session and measures throughput, CPU, context switches,
-Stage 2 latency, time from attack to drop, detection consistency, and the
-downtime and rollback time of switching backends, and
+Stage 2 latency, time from attack to drop, detection consistency across
+several Normal, Flash Crowd and attack variants (five attack types, each alone
+and with Normal traffic), and the downtime and rollback time of switching
+backends, and
 `scripts/analyze_live_benchmark.py` compares them (see
 [Backend Benchmark](benchmark-backends.md)). The first run in the simulated
 lab environment is pending.
