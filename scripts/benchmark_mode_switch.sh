@@ -15,15 +15,35 @@
 #
 # Usage:
 #   benchmark_mode_switch.sh switch <pcap|kernel> <baseline-path> <stage1-unit> <out-file> [stage2-unit blocklist-set ratelimit-set]
-#   benchmark_mode_switch.sh rollback <stage1-unit> <out-file> <original-mode> [benchmark-baseline-glob] [stage2-unit blocklist-set ratelimit-set]
+#   benchmark_mode_switch.sh rollback <stage1-unit> <out-file> <original-mode> [baseline-dir] [stage2-unit blocklist-set ratelimit-set]
 #   benchmark_mode_switch.sh verify <stage1-unit> <stage2-unit> <ingress-iface> <expected-mode> <blocklist-set> <ratelimit-set>
 #   benchmark_mode_switch.sh snapshot
+#   benchmark_mode_switch.sh reset-enforcement <stage2-unit> <blocklist-set> <ratelimit-set>
 set -uo pipefail
 
 TUNING_FILE="${FLOD_TUNING_FILE:-/etc/ddos_stage1/tuning.env}"
 BACKUP="${TUNING_FILE}.flod-benchmark-backup"
 ABSENT_MARK="${TUNING_FILE}.flod-benchmark-absent"
 READY_TIMEOUT_SECS="${READY_TIMEOUT_SECS:-60}"
+
+# Every value that reaches a command line, a file path, or the sensor's flag
+# line is checked against a strict pattern first. This script runs as root and
+# its arguments come from the benchmark config, so nothing is passed on
+# unchecked: a space in a path would add extra sensor flags, and a wildcard
+# would widen a delete.
+die() { echo "benchmark_mode_switch.sh: $*" >&2; exit 2; }
+UNIT_RE='^[A-Za-z0-9@:._-]{1,100}$'
+SET_RE='^[A-Za-z0-9_.-]{1,31}$'
+IFACE_RE='^[A-Za-z0-9_.:-]{1,15}$'
+PATH_RE='^/[A-Za-z0-9_./-]{1,200}$'
+require() { [[ "$2" =~ $3 ]] || die "invalid $1: '$2'"; }
+require_optional() { [ -z "$2" ] || require "$1" "$2" "$3"; }
+require_path() {
+    require "$1" "$2" "$PATH_RE"
+    case "$2" in *..*|/) die "invalid $1: '$2'" ;; esac
+}
+require_mode() { [[ "$2" =~ ^(pcap|kernel)$ ]] || die "invalid $1: '$2'"; }
+refuse_symlink() { [ ! -L "$1" ] || die "refusing to write through a symlink: $1"; }
 
 now() { date +%s.%N; }
 diff_secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", b - a }'; }
@@ -93,7 +113,14 @@ reset_enforcement() {
 
 cmd_switch() {
     local mode="$1" baseline="$2" unit="$3" out="$4" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}" orig t_issue t_stopped
-    case "$mode" in pcap|kernel) ;; *) echo "mode must be pcap or kernel" >&2; exit 2 ;; esac
+    require_mode mode "$mode"
+    require_path baseline-path "$baseline"
+    require unit "$unit" "$UNIT_RE"
+    require_path out-file "$out"
+    require_optional stage2-unit "$unit2" "$UNIT_RE"
+    require_optional blocklist-set "$blocklist" "$SET_RE"
+    require_optional ratelimit-set "$ratelimit" "$SET_RE"
+    refuse_symlink "$out"
     : > "$out"
     echo "action=switch" >> "$out"
     echo "mode=$mode" >> "$out"
@@ -121,8 +148,16 @@ cmd_switch() {
 }
 
 cmd_rollback() {
-    local unit="$1" out="$2" mode="${3:-}" glob="${4:-}" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}"
+    local unit="$1" out="$2" mode="${3:-}" dir="${4:-}" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}"
     local t_issue t_stopped restored_ok="none"
+    require unit "$unit" "$UNIT_RE"
+    require_path out-file "$out"
+    [ -z "$mode" ] || require_mode original-mode "$mode"
+    [ -z "$dir" ] || require_path baseline-dir "$dir"
+    require_optional stage2-unit "$unit2" "$UNIT_RE"
+    require_optional blocklist-set "$blocklist" "$SET_RE"
+    require_optional ratelimit-set "$ratelimit" "$SET_RE"
+    refuse_symlink "$out"
     : > "$out"
     echo "action=rollback" >> "$out"
     reset_enforcement "$unit2" "$blocklist" "$ratelimit"
@@ -137,9 +172,8 @@ cmd_rollback() {
         rm -f "$TUNING_FILE" "$ABSENT_MARK"
         restored_ok="removed"
     fi
-    if [ -n "$glob" ]; then
-        # shellcheck disable=SC2086
-        rm -f $glob
+    if [ -n "$dir" ]; then
+        find "$dir" -maxdepth 1 -type f -name 'flod_benchmark_*.json' -delete 2>/dev/null
     fi
     echo "tuning_restore=$restored_ok" >> "$out"
     start_and_time "$unit" "$t_issue" "$t_stopped" "$out" "$mode"
@@ -148,6 +182,12 @@ cmd_rollback() {
 cmd_verify() {
     local unit="$1" unit2="$2" iface="$3" expected="$4" blocklist="$5" ratelimit="$6"
     local actual xdp started
+    require unit "$unit" "$UNIT_RE"
+    require unit "$unit2" "$UNIT_RE"
+    require_optional interface "$iface" "$IFACE_RE"
+    [ -z "$expected" ] || require_mode expected-mode "$expected"
+    require_optional blocklist-set "$blocklist" "$SET_RE"
+    require_optional ratelimit-set "$ratelimit" "$SET_RE"
     check() { echo "check=$1 result=$2 detail=$3"; }
     if [ "$(systemctl is-active "$unit")" = "active" ]; then check stage1_active pass active; else check stage1_active fail "$(systemctl is-active "$unit")"; fi
     if [ "$(systemctl is-active "$unit2")" = "active" ]; then check stage2_active pass active; else check stage2_active fail "$(systemctl is-active "$unit2")"; fi
@@ -191,6 +231,12 @@ cmd_snapshot() {
 
 case "${1:-}" in
     snapshot) cmd_snapshot ;;
+    reset-enforcement)
+        shift
+        require unit "${1:?stage2 unit}" "$UNIT_RE"
+        require blocklist-set "${2:?blocklist set}" "$SET_RE"
+        require ratelimit-set "${3:?ratelimit set}" "$SET_RE"
+        reset_enforcement "$1" "$2" "$3" ;;
     switch)   shift; cmd_switch "${1:?mode}" "${2:?baseline path}" "${3:?stage1 unit}" "${4:?out file}" "${5:-}" "${6:-}" "${7:-}" ;;
     rollback) shift; cmd_rollback "${1:?stage1 unit}" "${2:?out file}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
     verify)   shift; cmd_verify "${1:?stage1 unit}" "${2:?stage2 unit}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;

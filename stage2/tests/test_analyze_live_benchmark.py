@@ -191,5 +191,67 @@ class ModeSwitchFileTests(unittest.TestCase):
         self.assertEqual(bench.load_key_values("/nonexistent/none.txt"), {})
 
 
+class PhaseInfoTests(unittest.TestCase):
+    def test_a_standard_phase_is_known_and_reports_whether_it_holds_an_attack(self):
+        self.assertEqual(bench.phase_info("normal"), (True, False, False, None))
+        self.assertEqual(bench.phase_info("attacker"), (True, True, True, None))
+        self.assertEqual(bench.phase_info("all_three"), (True, True, False, None))
+
+    def test_a_sweep_phase_carries_its_attack_type(self):
+        self.assertEqual(bench.phase_info("attacker_shapeb"), (True, True, True, "shapeb"))
+        self.assertEqual(bench.phase_info("normal_attacker_single_mp"), (True, True, False, "single_mp"))
+
+    def test_gap_and_unknown_phases_are_not_analyzed(self):
+        self.assertFalse(bench.phase_info("gap_shapeb")[0])
+        self.assertFalse(bench.phase_info("session_start")[0])
+        self.assertFalse(bench.phase_info("flashcrowd_attacker_x")[0])
+
+
+class AnomalySignalTests(unittest.TestCase):
+    LINE = ("Sep 19 08:00:05 gw ddos_stage1[1]: ANOMALY window 7 [victim=192.0.2.10] | flags={flags} | "
+            "r=900.0 (boundary=60.0) | h={h} (boundary=0.5000) | proto_ratio=0.500 | dom_ratio={dom} | "
+            "dominant_ip=198.51.100.7")
+
+    def events(self, *rows):
+        return [("2026-09-19 08:00:05", self.LINE.format(flags=f, h=h, dom=d)) for f, h, d in rows]
+
+    def test_windows_are_split_by_which_signal_flagged_them(self):
+        stats = bench.anomaly_signal_stats(self.events(("0x01", "0.9", "0.1"), ("0x02", "0.2", "0.9"), ("0x03", "0.3", "0.8")))
+        self.assertEqual((stats["flagged_rate_only"], stats["flagged_entropy_only"], stats["flagged_both"]), (1, 1, 1))
+
+    def test_the_entropy_share_counts_entropy_only_and_both(self):
+        stats = bench.anomaly_signal_stats(self.events(("0x01", "0.9", "0.1"), ("0x02", "0.2", "0.9"), ("0x03", "0.3", "0.8"), ("0x01", "0.9", "0.1")))
+        self.assertAlmostEqual(stats["entropy_flag_pct"], 50.0)
+
+    def test_the_means_cover_every_flagged_window(self):
+        stats = bench.anomaly_signal_stats(self.events(("0x01", "0.8", "0.2"), ("0x01", "0.4", "0.6")))
+        self.assertAlmostEqual(stats["mean_entropy"], 0.6)
+        self.assertAlmostEqual(stats["mean_dominance"], 0.4)
+
+    def test_no_anomaly_lines_gives_no_figures(self):
+        self.assertEqual(bench.anomaly_signal_stats([("2026-09-19 08:00:05", "Sep 19 08:00:05 gw x: heartbeat")]), {})
+
+
+class VariantFileTests(unittest.TestCase):
+    def test_variants_are_grouped_by_phase_and_class(self):
+        path = _support.temp_path(".tsv")
+        with open(path, "w") as handle:
+            handle.write("normal\tnormal\tbaseline\tSmooth browsing\n"
+                         "attacker\tattack\tshapeb\tUDP heavy\nattacker\tnormal\tbursty\t\n")
+        directory = os.path.dirname(path)
+        target = os.path.join(directory, "traffic_variants.tsv")
+        os.replace(path, target)
+        try:
+            result = bench.load_variants(directory)
+        finally:
+            _support.unlink(target)
+        self.assertEqual(result["normal"]["normal"], ("baseline", "Smooth browsing"))
+        self.assertEqual(result["attacker"]["attack"], ("shapeb", "UDP heavy"))
+        self.assertEqual(result["attacker"]["normal"], ("bursty", ""))
+
+    def test_a_missing_file_reads_as_empty(self):
+        self.assertEqual(bench.load_variants("/nonexistent"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

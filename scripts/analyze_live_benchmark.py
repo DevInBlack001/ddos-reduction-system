@@ -40,6 +40,7 @@ ATTACK_PHASES = ("attacker", "normal_attacker", "flashcrowd_attacker", "all_thre
 # Phases where the attack generator starts from off. In the others it is
 # already running from the previous phase.
 FRESH_ATTACK_PHASES = ("attacker", "normal_attacker")
+SWEEP_RE = re.compile(r"^(attacker|normal_attacker)_([a-z0-9_]{1,20})$")
 BIN_SECS = 10
 LATENCY_KINDS = ("handoff", "inference", "enforcement", "window_to_rule")
 
@@ -48,6 +49,35 @@ CLASS2_PATTERNS = (
     "Class-2 verdict but no active flow data",
     "Aggregate cap fallback: class-2 verdict",
 )
+
+
+def phase_info(name):
+    """(known, is attack phase, attack starts from off in it, attack type).
+
+    The seven standard phases have fixed names. The attack type sweep adds
+    attacker_<type> (the attack alone, starting from off) and
+    normal_attacker_<type> (the same attack with Normal traffic added).
+    """
+    if name in PHASE_ORDER:
+        return True, name in ATTACK_PHASES, name in FRESH_ATTACK_PHASES, None
+    m = SWEEP_RE.match(name)
+    if m:
+        return True, True, m.group(1) == "attacker", m.group(2)
+    return False, False, False, None
+
+
+def load_variants(run_dir):
+    """phase -> {class: (variant, description)} from traffic_variants.tsv."""
+    path = os.path.join(run_dir, "traffic_variants.tsv")
+    result = {}
+    if not os.path.exists(path):
+        return result
+    with open(path) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 3:
+                result.setdefault(parts[0], {})[parts[1]] = (parts[2], parts[3] if len(parts) > 3 else "")
+    return result
 
 
 def to_dt(ts):
@@ -328,6 +358,47 @@ def network_metrics(samples, start_ts, end_ts):
     return metrics
 
 
+ANOMALY_RE = re.compile(
+    r"ANOMALY window \d+ \[victim=\S+?\] \| flags=0x([0-9a-fA-F]+) \| r=([\d.]+) \(boundary=[\d.]+\) \| "
+    r"h=([\d.]+) \(boundary=[\d.]+\) \| proto_ratio=([\d.]+) \| dom_ratio=([\d.]+)"
+)
+
+
+def anomaly_signal_stats(events):
+    """Which signal flagged each anomaly window, and what it looked like.
+
+    Stage 1 forwards only flagged windows and heartbeats, so these figures
+    describe the flagged windows, and are not a sample of all traffic.
+    """
+    rate_only = entropy_only = both = 0
+    entropy_values, dominance_values = [], []
+    for _, line in events:
+        m = ANOMALY_RE.search(line)
+        if not m:
+            continue
+        flags = int(m.group(1), 16)
+        has_rate, has_entropy = bool(flags & 0x01), bool(flags & 0x02)
+        if has_rate and has_entropy:
+            both += 1
+        elif has_entropy:
+            entropy_only += 1
+        elif has_rate:
+            rate_only += 1
+        entropy_values.append(float(m.group(3)))
+        dominance_values.append(float(m.group(5)))
+    total = rate_only + entropy_only + both
+    if total == 0:
+        return {}
+    return {
+        "flagged_rate_only": rate_only,
+        "flagged_entropy_only": entropy_only,
+        "flagged_both": both,
+        "entropy_flag_pct": 100.0 * (entropy_only + both) / total,
+        "mean_entropy": sum(entropy_values) / len(entropy_values),
+        "mean_dominance": sum(dominance_values) / len(dominance_values),
+    }
+
+
 LATENCY_LINE_RE = {
     kind: re.compile(
         rf"{kind}_n=(\d+)(?: {kind}_mean_ms=([\d.]+) {kind}_p95_ms=([\d.]+) {kind}_max_ms=([\d.]+))?"
@@ -445,15 +516,20 @@ def analyze_run(run_dir):
     firewall = firewall_drops(load_firewall_rows(run_dir), [w[0] for w in windows] + ["session_end"])
     info = load_key_values(os.path.join(run_dir, "run_info.txt"))
     switch = load_key_values(os.path.join(run_dir, "mode_switch.txt"))
+    variants = load_variants(run_dir)
 
     phases = {}
     for name, start_ts, end_ts in windows:
-        if name not in PHASE_ORDER:
+        known, is_attack, is_fresh, attack_type = phase_info(name)
+        if not known:
             continue
         s1 = events_in(stage1_events, start_ts, end_ts)
         s2 = events_in(stage2_events, start_ts, end_ts)
         duration = seconds_between(start_ts, end_ts)
-        m = {"start": start_ts, "end": end_ts, "duration_secs": duration}
+        m = {"start": start_ts, "end": end_ts, "duration_secs": duration,
+             "is_attack": is_attack, "is_fresh": is_fresh, "attack_type": attack_type,
+             "variants": variants.get(name, {})}
+        m.update(anomaly_signal_stats(s1))
 
         anomaly_by_victim = {}
         for _, line in s1:
@@ -471,9 +547,8 @@ def analyze_run(run_dir):
         if m["anomaly_windows"] > 0:
             m["class2_rate_pct"] = 100.0 * m["class2_verdicts"] / m["anomaly_windows"]
 
-        expect_attack = name in ATTACK_PHASES
-        m["consistency_pct"] = bin_consistency(class2_times, start_ts, end_ts, expect_attack)
-        if name in FRESH_ATTACK_PHASES:
+        m["consistency_pct"] = bin_consistency(class2_times, start_ts, end_ts, is_attack)
+        if is_fresh:
             m["first_anomaly_secs"] = first_time_after(stage1_events, start_ts, end_ts, lambda l: "ANOMALY" in l)
             m["first_class2_secs"] = first_time_after(
                 stage2_events, start_ts, end_ts, lambda l: any(p in l for p in CLASS2_PATTERNS))
@@ -524,6 +599,7 @@ def analyze_run(run_dir):
         "switch": switch,
         "verify": load_checks(os.path.join(run_dir, "mode_verify.txt")),
         "phases": phases,
+        "variants": variants,
         "system_samples": system_samples,
     }
 
@@ -545,10 +621,27 @@ def print_run_report(result):
     if info:
         print(f"Warm-up: {'complete' if info.get('warmed') == '1' else 'not confirmed'} "
               f"after ~{info.get('warmup_secs', '?')}s")
+        sources = ", ".join(f"{label} {info[key]}" for label, key in
+                            (("attack", "attack_sources"), ("normal", "normal_sources"),
+                             ("flash crowd", "flashcrowd_sources")) if info.get(key))
+        if sources:
+            print(f"Source addresses: {sources}")
+        for label, key in (("Normal", "normal_variants"), ("Flash Crowd", "flashcrowd_variants"),
+                           ("Attack", "attack_variants")):
+            if info.get(key):
+                print(f"{label} variants in rotation: {info[key]}")
     print()
 
     for name, m in result["phases"].items():
         print(f"--- Phase: {name} ({m['start']} to {m['end']}, {m['duration_secs']:.0f}s) ---")
+        if m["variants"]:
+            print("  Traffic: " + ", ".join(
+                f"{cls} '{v}'" + (f" ({d})" if d else "") for cls, (v, d) in m["variants"].items()))
+        if "entropy_flag_pct" in m:
+            print(f"  Signals on anomaly windows: {m['flagged_rate_only']} rate only, "
+                  f"{m['flagged_entropy_only']} entropy only, {m['flagged_both']} both "
+                  f"({m['entropy_flag_pct']:.1f}% involve entropy); mean entropy {m['mean_entropy']:.3f}, "
+                  f"mean dominant source share {m['mean_dominance']:.3f}")
         print(f"  Anomaly-flagged windows (Stage 1): {m['anomaly_windows']}"
               + (f" across {len(m['anomaly_by_victim'])} targets" if m["anomaly_by_victim"] else ""))
         for victim, count in sorted(m["anomaly_by_victim"].items()):
@@ -557,13 +650,13 @@ def print_run_report(result):
         print(f"  Enforcement actions triggered: {m['enforcement_actions']} "
               f"({m['blocks']} blocks, {m['ratelimits']} rate limits)")
         if "class2_rate_pct" in m:
-            label = "escalation rate" if name in ATTACK_PHASES else "false-positive rate (of anomaly-flagged windows)"
+            label = "escalation rate" if m["is_attack"] else "false-positive rate (of anomaly-flagged windows)"
             print(f"  {label}: {m['class2_rate_pct']:.1f}%")
         if m["consistency_pct"] is not None:
-            what = "attack verdicts in the bins after the first detection" if name in ATTACK_PHASES \
+            what = "attack verdicts in the bins after the first detection" if m["is_attack"] \
                 else "bins with no DDoS verdict"
             print(f"  Detection consistency ({BIN_SECS}s bins, {what}): {m['consistency_pct']:.1f}%")
-        if name in FRESH_ATTACK_PHASES:
+        if m["is_fresh"]:
             print("  Time from phase start to: "
                   f"first anomaly flag {fmt_secs(m.get('first_anomaly_secs'))}, "
                   f"first DDoS verdict {fmt_secs(m.get('first_class2_secs'))}, "
@@ -693,8 +786,22 @@ COMPARISON_METRICS = (
     ("Time to first DDoS verdict (s)", lambda m: m.get("first_class2_secs"), ".1f"),
     ("Time to first block, attack to drop (s)", lambda m: m.get("first_block_secs"), ".1f"),
     ("Detection consistency (%)", lambda m: m.get("consistency_pct"), ".1f"),
+    ("Anomaly windows involving entropy (%)", lambda m: m.get("entropy_flag_pct"), ".1f"),
+    ("Mean entropy of anomaly windows", lambda m: m.get("mean_entropy"), ".3f"),
+    ("Mean dominant source share of anomaly windows", lambda m: m.get("mean_dominance"), ".3f"),
     ("DDoS verdict share of anomaly windows (%)", lambda m: m.get("class2_rate_pct"), ".1f"),
 )
+
+
+def all_phases(results):
+    """The standard phases in order, then any sweep phases in the order they ran."""
+    seen = []
+    for r in results:
+        for name in r["phases"]:
+            if name not in seen:
+                seen.append(name)
+    standard = [n for n in PHASE_ORDER if n in seen]
+    return standard + [n for n in seen if n not in PHASE_ORDER]
 
 
 def mean_over_runs(runs, phase, getter):
@@ -729,6 +836,7 @@ def print_comparison(results):
     for r in results:
         by_mode.setdefault(r["mode"], []).append(r)
     modes = list(by_mode)
+    phases = all_phases(results)
     print("=== Backend comparison ===")
     print(f"Backends: {', '.join(f'{m} ({len(by_mode[m])} run(s))' for m in modes)}. "
           "Figures are per phase, averaged over runs of the same backend.")
@@ -740,7 +848,7 @@ def print_comparison(results):
     delta_header = f"{'Δ ' + modes[1] + ' vs ' + modes[0]:>26}" if len(modes) == 2 else ""
     for label, getter, spec in COMPARISON_METRICS:
         rows = []
-        for phase in PHASE_ORDER:
+        for phase in phases:
             values = [mean_over_runs(by_mode[m], phase, getter) for m in modes]
             if all(v is None for v in values):
                 continue
@@ -759,9 +867,60 @@ def print_comparison(results):
             print(f"  {phase:<22}{cells}{delta}")
         print()
 
-    print_agreement(by_mode, modes)
-    print_run_to_run(by_mode)
+    print_attack_types(by_mode, modes, phases)
+    print_agreement(by_mode, modes, phases)
+    print_run_to_run(by_mode, phases)
     print_switching(results, by_mode)
+
+
+def attack_type_descriptions(results):
+    """type -> description, from the variants each run recorded."""
+    found = {}
+    for r in results:
+        for phase_variants in r["variants"].values():
+            if "attack" in phase_variants:
+                variant, description = phase_variants["attack"]
+                if description and variant not in found:
+                    found[variant] = description
+    return found
+
+
+def print_attack_types(by_mode, modes, phases):
+    """One block per attack type covered by the sweep, backends side by side."""
+    types = []
+    for phase in phases:
+        attack_type = phase_info(phase)[3]
+        if attack_type and attack_type not in types:
+            types.append(attack_type)
+    if not types:
+        return
+    results = [r for runs in by_mode.values() for r in runs]
+    descriptions = attack_type_descriptions(results)
+    print("--- Attack types ---")
+    print("  Each type runs alone, then with Normal traffic added. Entropy figures cover the anomaly")
+    print("  windows Stage 1 forwarded. The share of source addresses an attack uses decides how far its")
+    print("  entropy sits from Normal and Flash Crowd traffic.")
+    rows = (
+        ("alone: DDoS verdicts", "attacker_", lambda m: float(m["class2_verdicts"]), ",.0f"),
+        ("alone: time to first block (s)", "attacker_", lambda m: m.get("first_block_secs"), ".1f"),
+        ("alone: entropy involved (%)", "attacker_", lambda m: m.get("entropy_flag_pct"), ".1f"),
+        ("alone: mean entropy", "attacker_", lambda m: m.get("mean_entropy"), ".3f"),
+        ("with Normal: DDoS verdicts", "normal_attacker_", lambda m: float(m["class2_verdicts"]), ",.0f"),
+        ("with Normal: detection consistency (%)", "normal_attacker_", lambda m: m.get("consistency_pct"), ".1f"),
+        ("with Normal: entropy involved (%)", "normal_attacker_", lambda m: m.get("entropy_flag_pct"), ".1f"),
+        ("with Normal: mean entropy", "normal_attacker_", lambda m: m.get("mean_entropy"), ".3f"),
+    )
+    header = "".join(f"{m:>14}" for m in modes)
+    for attack_type in types:
+        desc = descriptions.get(attack_type)
+        print(f"  {attack_type}" + (f": {desc}" if desc else ""))
+        print(f"    {'':<42}{header}")
+        for label, prefix, getter, spec in rows:
+            values = [mean_over_runs(by_mode[m], prefix + attack_type, getter) for m in modes]
+            if all(v is None for v in values):
+                continue
+            print(f"    {label:<42}" + "".join(f"{fmt(v, spec):>14}" for v in values))
+    print()
 
 
 def phase_verdict(m):
@@ -770,19 +929,19 @@ def phase_verdict(m):
     return m["class2_verdicts"] > 0
 
 
-def print_agreement(by_mode, modes):
+def print_agreement(by_mode, modes, phases):
     if len(modes) < 2:
         return
     first, second = modes[0], modes[1]
     print(f"--- Detection agreement between {first} and {second} ---")
     print(f"  {'phase':<22}{'expected':>10}{first:>10}{second:>10}{'agree':>8}")
     agree, total, correct = 0, 0, {mode: 0 for mode in modes[:2]}
-    for phase in PHASE_ORDER:
+    for phase in phases:
         a = mean_over_runs(by_mode[first], phase, lambda m: float(m["class2_verdicts"]))
         b = mean_over_runs(by_mode[second], phase, lambda m: float(m["class2_verdicts"]))
         if a is None or b is None:
             continue
-        expected = phase in ATTACK_PHASES
+        expected = phase_info(phase)[1]
         va, vb = a > 0, b > 0
         total += 1
         agree += int(va == vb)
@@ -797,11 +956,13 @@ def print_agreement(by_mode, modes):
     print()
 
 
-def print_run_to_run(by_mode):
+def print_run_to_run(by_mode, phases):
     repeated = {m: runs for m, runs in by_mode.items() if len(runs) > 1}
     if not repeated:
         return
     print("--- Run-to-run spread (standard deviation across repeated runs) ---")
+    print("  Traffic variants rotate between runs by design, so this spread includes the effect of the")
+    print("  different variants as well as ordinary variation between identical runs.")
     checks = (
         ("DDoS verdicts", lambda m: float(m["class2_verdicts"]), ".1f"),
         ("time to first block (s)", lambda m: m.get("first_block_secs"), ".2f"),
@@ -812,7 +973,7 @@ def print_run_to_run(by_mode):
         print(f"  {mode}:")
         for label, getter, spec in checks:
             cells = []
-            for phase in PHASE_ORDER:
+            for phase in phases:
                 s = spread_over_runs(runs, phase, getter)
                 if s is not None:
                     cells.append(f"{phase} {format(s, spec)}")
