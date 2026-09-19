@@ -459,4 +459,15 @@ and a replay of the captured windows. Nothing here needed a new run.
   labeled DDoS. 7,567 fall in attack-only phases, 14,297 in phases that mix attack
   with other traffic, and 3 in Flash Crowd phases. Of the at least 108 Flash Crowd
   window verdicts captured as DDoS, 3 passed the agreement and confidence gate.
+- **Why every staged row is DDoS.** The two capture files that hold scorable rows
+  are `ddos_capture.csv`, which only ever receives windows the RandomForest called
+  DDoS, and `anomalous_capture.csv`, which receives windows the Isolation Forest
+  flagged. Routine Normal and Flash Crowd windows enter neither, so the labeling
+  pass has no path to a Normal or Flash Crowd row from ordinary traffic. On the
+  gateway's 2026-09-19 files the DDoS capture yielded all 21,867 staged rows and the
+  anomalous capture yielded none: 35,996 of its 49,999 rows are zero-traffic windows
+  (all six traffic fields exactly 0.0), which are never labeled, and none of the
+  other 14,003 reach 0.90 confidence in the RandomForest. Zero-traffic windows are no
+  longer written to the anomalous capture. Rows labeled from benchmark phases fill the
+  gap (`scripts/label_from_benchmark.py`).
 

@@ -138,6 +138,19 @@ class WriteAnomalousRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)  # header + two data rows
         self.assertNotEqual(rows[1][13], "entropy")
 
+    def test_a_zero_traffic_window_is_not_captured(self):
+        idle = dict(FEATURES, entropy=0.0, proto_ratio=0.0, dominant_ip_ratio=0.0,
+                    source_port_entropy=0.0, ttl_variance=0.0, fingerprint_diversity=0.0)
+        ipc_receiver._write_anomalous_row("192.0.2.10", -0.05, "Normal", **idle)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_a_window_with_any_traffic_signal_is_still_captured(self):
+        quiet = dict(FEATURES, entropy=0.0, proto_ratio=0.0, dominant_ip_ratio=0.0,
+                     source_port_entropy=0.0, ttl_variance=0.0, fingerprint_diversity=0.0)
+        quiet["proto_ratio"] = 1.0
+        ipc_receiver._write_anomalous_row("192.0.2.10", -0.05, "Normal", **quiet)
+        self.assertTrue(os.path.exists(self.path))
+
     def test_a_second_flagged_window_appends_rather_than_overwriting(self):
         ipc_receiver._write_anomalous_row("192.0.2.10", -0.05, "Normal", **FEATURES)
         ipc_receiver._write_anomalous_row("192.0.2.11", -0.06, "Flash Crowd", **FEATURES)

@@ -225,6 +225,15 @@ def _base_feature_row(feature_values):
     ]
 
 
+# A window where all of these read exactly 0.0 saw no traffic. auto_label.py
+# never labels one (DEGENERATE_FIELDS there lists the same fields), and they
+# made up 36,000 of the 50,000 rows in one gateway's anomalous capture.
+ZERO_TRAFFIC_FIELDS = (
+    "entropy", "proto_ratio", "dominant_ip_ratio",
+    "source_port_entropy", "ttl_variance", "fingerprint_diversity",
+)
+
+
 def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     """Append one Anomalous window to config.ANOMALOUS_CSV_PATH for later
     review. label is left blank: nothing here knows what this traffic
@@ -232,6 +241,8 @@ def _write_anomalous_row(victim_ip, if_score, rf_verdict, **feature_values):
     first 13 columns match training.csv's own order exactly, so a row
     can be copied straight across once a human fills in the label and
     drops the victim_ip/if_score/rf_verdict columns on the end."""
+    if all(feature_values[field] == 0.0 for field in ZERO_TRAFFIC_FIELDS):
+        return
     row = _base_feature_row(feature_values) + [victim_ip, f"{if_score:+.4f}", rf_verdict]
     _append_csv_row(config.ANOMALOUS_CSV_PATH, ANOMALOUS_CSV_HEADER, row)
 
