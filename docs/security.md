@@ -243,6 +243,15 @@ and tuning numbers that go into the sensor unit's `ExecStart` after the flags
 and again after the prompts. The benchmark driver refuses a config file that is
 owned by another account or writable by everyone, since it sources that file.
 
+A follow-up review at 13:16 UTC found no critical or high issue and left two
+residual risks, both accepted. Model files are still unpickled, so a trusted
+model artifact that is replaced by someone who already controls the root owned
+directory would run code. The ownership and permission checks close the path
+for everyone else, and a stronger answer (a signed model or a format that does
+not execute code on load) is a change to consider if the threat model ever has
+to cover a compromised trusted artifact. And the benchmark config is sourced as
+shell by design, so its access stays restricted to trusted operators.
+
 The calibration step copies `scripts/calibrate.py` into the same private
 directory and runs it as root on the gateway. It only measures, so it cannot
 write `tuning.env`. When floors are applied, the helper accepts only the exact

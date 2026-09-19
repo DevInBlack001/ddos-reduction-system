@@ -220,3 +220,45 @@ and two artifacts were corrected afterward, and the commit message that
 carried the wrong number stayed, because rewriting pushed history costs more
 than the error does. The rule: quote a test count from the run's own output,
 and quote it after the last change to the tests.
+
+## Two capture threads wrote one status line format
+
+The live benchmark's analysis read the libpcap backend's `Capture: status` lines
+as one running total. With an egress interface configured the sensor runs a
+capture thread per interface, each logging its own cumulative counters under
+the same message, so the lines interleave and the "total" jumped between two
+unrelated series. The per phase packet counts looked plausible in the phases
+with steady traffic and were wrong in the others. It surfaced in the first
+backend comparison, where libpcap appeared to capture 14% of the interface's
+traffic in the first phases and 100% later. Checking the raw log showed the
+interface name in every line and the phases lining up with the wrong series.
+A second trap sat next to it: libpcap logs the status only when a packet
+arrives, so a quiet phase leaves a hole, and a total taken across the hole
+credited the previous phase's traffic to the next one. Read every field a log
+line carries before treating its lines as one series, and treat a boundary
+sample that is much older than the log's normal cadence as missing.
+
+## A silent generator that looked like a result
+
+The `mp_flood` attack in the same session sent no traffic in either backend, and
+the report still listed it with verdict counts of zero. The lab script has a
+`#!/bin/sh` line and uses `mapfile`, which the machine's busybox shell lacks, so
+it exits at once. This is the same fault the Flash Crowd generator had weeks
+earlier. A phase whose interface counter reads near zero is a generator that did
+not run, and reads differently from an attack the system failed to detect.
+
+## A restart that fixes it is a symptom
+
+For several sessions the gateway needed NetworkManager restarted every couple of
+minutes before the dashboard showed traffic reaching the targets, and the working
+theory was that the kernel backend's capture stalled. The interface counters told
+a different story. The egress interface's own transmit counter was zero for
+whole phases while incoming traffic never stopped, then jumped to normal during
+NetworkManager's three 45 second activation attempts and fell to zero again
+during the five minute backoff that followed. A profile set to DHCP on a
+network with no DHCP server was failing every activation and taking the
+interface's address and route down with it, and a restart only reset the retry
+cycle. The capture backend was innocent, and the two runs differed only in when
+someone restarted NetworkManager. A fix that has to be repeated is a symptom, so
+find what the restart resets, and read the raw counters on both sides of the
+component under suspicion before blaming it.

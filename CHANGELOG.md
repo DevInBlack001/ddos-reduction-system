@@ -58,6 +58,16 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 ### Fixed
 
+- `scripts/analyze_live_benchmark.py` mixed the two libpcap capture threads. With
+  an egress interface the sensor logs a `Capture: status` line per interface and
+  the lines interleave, so the cumulative counters were read as one series and a
+  phase's captured packet count came out wrong. The status lines are now kept
+  apart by interface. A cumulative total taken across a gap in the status lines
+  (libpcap logs only when a packet arrives) is no longer credited to the wrong
+  phase, and the detection agreement table now shows enforcement actions
+  beside DDoS verdicts, since the block and rate limit tiers do most of the
+  mitigating. Found while checking the first backend comparison session against
+  its raw files.
 - Model files are loaded through `storage.load_trusted_model`, which refuses a
   symlink, and a file or directory that another account could have written
   (root owned with no group or other write bit under a root run service, owned

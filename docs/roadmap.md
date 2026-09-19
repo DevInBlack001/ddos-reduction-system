@@ -525,17 +525,36 @@ equivalent phases. Totalling a whole run makes the backends look 49% apart,
 which is entirely the flood phase differing in peak and duration between two
 runs of a generator that does not repeat exactly.
 
-No throughput comparison has been made yet. That is a separate question from
-whether detection is preserved, and V14 makes it matter more. The tooling for
-it now exists: `scripts/benchmark_live.sh` runs the seven phase set against
-each backend in one session and measures throughput, CPU, context switches,
-Stage 2 latency, time from attack to drop, detection consistency across
-several Normal, Flash Crowd and attack variants (five attack types, each alone
-and with Normal traffic), and the downtime and rollback time of switching
-backends, and
-`scripts/analyze_live_benchmark.py` compares them (see
-[Backend Benchmark](benchmark-backends.md)). The first run in the simulated
-lab environment is pending.
+**The first backend comparison ran on 2026-09-19.** Detection is preserved
+across the backends and the resource figures differ a great deal. In the
+simulated lab environment, one run per backend, the kernel backend's Stage 1
+averaged 3.2% CPU, 6 context switches a second and 7.8 MB, against 10.8%, 4,179
+and 271 MB for libpcap. At an unpaced SYN flood of about 110,000 packets a second
+the order flipped on CPU (78% to 80% for the kernel backend against 54% to 55%).
+Handoff from the sensor to Stage 2 was longer on the kernel backend (28 ms
+against 7.6 ms) and inference took about 26 ms on both. See
+[Backend Benchmark](benchmark-backends.md) for the figures and their limits:
+one run each, and each backend calibrated to its own floors.
+
+For V14 the run answers the first risk it lists. Of the window close to rule
+applied path (51 ms kernel, 28 ms libpcap), the enforcement call is 0.05 to
+0.08 ms and inference is 26 ms, so the classifier is the largest piece that
+V14 could remove, and the handoff is the next.
+
+**The `hot` Flash Crowd is treated as an attack.** One source sending far more
+than the rest, run with Normal traffic, drew DDoS verdicts (34 on the kernel
+backend, 15 on libpcap) and rate limits on more than 100 legitimate addresses.
+The training data has no concentrated legitimate crowd, so the classifier has
+never seen this shape.
+
+**Enforcement can rate limit the previous phase's sources.** In an attack-only
+phase both backends rate limited the 97 Flash Crowd addresses from the phase
+before, along with the 35 attack sources. The cause is not established.
+
+**The `mp_flood` generator sends nothing.** `attack_mp` on the lab attacker
+uses `mapfile` under `#!/bin/sh`, which is busybox and has no `mapfile`. Change
+the shebang to bash, as was done for `high_traffic`. Until then that attack type
+has no data.
 
 **Scripted traffic generators can make the rate look artificially steady,
 fixed by jittering generator timing.** `sigma_r`, the standard deviation
@@ -616,8 +635,21 @@ recalibrated the floors during their own first phase, restarted `ddos-stage1`
 several times, and had NetworkManager restarted every two minutes on the
 gateway. Escalation went from 0 to 2% to 36 to 73%, and those changes are
 enough to explain it, so the runs cannot be compared. Set the floors, restart
-once, warm up, then run. The repeated NetworkManager restarts hint that
-capture stalls, which has not been investigated.
+once, warm up, then run. The repeated NetworkManager restarts were most likely
+a workaround for the egress profile fault described below, found on 2026-09-19,
+and not capture stalls.
+
+**The gateway's egress interface goes down for minutes at a time.** `ens256`
+belongs to a NetworkManager profile set to DHCP with a static address added.
+No DHCP server answers, so each activation fails after 45 seconds, the
+interface loses its address and the route to the targets, and after three
+attempts NetworkManager waits five minutes. The gateway cannot forward while
+that lasts, egress reads zero, and the dashboard shows all incoming traffic as
+not reaching the target. A NetworkManager restart gives about two minutes of
+forwarding. It happens on both backends. It hit the kernel backend's first 30
+minutes in the 2026-09-19 comparison, so that run's warm-up, calibration,
+`normal` and `flash_crowd` phases are not comparable with the libpcap run's. The
+proposed fix is `ipv4.method manual` and IPv6 off on that profile.
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

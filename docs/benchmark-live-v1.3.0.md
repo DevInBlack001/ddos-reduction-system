@@ -247,6 +247,8 @@ quality. A benchmark that shows a difference needs the sigma floors set
 before the session starts and left alone until it ends.
 
 Total kernel ingress per run varied from 1.8 million to 5.6 million packets
-across the reruns. Restarting NetworkManager to keep packets flowing suggests
-capture stalled at times, the silent failure described above for `tc`
-changes. That has not been investigated.
+across the reruns. The NetworkManager restarts were most likely a workaround
+for the egress profile fault found on 2026-09-19 (see
+[Backend Benchmark](benchmark-backends.md)), which stops the gateway forwarding
+for minutes at a time, and not a capture stall. That was not established for
+2026-09-18.
