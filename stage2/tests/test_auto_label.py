@@ -145,7 +145,7 @@ class ProcessCaptureFileSkipsDegenerateRowsTests(unittest.TestCase):
         classes_ = np.array([0, 1, 2])
 
         def predict_proba(self, features_df):
-            return np.array([[0.01, 0.02, 0.97]])
+            return np.array([[0.01, 0.02, 0.97]] * len(features_df))
 
     def setUp(self):
         self.capture_path = temp_path(".csv")
@@ -256,7 +256,7 @@ class ProcessCaptureFileSkipsMalformedRowsTests(unittest.TestCase):
         classes_ = np.array([0, 1, 2])
 
         def predict_proba(self, features_df):
-            return np.array([[0.01, 0.02, 0.97]])
+            return np.array([[0.01, 0.02, 0.97]] * len(features_df))
 
     def setUp(self):
         self.capture_path = temp_path(".csv")
@@ -309,7 +309,7 @@ class ProcessCaptureFileStagesSixteenColumnRowsCorrectlyTests(unittest.TestCase)
         classes_ = np.array([0, 1, 2])
 
         def predict_proba(self, features_df):
-            return np.array([[0.01, 0.02, 0.97]])
+            return np.array([[0.01, 0.02, 0.97]] * len(features_df))
 
     # Matches ipc_receiver.ANOMALOUS_CSV_HEADER: BASE_CSV_HEADER's 13 columns
     # plus victim_ip, if_score, rf_verdict.
@@ -637,7 +637,7 @@ class FileLockingTests(unittest.TestCase):
             classes_ = [0, 1, 2]
             n_jobs = 1
             def predict_proba(self, df):
-                return [[0.01, 0.02, 0.97]]
+                return [[0.01, 0.02, 0.97]] * len(df)
 
         capture_path = temp_path(".csv")
         os.unlink(capture_path)
@@ -685,11 +685,186 @@ class FileLockingTests(unittest.TestCase):
 
                 # Verify fcntl.flock was called with LOCK_EX
                 lock_calls = [c for c in mock_flock.call_args_list
-                             if len(c[0]) >= 2 and c[0][1] == fcntl.LOCK_EX]
+                             if len(c[0]) >= 2 and c[0][1] & fcntl.LOCK_EX]
                 self.assertGreater(len(lock_calls), 0,
                                  "fcntl.flock should be called with LOCK_EX")
+                self.assertTrue(all(c[0][1] & fcntl.LOCK_NB for c in lock_calls),
+                                "the receive loop must not wait for the lock")
         finally:
             unlink(capture_path)
+
+
+class _ConfidentModel:
+    classes_ = np.array([0, 1, 2])
+    n_jobs = 1
+
+    def predict_proba(self, features_df):
+        return np.array([[0.01, 0.02, 0.97]] * len(features_df))
+
+
+GOOD_ROW = ["0.9", "20.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+            "0.9", "0.1", "0.1", "1000000.0", ""]
+
+
+def _write_capture(path, rows):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(auto_label.BASE_CSV_HEADER)
+        w.writerows(rows)
+
+
+class ProcessCaptureFileHoldsTheLockOnlyAroundReadAndSwapTests(unittest.TestCase):
+    """Scoring can take minutes on a large file. The receive loop tries the
+    same lock without waiting, so it must be free while rows are scored."""
+
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+        _write_capture(self.capture_path, [GOOD_ROW, GOOD_ROW])
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_the_lock_is_free_while_the_models_score_the_rows(self):
+        observed = {}
+        path = self.capture_path
+
+        class ProbingModel(_ConfidentModel):
+            def predict_proba(self, features_df):
+                fd = os.open(f"{path}.lock", os.O_WRONLY | os.O_CREAT, 0o644)
+                try:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        observed["free"] = True
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except BlockingIOError:
+                        observed["free"] = False
+                finally:
+                    os.close(fd)
+                return super().predict_proba(features_df)
+
+        auto_label._process_capture_file(
+            path, ProbingModel(), _ConfidentModel(), [time.time(), time.time()], self.labeled_path,
+        )
+        self.assertTrue(observed["free"])
+
+    def test_a_row_appended_while_scoring_survives_the_rewrite(self):
+        path = self.capture_path
+        late_row = ["0.8", "30.0", "0.9", "20.0", "0.1", "7.1", "1.0", "0.1",
+                    "0.9", "0.1", "0.1", str(time.time()), ""]
+
+        class AppendingModel(_ConfidentModel):
+            def predict_proba(self, features_df):
+                with open(path, "a", newline="") as f:
+                    csv.writer(f).writerow(late_row)
+                return super().predict_proba(features_df)
+
+        labeled = auto_label._process_capture_file(
+            path, AppendingModel(), _ConfidentModel(), [time.time(), time.time()], self.labeled_path,
+        )
+        self.assertEqual(labeled, 2)
+        with open(path, newline="") as f:
+            remaining = list(csv.reader(f))
+        self.assertEqual(remaining[1:], [late_row])
+
+    def test_a_file_replaced_while_scoring_is_left_alone(self):
+        path = self.capture_path
+
+        class ReplacingModel(_ConfidentModel):
+            def predict_proba(self, features_df):
+                _write_capture(path, [])
+                return super().predict_proba(features_df)
+
+        labeled = auto_label._process_capture_file(
+            path, ReplacingModel(), _ConfidentModel(), [time.time(), time.time()], self.labeled_path,
+        )
+        self.assertEqual(labeled, 0)
+        self.assertFalse(os.path.exists(self.labeled_path))
+
+
+class ProcessCaptureFileDropsTornRowsTests(unittest.TestCase):
+    def setUp(self):
+        self.capture_path = temp_path(".csv")
+        self.labeled_path = temp_path(".csv")
+        os.unlink(self.labeled_path)
+
+    def tearDown(self):
+        unlink(self.capture_path, self.labeled_path)
+
+    def test_a_row_with_the_wrong_column_count_is_removed_and_the_rest_are_scored(self):
+        torn = GOOD_ROW[:5] + ["1.000000"] + GOOD_ROW
+        _write_capture(self.capture_path, [GOOD_ROW, torn])
+        labeled = auto_label._process_capture_file(
+            self.capture_path, _ConfidentModel(), _ConfidentModel(),
+            [time.time(), time.time()], self.labeled_path,
+        )
+        self.assertEqual(labeled, 1)
+        with open(self.capture_path, newline="") as f:
+            self.assertEqual(len(list(csv.reader(f))), 1)  # header only
+
+    def test_a_row_with_a_nan_feature_is_kept_and_does_not_reach_the_models(self):
+        nan_row = list(GOOD_ROW)
+        nan_row[0] = "nan"
+        _write_capture(self.capture_path, [nan_row, GOOD_ROW])
+        labeled = auto_label._process_capture_file(
+            self.capture_path, _ConfidentModel(), _ConfidentModel(),
+            [time.time(), time.time()], self.labeled_path,
+        )
+        self.assertEqual(labeled, 1)
+        with open(self.capture_path, newline="") as f:
+            self.assertEqual(len(list(csv.reader(f))), 2)
+
+
+class AppendCsvRowNeverWaitsForTheLockTests(unittest.TestCase):
+    def setUp(self):
+        self.path = temp_path(".csv")
+        os.unlink(self.path)
+        ipc_receiver._pending_capture_rows.clear()
+        self.header = ipc_receiver.PRETRAINING_CSV_HEADER
+
+    def tearDown(self):
+        unlink(self.path, f"{self.path}.lock")
+        ipc_receiver._pending_capture_rows.clear()
+
+    def _hold_lock(self):
+        fd = os.open(f"{self.path}.lock", os.O_WRONLY | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    def test_a_locked_file_queues_the_row_and_returns_at_once(self):
+        fd = self._hold_lock()
+        try:
+            ipc_receiver._append_csv_row(self.path, self.header, GOOD_ROW)
+        finally:
+            os.close(fd)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertEqual(len(ipc_receiver._pending_capture_rows[self.path]), 1)
+
+    def test_the_next_append_after_the_lock_frees_writes_every_waiting_row(self):
+        fd = self._hold_lock()
+        try:
+            ipc_receiver._append_csv_row(self.path, self.header, GOOD_ROW)
+            ipc_receiver._append_csv_row(self.path, self.header, GOOD_ROW)
+        finally:
+            os.close(fd)
+        ipc_receiver._append_csv_row(self.path, self.header, GOOD_ROW)
+        with open(self.path, newline="") as f:
+            self.assertEqual(len(list(csv.reader(f))), 4)  # header + 3 rows
+        self.assertEqual(ipc_receiver._pending_capture_rows[self.path], [])
+
+    def test_waiting_rows_are_bounded_and_the_oldest_are_dropped(self):
+        fd = self._hold_lock()
+        old_cap = config.CAPTURE_PENDING_MAX_ROWS
+        config.CAPTURE_PENDING_MAX_ROWS = 3
+        try:
+            for i in range(5):
+                ipc_receiver._append_csv_row(self.path, self.header, [str(i)] + GOOD_ROW[1:])
+        finally:
+            config.CAPTURE_PENDING_MAX_ROWS = old_cap
+            os.close(fd)
+        kept = [r[0] for r in ipc_receiver._pending_capture_rows[self.path]]
+        self.assertEqual(kept, ["2", "3", "4"])
 
 
 if __name__ == "__main__":

@@ -139,6 +139,17 @@ WHITELIST_PATH = os.environ.get("WHITELIST_PATH", os.path.join(_STATE_DIR, "whit
 SHARED_IPS_PATH = os.environ.get("SHARED_IPS_PATH", os.path.join(_STATE_DIR, "shared_ips.json"))
 VICTIMS_PATH = os.environ.get("VICTIMS_PATH", os.path.join(_STATE_DIR, "victims.json"))
 FLOWS_PATH = os.path.join(RUNTIME_DIR, "active_flows.json")
+# Stage 1 rewrites the flow snapshot about every 10 seconds. A snapshot older
+# than this is treated as absent, so a stopped or restarted sensor cannot
+# leave enforcement acting on flows from an earlier phase. A starting point.
+FLOWS_MAX_AGE_SECS = float(os.environ.get("FLOD_FLOWS_MAX_AGE_SECS", "30"))
+# A window whose handling takes at least this long is logged, so a stall in
+# Stage 2 shows up as a slow window and not only as late arrivals.
+SLOW_WINDOW_LOG_SECS = float(os.environ.get("FLOD_SLOW_WINDOW_LOG_SECS", "1.0"))
+# Capture rows held in memory while auto_label.py owns a capture file's lock.
+# Beyond this the oldest waiting rows are dropped, so the receive loop never
+# waits on the lock and memory stays bounded. A starting point.
+CAPTURE_PENDING_MAX_ROWS = int(os.environ.get("FLOD_CAPTURE_PENDING_MAX_ROWS", "5000"))
 ENFORCEMENT_CONFIG_PATH = os.environ.get("ENFORCEMENT_CONFIG_PATH", os.path.join(_STATE_DIR, "enforcement_config.json"))
 ALERTS_CONFIG_PATH = os.environ.get("ALERTS_CONFIG_PATH", os.path.join(_STATE_DIR, "alerts_config.json"))
 

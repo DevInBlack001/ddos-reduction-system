@@ -45,6 +45,13 @@ class LatencyStatsTests(unittest.TestCase):
         self.assertEqual(found["window_to_rule_n"], "1")
         self.assertEqual(found["window_to_rule_max_ms"], "12.500")
 
+    def test_the_time_spent_handling_a_window_is_summarized_with_the_other_kinds(self):
+        stats = LatencyStats()
+        stats.record("busy", 2400.0)
+        line = stats.summary_line(30)
+        self.assertIn("busy_n=1", line)
+        self.assertIn("busy_max_ms=2400.000", line)
+
     def test_producing_a_summary_starts_a_new_interval(self):
         stats = LatencyStats()
         stats.record("handoff", 1.0)

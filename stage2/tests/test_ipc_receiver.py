@@ -372,5 +372,69 @@ class LatencyLoggingTests(unittest.TestCase):
             ipc_receiver._log_latency_if_due(now=5000.0)
 
 
+class LoadVictimFlowRatesTests(unittest.TestCase):
+    """The flow snapshot covers every protected host and is rewritten about
+    every 10 seconds, so enforcement must keep only flows to the window's
+    victim and ignore a snapshot that is no longer current."""
+
+    def setUp(self):
+        self.path = temp_path(".json")
+        self.old_path = config.FLOWS_PATH
+        config.FLOWS_PATH = self.path
+        self.now = 1_000_000.0
+
+    def tearDown(self):
+        config.FLOWS_PATH = self.old_path
+        unlink(self.path)
+
+    def _write(self, flows, timestamp):
+        import json
+        with open(self.path, "w") as f:
+            json.dump({"timestamp": timestamp, "active_ips": flows}, f)
+
+    def test_only_flows_to_the_victim_are_counted(self):
+        self._write([
+            {"ip": "198.51.100.7", "dst": "192.0.2.10", "port": 80, "proto": "TCP", "rate": 30.0},
+            {"ip": "198.51.100.8", "dst": "192.0.2.11", "port": 80, "proto": "TCP", "rate": 90.0},
+        ], self.now - 2)
+        rates = ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now)
+        self.assertEqual(rates, {"198.51.100.7": 30.0})
+
+    def test_a_source_with_several_flows_to_the_victim_is_summed(self):
+        self._write([
+            {"ip": "198.51.100.7", "dst": "192.0.2.10", "port": 80, "proto": "TCP", "rate": 30.0},
+            {"ip": "198.51.100.7", "dst": "192.0.2.10", "port": 443, "proto": "TCP", "rate": 12.5},
+        ], self.now - 2)
+        rates = ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now)
+        self.assertEqual(rates, {"198.51.100.7": 42.5})
+
+    def test_a_snapshot_older_than_the_limit_is_ignored(self):
+        self._write([
+            {"ip": "198.51.100.7", "dst": "192.0.2.10", "port": 80, "proto": "TCP", "rate": 30.0},
+        ], self.now - config.FLOWS_MAX_AGE_SECS - 1)
+        self.assertEqual(ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now), {})
+
+    def test_a_snapshot_without_a_timestamp_is_ignored(self):
+        import json
+        with open(self.path, "w") as f:
+            json.dump({"active_ips": [
+                {"ip": "198.51.100.7", "dst": "192.0.2.10", "port": 80, "proto": "TCP", "rate": 30.0},
+            ]}, f)
+        self.assertEqual(ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now), {})
+
+    def test_a_missing_or_unreadable_file_gives_no_flows(self):
+        unlink(self.path)
+        self.assertEqual(ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now), {})
+        with open(self.path, "w") as f:
+            f.write("not json")
+        self.assertEqual(ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now), {})
+
+    def test_placeholder_sources_are_left_out(self):
+        self._write([
+            {"ip": "0.0.0.0", "dst": "192.0.2.10", "port": 80, "proto": "TCP", "rate": 30.0},
+        ], self.now - 2)
+        self.assertEqual(ipc_receiver._load_victim_flow_rates("192.0.2.10", now=self.now), {})
+
+
 if __name__ == "__main__":
     unittest.main()

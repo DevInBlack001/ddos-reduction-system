@@ -16,7 +16,9 @@ import os
 # by those libraries don't take effect if set later.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+import contextlib
 import csv
+import math
 import time
 import logging
 import fcntl
@@ -186,76 +188,128 @@ def _row_to_features(row, header):
     }
 
 
+@contextlib.contextmanager
+def _exclusive_lock(path):
+    """Hold an exclusive lock on <path>.lock. ipc_receiver.py tries the same
+    lock without waiting, so it never stalls behind this job."""
+    lock_fd = os.open(f"{path}.lock", os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _read_appended_rows(path, offset):
+    """Rows ipc_receiver.py appended after the first offset bytes, or None if
+    the file is now shorter than that (it was replaced, so a rewrite would
+    lose data)."""
+    if os.path.getsize(path) < offset:
+        return None
+    with open(path, newline="") as f:
+        f.seek(offset)
+        return list(csv.reader(f))
+
+
+def _score_rows(rows, header, clf, second_clf, model_mtimes):
+    """Split rows into (kept, labeled, corrupt_count). Eligible rows are
+    scored in one batch per model; a row that is not eligible, is degenerate,
+    or has an unreadable value stays where it is. A row with the wrong
+    number of columns is a torn write that cannot be repaired, so it is
+    dropped."""
+    kept = []
+    scorable = []
+    corrupt = 0
+    for row in rows:
+        if len(row) != len(header):
+            corrupt += 1
+            continue
+        # A single malformed row (bad timestamp, missing column) must not
+        # abort the rest of the file: log it, leave it exactly where it is
+        # for a human, and keep scoring everything else.
+        try:
+            row_timestamp = float(row[TIMESTAMP_COL])
+            if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
+                kept.append(row)
+                continue
+            features = _row_to_features(row, header)
+            if not all(math.isfinite(v) for v in features.values()):
+                raise ValueError("non-finite feature value")
+            if is_row_degenerate(features):
+                kept.append(row)
+                continue
+        except (ValueError, IndexError, KeyError) as e:
+            logging.warning(f"[!] Skipping malformed row: {row!r} ({e})")
+            kept.append(row)
+            continue
+        scorable.append((row, features))
+
+    labeled = []
+    if scorable:
+        features_df = pd.DataFrame(
+            [[features[c] for c in FEATURE_COLS] for _, features in scorable], columns=FEATURE_COLS
+        )
+        rf_probas = clf.predict_proba(features_df)
+        second_probas = second_clf.predict_proba(features_df)
+        for (row, _), rf_proba, second_proba in zip(scorable, rf_probas, second_probas):
+            label = decide_label(
+                rf_proba, clf.classes_, second_proba, second_clf.classes_,
+                config.AUTO_LABEL_CONFIDENCE_THRESHOLD,
+            )
+            if label is None:
+                kept.append(row)
+                continue
+            # row may carry anomalous_capture.csv's extra 3 context columns;
+            # the staging file is always the 13-column BASE_CSV_HEADER.
+            labeled_row = list(row[:len(BASE_CSV_HEADER)])
+            labeled_row[BASE_CSV_HEADER.index("label")] = str(label)
+            labeled.append(labeled_row)
+    if corrupt:
+        logging.warning(f"[!] Dropped {corrupt} row(s) whose column count does not match the header.")
+    return kept, labeled, corrupt
+
+
 def _process_capture_file(path, clf, second_clf, model_mtimes, labeled_out):
     """Trims path to config.AUTO_LABEL_MAX_QUEUE_ROWS, then scores every
     remaining row: eligible and confidently agreed rows are appended to
     labeled_out and removed here; everything else stays for the next run
     or for a human, exactly as it does today. Returns the number of rows
-    auto-labeled. Holds an exclusive lock on <path>.lock for the entire
-    read-score-rewrite sequence to prevent ipc_receiver.py's appends from
-    landing on the old inode and being silently lost."""
-    lockfile_path = f"{path}.lock"
-    lock_fd = os.open(lockfile_path, os.O_WRONLY | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        try:
-            header, rows, was_bounded = _read_rows(path)
-            if header is None:
-                logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
-                return 0
+    auto-labeled.
 
-            rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
-            if dropped:
-                logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
-                                 f"dropped {dropped} oldest.")
+    The lock on <path>.lock is held only to read the file and, at the end,
+    to swap in the result together with any rows ipc_receiver.py appended
+    meanwhile. Scoring happens in between with no lock held."""
+    with _exclusive_lock(path):
+        if not os.path.exists(path):
+            logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
+            return 0
+        snapshot_size = os.path.getsize(path)
+        header, rows, was_bounded = _read_rows(path)
+    if header is None:
+        logging.info(f"[+] {path} does not exist or is empty, nothing to process.")
+        return 0
 
-            kept_rows = []
-            labeled_count = 0
-            for row in rows:
-                # A single malformed row (bad timestamp, missing column) must not
-                # abort the rest of the file: log it, leave it exactly where it is
-                # for a human, and keep scoring everything else.
-                try:
-                    row_timestamp = float(row[TIMESTAMP_COL])
-                    if not is_row_eligible(row_timestamp, model_mtimes, config.AUTO_LABEL_DELAY_HOURS):
-                        kept_rows.append(row)
-                        continue
+    rows, dropped = trim_csv_rows(rows, config.AUTO_LABEL_MAX_QUEUE_ROWS)
+    if dropped:
+        logging.warning(f"[!] {path} exceeded {config.AUTO_LABEL_MAX_QUEUE_ROWS} rows, "
+                         f"dropped {dropped} oldest.")
 
-                    features = _row_to_features(row, header)
-                    if is_row_degenerate(features):
-                        kept_rows.append(row)
-                        continue
+    kept_rows, labeled_rows, corrupt = _score_rows(rows, header, clf, second_clf, model_mtimes)
+    if not (dropped or corrupt or labeled_rows or was_bounded):
+        return 0
 
-                    features_df = pd.DataFrame([[features[c] for c in FEATURE_COLS]], columns=FEATURE_COLS)
-                    rf_proba = clf.predict_proba(features_df)[0]
-                    second_proba = second_clf.predict_proba(features_df)[0]
-                    label = decide_label(
-                        rf_proba, clf.classes_, second_proba, second_clf.classes_,
-                        config.AUTO_LABEL_CONFIDENCE_THRESHOLD,
-                    )
-                except (ValueError, IndexError, KeyError) as e:
-                    logging.warning(f"[!] Skipping malformed row in {path}: {row!r} ({e})")
-                    kept_rows.append(row)
-                    continue
-
-                if label is None:
-                    kept_rows.append(row)
-                    continue
-
-                # row may carry anomalous_capture.csv's extra 3 context columns;
-                # the staging file is always the 13-column BASE_CSV_HEADER.
-                labeled_row = list(row[:len(BASE_CSV_HEADER)])
-                labeled_row[BASE_CSV_HEADER.index("label")] = str(label)
-                _append_labeled_row(labeled_out, labeled_row)
-                labeled_count += 1
-
-            if dropped or labeled_count or was_bounded:
-                _rewrite_csv(path, header, kept_rows)
-            return labeled_count
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(lock_fd)
+    with _exclusive_lock(path):
+        appended = _read_appended_rows(path, snapshot_size)
+        if appended is None:
+            logging.warning(f"[!] {path} changed while it was being scored, leaving it for the next run.")
+            return 0
+        for labeled_row in labeled_rows:
+            _append_labeled_row(labeled_out, labeled_row)
+        _rewrite_csv(path, header, kept_rows + appended)
+    return len(labeled_rows)
 
 
 def _append_labeled_row(path, row):

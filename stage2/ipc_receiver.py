@@ -109,17 +109,41 @@ DDOS_CAPTURE_CSV_HEADER = [
 ]
 
 
+# Rows waiting for a capture file's lock, per path. auto_label.py holds that
+# lock briefly at the start and end of a run; the receive loop must not wait
+# for it, so a row that cannot be written now waits here for the next append.
+_pending_capture_rows = {}
+_capture_file_lock_warned = set()
+
+
 def _append_csv_row(path, header, row):
     """Append one row to a capture CSV, writing the header first if the
     file does not exist yet. Shared by every capture point in this module
-    so the append-and-header behaviour lives in one place. Holds an exclusive
+    so the append-and-header behaviour lives in one place. Takes an exclusive
     lock on <path>.lock around the actual write to prevent auto_label.py's
-    atomic rewrite from silently losing the appended row. Skips the append if
-    the file is already at or over PRETRAINING_MAX_BYTES, logging once."""
+    atomic rewrite from silently losing the appended row. The lock is tried
+    without waiting: if auto_label.py holds it, the row joins a bounded
+    in-memory queue and is written by the next append that gets the lock.
+    Skips the append if the file is already at or over PRETRAINING_MAX_BYTES,
+    logging once."""
+    pending = _pending_capture_rows.setdefault(path, [])
+    pending.append(row)
+    overflow = len(pending) - config.CAPTURE_PENDING_MAX_ROWS
+    if overflow > 0:
+        del pending[:overflow]
+        logging.warning(f"[!] {path} stayed locked, dropped {overflow} waiting capture row(s).")
+
     lockfile_path = f"{path}.lock"
     lock_fd = os.open(lockfile_path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if path not in _capture_file_lock_warned:
+                _capture_file_lock_warned.add(path)
+                logging.info(f"[i] {path} is locked by auto_label.py, queuing capture rows until it is free.")
+            return
+        _capture_file_lock_warned.discard(path)
         try:
             # Check file size before writing; skip append if already at cap.
             try:
@@ -132,6 +156,7 @@ def _append_csv_row(path, header, row):
                             f"[!] {path} has reached {config.PRETRAINING_MAX_BYTES} bytes, "
                             f"skipping appends until auto_label.py trims it."
                         )
+                    pending.clear()
                     return
             except OSError:
                 # File doesn't exist yet, so write will create it.
@@ -143,13 +168,46 @@ def _append_csv_row(path, header, row):
                     w = csv.writer(f)
                     if write_header:
                         w.writerow(header)
-                    w.writerow(row)
+                    w.writerows(pending)
+                pending.clear()
             except OSError as e:
                 logging.error(f"[-] Failed to write {path}: {e}")
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
     finally:
         os.close(lock_fd)
+
+
+def _load_victim_flow_rates(victim_ip, now=None):
+    """Per-source packet rate of the flows currently reaching victim_ip, from
+    Stage 1's flow snapshot. Flows to other protected hosts are left out, and
+    so is a snapshot older than config.FLOWS_MAX_AGE_SECS or one without a
+    timestamp: Stage 1 rewrites the file about every 10 seconds, so an old
+    one describes an earlier phase. Rates are summed per source across that
+    source's flows, so fragmenting traffic over ports does not hide it."""
+    if not os.path.exists(config.FLOWS_PATH):
+        return {}
+    try:
+        with open(config.FLOWS_PATH, "r") as f:
+            flow_data = json.load(f)
+    except Exception as e:
+        logging.error(f"[-] Failed to parse active flows: {e}")
+        return {}
+    now = time.time() if now is None else now
+    try:
+        age = now - float(flow_data.get("timestamp"))
+    except (TypeError, ValueError):
+        return {}
+    if age > config.FLOWS_MAX_AGE_SECS:
+        return {}
+    per_source_rate = {}
+    for flow in flow_data.get("active_ips", []):
+        f_ip = flow.get("ip")
+        if flow.get("dst") != victim_ip:
+            continue
+        if f_ip and f_ip not in ("Unknown", "0.0.0.0", "::"):
+            per_source_rate[f_ip] = per_source_rate.get(f_ip, 0.0) + flow.get("rate", 0.0)
+    return per_source_rate
 
 
 def _base_feature_row(feature_values):
@@ -633,17 +691,7 @@ def run_ipc_receiver():
                         # an attacker spreading across multiple dst ports can't
                         # dodge the per-source thresholds below by fragmenting
                         # its traffic into several smaller-looking flows.
-                        per_source_rate = {}
-                        if os.path.exists(config.FLOWS_PATH):
-                            try:
-                                with open(config.FLOWS_PATH, "r") as f:
-                                    flow_data = json.load(f)
-                                for flow in flow_data.get("active_ips", []):
-                                    f_ip = flow.get("ip")
-                                    if f_ip and f_ip not in ("Unknown", "0.0.0.0", "::"):
-                                        per_source_rate[f_ip] = per_source_rate.get(f_ip, 0.0) + flow.get("rate", 0.0)
-                            except Exception as ce:
-                                logging.error(f"[-] Failed to parse active flows: {ce}")
+                        per_source_rate = _load_victim_flow_rates(victim_ip_str)
 
                         acted_on = set()
 
@@ -754,6 +802,13 @@ def run_ipc_receiver():
                         db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
 
+                busy_secs = time.time() - received_at
+                latency_stats.record("busy", busy_secs * 1000.0)
+                if busy_secs >= config.SLOW_WINDOW_LOG_SECS:
+                    logging.warning(
+                        f"[!] Handling one window took {busy_secs:.1f}s "
+                        f"(inference {inference_secs * 1000.0:.0f} ms), later windows queue behind it."
+                    )
                 _log_latency_if_due()
 
             conn.close()

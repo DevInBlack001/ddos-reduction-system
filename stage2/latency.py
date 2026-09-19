@@ -5,7 +5,7 @@ line per interval so a benchmark can read them back from the journal.
 
 import math
 
-KINDS = ("handoff", "inference", "enforcement", "window_to_rule")
+KINDS = ("handoff", "inference", "enforcement", "window_to_rule", "busy")
 # Samples kept per kind between two summaries. Extra samples are counted
 # but not stored, so a burst cannot grow memory without bound.
 MAX_SAMPLES_PER_KIND = 10000
