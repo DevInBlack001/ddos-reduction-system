@@ -66,7 +66,7 @@ matched what it was being asked to judge.
 **Short sessions mislabeled by an automated capture script's own timing.**
 An orchestration script starts an attack generator, sleeps through a ramp
 period so the traffic has time to reach a representative rate, and only
-then writes the new label. During that sleep, real attack traffic is
+then writes the new label. During that sleep, attack traffic is
 already flowing into a window still stamped with the previous phase's
 label. Six such sessions turned up in one capture: short, an elevated rate
 that didn't match the label on them, sitting exactly at a phase boundary.
@@ -109,7 +109,7 @@ for any threshold, not just once it's caused a visible problem.
 
 An offline benchmark reconstructed one system's decision as `rate > mean +
 k * standard_deviations`, using only the columns a training CSV already
-carried, to compare against a fixed threshold. Run against real data, it
+carried, to compare against a fixed threshold. Run against the captured data, it
 rated the adaptive system worse than the fixed threshold at correctly
 leaving a legitimate traffic surge alone, backwards from the system's
 actual deployed behavior. The reconstruction wasn't wrong about what it
@@ -176,7 +176,7 @@ accident the way one `if` wrapping too much code did the first time.
 The live benchmark's analysis read the two capture backends' periodic status
 lines the same way. One backend logs running totals and the other resets its
 counters after every line, so each line is that interval's own count. The
-test built lines in one format only. The first real run on the other backend
+test built lines in one format only. The first run on the other backend
 printed negative packet counts, which cannot happen and should have been
 read as a sign the parsing was wrong. The fix sums the
 per-interval samples and differences the cumulative ones, and it was checked

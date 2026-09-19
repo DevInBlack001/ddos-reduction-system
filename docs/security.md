@@ -196,6 +196,20 @@ the page returns at most 500 rows per request (`offset` and `limit`, the
 limit capped and a negative offset refused), so the size of a staged queue
 does not set the size of a response.
 
+**The live benchmark scripts change the gateway's configuration, and they are
+for the simulated lab environment only.** `scripts/benchmark_live.sh` runs on
+an operator's workstation and reaches the gateway over SSH as root, using the
+key named in its config file. It copies `benchmark_mode_switch.sh` and
+`benchmark_system_sampler.sh` to `/tmp` on the gateway and runs them there. The
+mode switch rewrites `/etc/ddos_stage1/tuning.env` (keeping a byte for byte
+backup beside it and restoring it at the end), flushes the two ddos ipsets,
+restarts both services, and deletes the benchmark's own baseline files by a
+glob under `BASELINE_DIR`. It reads iptables counters and `/proc`
+and `/sys` files. The generator commands in the config file run as root on the
+generator machines. Do not point the script at a gateway that protects traffic
+you care about, and keep the config file (and its key paths) out of the
+repository, which `.gitignore` already does for `scripts/*.env`.
+
 ## Request Handling
 
 A request body cap is checked from the declared length before the body is read,

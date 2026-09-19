@@ -7,9 +7,9 @@ for the summary and the methodology decisions behind this script.
 
 ## Environment
 
-Everything below ran on the sensor VM this project deploys and verifies
-against, not a laptop and not a shared CI runner. The numbers are only
-meaningful relative to this specific machine.
+Everything below ran on the gateway of the simulated lab environment that
+this project deploys and verifies against, and on no laptop or shared CI
+runner. The numbers are only meaningful relative to this specific machine.
 
 | | |
 |-|-|
@@ -159,7 +159,7 @@ Fixed threshold:     0.0%
 
 Training and prediction cost of a production-shaped fit on the full
 dataset, not the LOSO sweeps above (those exist to pick a hyperparameter
-and measure generalisation, not real-world cost). Packets/sec, Gbps, and
+and measure generalisation, and say nothing about runtime cost). Packets/sec, Gbps, and
 Stage 1 overhead need a live traffic phase and are out of reach of a CSV
 replay by construction; they belong to a later benchmark phase once the
 XDP rate limiter comparison arm exists.
@@ -181,7 +181,7 @@ every window Stage 1 could plausibly produce with room to spare; window
 cadence is measured in seconds, prediction here is measured in
 milliseconds per tens of thousands of rows.
 
-Evaluation-only costs, not representative of real deployment (a single
+Evaluation-only costs, and not representative of a deployed gateway's cost (a single
 production fit, above, is): the RandomForest's 11-depth LOSO sweep took
 403.8s; the Isolation Forest's single-contamination LOSO evaluation took
 12.0s.

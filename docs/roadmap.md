@@ -61,7 +61,7 @@ problem at exactly the moment a randomized source flood makes it matter most.
 
 Part two adds a second model rather than a voting layer over several: an
 Isolation Forest, unsupervised, trained on the same feature set with the
-label column unused, running in production alongside the existing
+label column unused, running alongside the existing
 RandomForest rather than replacing or gating it. It answers a different
 question than the RandomForest does, not what class a window looks like but
 whether it looks like anything the training data contained at all, which is
@@ -74,7 +74,7 @@ not drive enforcement in this milestone. See
 
 Verified against a real 35,442 row, 12 session capture: RandomForest LOSO
 accuracy 0.989, DDoS precision 0.97 and recall 0.98. The eBPF side has since
-loaded and run on the sensor VM: the verifier accepted both programs, all
+loaded and run on the lab gateway: the verifier accepted both programs, all
 seven maps bound, and the kernel and libpcap backends agreed within 1.1% on
 entropy and 4 to 6% on ingress packet counts. The non-technical explainer is
 written, [docs/explainer.md](explainer.md). Dashboard visibility for the
@@ -136,8 +136,8 @@ A dedicated security review found and fixed concurrent file access, unbounded
 capture growth, and resource contention issues; see [security.md](security.md#process-and-filesystem-isolation)
 for the details.
 
-Confirmed against a real run on the sensor VM. The first unattended run of
-`ddos-stage2-auto-label.timer` against real captured data auto-labeled
+Confirmed in the simulated lab environment. The first unattended run of
+`ddos-stage2-auto-label.timer` against captured data auto-labeled
 32,597 rows, surfacing two real findings. The
 freshness safeguard first blocked labeling entirely, correctly: the
 deployed RandomForest predated every captured row, so nothing could clear
@@ -150,11 +150,11 @@ a shared blind spot in the training corpus. See
 the guard this added. The retrain timer itself also only covered the RF
 and second model; the Isolation Forest, which depends on neither
 safeguard, stayed on the model trained at initial setup until a live
-functional test found the consequence directly: genuinely benign live
+functional test found the consequence directly: benign generated
 traffic scored `Anomalous` on effectively every window, fixed by chaining
 `train_isolation_forest.py` into the same retrain run.
 
-`scripts/calibrate.py` was also re-run on the sensor VM against a real
+`scripts/calibrate.py` was also re-run on the lab gateway against a
 100-simulated-user load, deriving `--rate-sigma-floor 7.8
 --entropy-sigma-floor 0.4944 --entropy-sigma-ceiling 0.9` from actually
 observed traffic rather than the shipped defaults. A full seven-phase live
@@ -172,8 +172,8 @@ discarding a completed run's staged rows without needing the terminal
 `scripts/benchmark_live.sh` gained a system-health sampler, real CPU
 time, memory, and packet throughput for both services over a session,
 not only detection outcomes. See [Live Benchmark:
-v1.3.0](benchmark-live-v1.3.0.md#system-health-recording-first-real-world-run)
-for the first real run's results.
+v1.3.0](benchmark-live-v1.3.0.md#system-health-recording-first-run)
+for the first run's results.
 
 `1.4.1` made the depth and leaf node sweeps prefer the simplest candidate
 within a tolerance of the best accuracy. `1.5.0` added `ddos_capture.csv`, a
@@ -378,7 +378,7 @@ window and classifies no individual packet. If the slow part is collecting
 the window, moving the classifier alone will not cut response time. The live
 benchmark records the pieces of that path (window close to Stage 2 handoff,
 inference, the enforcement call, and window close to rule applied) so the
-breakdown can be measured during a real attack before any kernel work starts.
+breakdown can be measured during an attack in the simulated lab environment before any kernel work starts.
 Second, floating point. Entropy and rates use it and BPF has none, so the
 design needs an answer for how those features are produced inside the
 kernel. Third, program size: a forest of trees per window has to fit the
@@ -525,8 +525,15 @@ equivalent phases. Totalling a whole run makes the backends look 49% apart,
 which is entirely the flood phase differing in peak and duration between two
 runs of a generator that does not repeat exactly.
 
-No throughput comparison has been made. That is a separate question from
-whether detection is preserved, and less important.
+No throughput comparison has been made yet. That is a separate question from
+whether detection is preserved, and V14 makes it matter more. The tooling for
+it now exists: `scripts/benchmark_live.sh` runs the seven phase set against
+each backend in one session and measures throughput, CPU, context switches,
+Stage 2 latency, time from attack to drop, detection consistency, and the
+downtime and rollback time of switching backends, and
+`scripts/analyze_live_benchmark.py` compares them (see
+[Backend Benchmark](benchmark-backends.md)). The first run in the simulated
+lab environment is pending.
 
 **Scripted traffic generators can make the rate look artificially steady,
 fixed by jittering generator timing.** `sigma_r`, the standard deviation

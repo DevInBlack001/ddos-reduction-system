@@ -251,7 +251,7 @@ on training data it already saw, not that it will catch an attack shaped
 differently from anything in this capture, which is the only case Part B
 exists for and the one this in-sample check cannot exercise.
 
-## Both Models in Production
+## Both Models at Runtime
 
 Both `.joblib` files load at startup and run every window, independently,
 not in sequence or as a fallback chain. See
@@ -401,7 +401,7 @@ what is displayed. Merge and Discard still apply to every staged row.
 
 ### Degenerate Windows Are Never Auto-Labeled
 
-A real run against a sensor VM's captured data auto-labeled 32,597 rows on
+A run against the lab gateway's captured data auto-labeled 32,597 rows on
 its first unattended pass, agreement and confidence both satisfied. Cross
 referencing the labeled rows against `training_data.csv` found that 32,595
 of them carried `entropy`, `proto_ratio`, `dominant_ip_ratio`,
@@ -444,8 +444,8 @@ The Isolation Forest is included for a different reason than the
 freshness safeguard: it does not gate on freshness at all, but a model
 whose contamination rate and decision boundary were selected against an
 old capture keeps scoring new live traffic against that stale boundary
-indefinitely otherwise. A live functional test on the sensor VM found
-exactly this: genuinely benign traffic against a months-old Isolation
+indefinitely otherwise. A functional test on the lab gateway found
+exactly this: benign generated traffic against a months-old Isolation
 Forest read as `Anomalous` on effectively every logged window. Retraining
 it on the same schedule and the same CSV as the other two models keeps
 its boundary current without adding a second operator-facing setting.

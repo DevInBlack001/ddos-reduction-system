@@ -1,7 +1,8 @@
 # Live Benchmark: v1.3.0
 
-Full results of a real seven-phase traffic campaign run against a deployed
-sensor VM with `scripts/benchmark_live.sh`, extended in this release from
+Full results of a seven-phase traffic campaign run in the simulated lab
+environment against the deployed gateway with `scripts/benchmark_live.sh`,
+extended in this release from
 four phases to the complete sequence below. Where
 [Benchmark Results](benchmark-results.md) answers "does the trained model
 generalize," this answers "does the deployed pipeline, warm-up, hysteresis,
@@ -10,11 +11,11 @@ that implies."
 
 ## Environment
 
-Same sensor VM `benchmark-results.md` describes. Traffic generated live
-with Locust (Normal, Flash Crowd) and hping3 (Attacker) against five
-protected hosts, from separate lab VMs, not the sensor itself. Sigma
-floors were re-derived the same day by `scripts/calibrate.py` against a
-real 100 simulated user load (`--rate-sigma-floor 7.8
+Same gateway `benchmark-results.md` describes, inside the simulated lab
+environment. Traffic is generated with Locust (Normal, Flash Crowd) and hping3
+(Attacker) against five protected hosts, from separate generator machines that
+are not the gateway. Sigma floors were re-derived the same day by
+`scripts/calibrate.py` against a 100 simulated user load (`--rate-sigma-floor 7.8
 --entropy-sigma-floor 0.4944 --entropy-sigma-ceiling 0.9`), and the
 RandomForest, Isolation Forest, and second model were all retrained the
 same day, before this run.
@@ -88,14 +89,15 @@ cross-validation: a model that memorized rows would fail its own held-out
 fold. This session's live traffic was generated fresh the same morning
 and never existed in any training file before it; correctly classifying
 traffic that never existed is a property of a learned decision boundary,
-checked directly against fresh, live traffic on real lab VMs.
+checked directly against freshly generated traffic in the simulated lab
+environment.
 
-The honest limit: every training session and this benchmark ran on the
+The limit: every training session and this benchmark ran on the
 same lab topology, the same five targets, the same subnet, the same
 generator toolkit. These results demonstrate generalization across
-traffic sessions on this network. Portability to a structurally
-different real-world network is a separate, open question this
-benchmark does not answer.
+traffic sessions on this network. Portability to a network
+with a different structure from the simulated lab environment is a separate,
+open question this benchmark does not answer.
 
 ## Reproducing this
 
@@ -129,7 +131,7 @@ lab's attacker and flash-crowd VMs have no outbound internet access, so
 `tc` could not be installed on them to shape traffic at the source.
 Applying `tc netem` on the sensor's own capture interface instead
 (`ens192`, XDP attached in driver mode) silently broke packet counting:
-real traffic kept flowing and got real HTTP responses the whole time, but
+generated traffic kept flowing and received HTTP responses the whole time, but
 the kernel backend reported zero ingress packets, and removing the
 `netem` qdisc afterward did not restore it. Only a full restart of
 `ddos-stage1` brought capture back. Confirmed this was the qdisc change
@@ -164,23 +166,23 @@ the one real blemish: 2 windows escalated to DDoS this time, against a
 clean 0 in the original run. It cannot be cleanly attributed to shape
 variation alone, since Flash Crowd's own generator was not varied here;
 the freshly relearned baseline from the forced restart is a real,
-unresolved confound. Recorded honestly rather than folded into the
-clean seven-phase numbers above.
+unresolved confound. It is recorded separately from the clean seven-phase
+numbers above.
 
 **Still open.** Network-path-level distribution shift, latency, jitter,
 loss, MTU, an added routing hop, remains untested. It needs either
 internet access on the generator VMs to install `tc` there, or applying
 `netem` somewhere that is not the sensor's own XDP-bound interface.
 
-## System-health recording: first real-world run
+## System-health recording: first run
 
 `scripts/benchmark_live.sh` gained a system-health sampler this
 session: real CPU time and memory for both services over the whole
 run, and real packet throughput and drop counts parsed from the
 capture backend's own existing periodic log line. A run against the
 gateway on 2026-09-18 confirms the tooling itself works correctly
-against a real deployment, not just the synthetic test it was built
-against. The packet counts for the kernel backend were wrong at first: the
+against the deployed gateway in the simulated lab environment, as well as the
+synthetic test it was built against. The packet counts for the kernel backend were wrong at first: the
 kernel status line resets its counters every interval, so each line is that
 interval's own count, and the analysis read it as a running total. Fixed
 after the 1.5.0 reruns by summing the samples inside a phase, and checked

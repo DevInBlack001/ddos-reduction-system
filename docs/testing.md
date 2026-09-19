@@ -55,10 +55,18 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-315 tests across storage, configuration, request models, the database schema,
+357 tests across storage, configuration, request models, the database schema,
 the audit writers, enforcement, authentication, the three capture CSV writers
 (Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
-the deterministic safety overrides, and IPC peer verification.
+the deterministic safety overrides, IPC peer verification, the latency summary
+log, and the live benchmark's analysis functions
+(`scripts/analyze_live_benchmark.py`, exercised from `test_analyze_live_benchmark.py`).
+
+The benchmark's shell scripts (`benchmark_live.sh`, `benchmark_mode_switch.sh`,
+`benchmark_system_sampler.sh`) have no automated tests. The mode switch and
+rollback logic was exercised locally against stubbed `systemctl`, `journalctl`,
+and `ipset`, and the analysis against a synthetic two backend session. Both
+need a run in the simulated lab environment to count as verified.
 
 Written against the standard library's `unittest`. Keep it that way: the suite
 runs anywhere the service runs, with no extra dependency to install.
@@ -180,11 +188,11 @@ for a reason that has nothing to do with either.
 
 ## What Tests Cannot Cover
 
-Some things need a real deployment. A change touching any of them should say in
+Some things need a running gateway. A change touching any of them should say in
 the pull request what was verified and how:
 
 - Packet capture against a live interface
 - ipset and iptables rules actually taking effect
-- The dashboard rendering real traffic
+- The dashboard rendering generated traffic
 - Alert delivery to Discord or email
-- Classification accuracy against real traffic
+- Classification accuracy on networks beyond the simulated lab environment

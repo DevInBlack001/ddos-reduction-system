@@ -143,7 +143,7 @@ wire format and the reasoning in full.
 
 Computing and transmitting the features is not the same as the classifier
 using them well. The shipped RandomForest is now trained on a capture that
-includes all three: on a 34,727 row real dataset, `source_port_entropy`
+includes all three: on a 34,727 row captured dataset, `source_port_entropy`
 placed fourth among fourteen features by importance, while `ttl_variance`
 and `fingerprint_diversity` contributed almost nothing, consistent with a
 single-topology capture where every session shares one hop count and one
@@ -161,7 +161,7 @@ distinct gap: an attack shaped differently from anything in the training
 set has no guaranteed reason to trip a supervised classifier at all,
 regardless of what features it is given. An Isolation Forest, trained on
 the same feature set but ignoring the label column, runs alongside the
-RandomForest in production and flags a window as `Anomalous` when the
+RandomForest at classification time and flags a window as `Anomalous` when the
 RandomForest calls it ordinary but the Isolation Forest finds it unlike
 anything in the training distribution. It does not drive enforcement; see
 [enforcement.md](enforcement.md#classification) for how the two models

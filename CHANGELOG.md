@@ -6,6 +6,40 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Added
+
+- Stage 2 logs a `Latency: summary` line every 30 seconds
+  (`LATENCY_LOG_INTERVAL_SECS`, 0 turns it off) with the count, mean, p95, and
+  maximum for four figures per window: handoff from the sensor, inference,
+  the enforcement call, and window close to rule applied.
+- `scripts/benchmark_live.sh` runs the seven phase set against each capture
+  backend in `CAPTURE_MODES` (kernel, then libpcap, by default) in one
+  session. It switches the sensor's backend through `tuning.env`, gives each
+  run its own baseline file, empties both ipsets and restarts Stage 2 before
+  each run, times the downtime of each switch, then restores the original
+  configuration and times the rollback. An exit trap performs the same
+  rollback if the script is interrupted.
+- The benchmark sampler records context switches per service and system wide,
+  system wide CPU including softirq, and interface packet, byte, drop, and
+  error counters. A helper on the gateway (`benchmark_mode_switch.sh`) also
+  snapshots the ddos iptables drop counters at every phase boundary.
+- `scripts/analyze_live_benchmark.py` reports per phase throughput, drops,
+  CPU, context switches, latency, time from attack to first detection and
+  first block, and detection consistency, then compares the backends
+  side by side, including whether they agree on each phase. Given a
+  session directory it also writes `results.json`. It still reads a single
+  run directory in the older format.
+- `docs/benchmark-backends.md` describes the backend comparison, and
+  `docs/roadmap.md` gains V14, kernel space inference and enforcement, with a
+  user space Random Forest fallback if the in-kernel program fails.
+
+### Changed
+
+- Documentation describes results as coming from the simulated lab
+  environment throughout.
+
 ## 1.6.0, 2026-09-18
 
 ### Added
@@ -87,8 +121,8 @@ minor bump adds a feature, milestones are numbered separately from tags.
   new environment variable `install.sh`/`update.sh`'s existing
   `--training-csv` flag also sets on the running service; Discard clears
   the staged file without merging. Both act on the whole queue at once,
-  the same file every pending alert points at. Confirmed against a real
-  merge on a live deployment: 9,538 staged rows appended into the real
+  the same file every pending alert points at. Confirmed with a
+  merge in the simulated lab environment: 9,538 staged rows appended into the
   training CSV from the dashboard.
 - `scripts/benchmark_live.sh` now records system health alongside
   detection outcomes: a new `scripts/benchmark_system_sampler.sh` polls
@@ -118,13 +152,13 @@ minor bump adds a feature, milestones are numbered separately from tags.
   The RF and second model retrain so the freshness safeguard above does
   not become a permanent block once a model stops changing; the
   Isolation Forest retrains so its contamination boundary does not go
-  stale against live traffic, found live on the sensor VM scoring
-  genuinely benign traffic as `Anomalous` on effectively every window.
+  stale against live traffic, found in the simulated lab environment scoring
+  benign generated traffic as `Anomalous` on effectively every window.
 - `is_row_degenerate()`, refusing to auto-label a zero-traffic window
   (every one of `entropy`, `proto_ratio`, `dominant_ip_ratio`,
   `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity`
   reading exactly `0.0`) regardless of model agreement or confidence.
-  Found on a real VM run: this pattern occurs across all three labels in
+  Found in a simulated lab run: this pattern occurs across all three labels in
   the training corpus, so agreement on it reflects a shared blind spot.
 - `--auto-label-interval` and `--retrain-interval` flags on
   `install.sh`/`update.sh`, both operator configurable.
@@ -132,8 +166,8 @@ minor bump adds a feature, milestones are numbered separately from tags.
   Normal, Flash Crowd, Attacker, then every pairwise mix, then all three
   together, redesigned around one start/stop command pair per traffic
   type so a generator already running into a mixed phase stays running.
-  Confirmed end to end on the sensor VM against a freshly calibrated,
-  freshly retrained deployment: 0% of Flash Crowd traffic escalated to
+  Confirmed end to end in the simulated lab environment against a freshly
+  calibrated, freshly retrained deployment: 0% of Flash Crowd traffic escalated to
   DDoS, 100% escalation once all three traffic types combined.
 
 ### Security
@@ -146,7 +180,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
   cannot grow either file without limit.
 - `ddos-stage2-auto-label.timer` and `ddos-stage2-retrain.timer` both run
   at low priority (`Nice=10`, `CPUWeight=20`, `IOSchedulingClass=idle`),
-  so neither can contend with live enforcement during a real flood.
+  so neither can contend with live enforcement during a flood.
 - `uninstall.sh` now stops, disables, and removes both new timers and
   their oneshot services.
 
@@ -235,7 +269,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
   (randomised inter-request and inter-packet delays, varying active
   source counts, no unpaced flood mode) after the original capture's
   mechanically regular timing was found to collapse `sigma_r` to its
-  configured floor for an entire session regardless of real traffic
+  configured floor for an entire session regardless of the traffic
   volume, teaching the model "this traffic is mechanically regular"
   rather than the intended class signature.
 - A ramp-gap mislabeling pitfall in automated capture orchestration was

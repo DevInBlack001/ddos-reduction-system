@@ -27,8 +27,8 @@ In rough order of value:
    traffic, since the test environment is a small virtual lab and cannot cover
    every network shape.
 2. **Fixes for the known gaps.** The README roadmap and the open issues list
-   what is already known to be missing. Detection tuning under real traffic is
-   the area with the most room.
+   what is already known to be missing. Detection tuning on networks beyond the
+   simulated lab environment is the area with the most room.
 3. **Portability.** The project is developed on Linux with systemd, iptables,
    and ipset. Reports from other distributions, kernels, or init systems are
    welcome.
@@ -201,12 +201,12 @@ the point.
 
 ## What Cannot Be Verified by CI
 
-Some things need a real deployment and a human. If your change touches any of
+Some things need a running gateway and a human. If your change touches any of
 them, say in the pull request what you tested and how:
 
 - Packet capture against a live interface
 - ipset and iptables rules actually taking effect
-- The dashboard rendering real traffic
+- The dashboard rendering generated traffic
 - Alert delivery to Discord or email
 - Model training and classification accuracy
 

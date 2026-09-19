@@ -156,9 +156,9 @@ touch.
 (TTL for IPv4, "hop limit" for its newer IPv6 counterpart), which starts at a
 value the sending computer's operating system picks and counts down by one
 at every router the packet passes through on its way here. Different
-operating systems start at different values, and different real world paths
-cross different numbers of routers, so traffic from a genuinely varied set of
-real machines and network paths tends to arrive with a mix of TTL values, not
+operating systems start at different values, and different network paths
+cross different numbers of routers, so traffic from a varied set of machines
+and network paths tends to arrive with a mix of TTL values, not
 one identical number every time. This measurement is how much that value
 varies within a window. A machine faking thousands of different sender
 addresses is still, physically, one machine sending packets down one network

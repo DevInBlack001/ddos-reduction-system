@@ -58,7 +58,7 @@ is_warmup` carries that same fact to Stage 2, because Stage 2 does its own,
 separate evaluation: the RandomForest and Isolation Forest, both trained
 entirely on converged-baseline data, have never seen a value like
 `sigma_r=0.0`, and read "unfamiliar" as "anomalous" rather than "still
-warming up". Found in production: five targets restarted together read as
+warming up". Found in the simulated lab environment: five targets restarted together read as
 `Anomalous` on 98.86% of windows during their warm-up period, on traffic
 that was, by every other measure in the same report, unremarkable. Stage 2
 now skips classification entirely on a warm-up window: `pred_class` stays
