@@ -19,11 +19,17 @@
 #   benchmark_mode_switch.sh verify <stage1-unit> <stage2-unit> <ingress-iface> <expected-mode> <blocklist-set> <ratelimit-set>
 #   benchmark_mode_switch.sh snapshot
 #   benchmark_mode_switch.sh reset-enforcement <stage2-unit> <blocklist-set> <ratelimit-set>
+#   benchmark_mode_switch.sh apply-floors <flags> <stage1-unit> <out-file> <mode>
 set -uo pipefail
 
 TUNING_FILE="${FLOD_TUNING_FILE:-/etc/ddos_stage1/tuning.env}"
 BACKUP="${TUNING_FILE}.flod-benchmark-backup"
 ABSENT_MARK="${TUNING_FILE}.flod-benchmark-absent"
+# The debug logging drop-in that calibrate.py --auto-debug writes. Rollback
+# removes it only when this benchmark started without one, so an interrupted
+# calibration cannot leave the sensor logging at debug level.
+DEBUG_DROPIN="${FLOD_DEBUG_DROPIN:-/etc/systemd/system/ddos-stage1.service.d/10-calibration-debug.conf}"
+DROPIN_MARK="${TUNING_FILE}.flod-benchmark-dropin-present"
 READY_TIMEOUT_SECS="${READY_TIMEOUT_SECS:-60}"
 
 # Every value that reaches a command line, a file path, or the sensor's flag
@@ -36,6 +42,8 @@ UNIT_RE='^[A-Za-z0-9@:._-]{1,100}$'
 SET_RE='^[A-Za-z0-9_.-]{1,31}$'
 IFACE_RE='^[A-Za-z0-9_.:-]{1,15}$'
 PATH_RE='^/[A-Za-z0-9_./-]{1,200}$'
+NUM_RE='[0-9]+(\.[0-9]+)?'
+FLOORS_RE="^--rate-sigma-floor ${NUM_RE}( --entropy-sigma-floor ${NUM_RE})?( --entropy-sigma-ceiling ${NUM_RE})?\$"
 require() { [[ "$2" =~ $3 ]] || die "invalid $1: '$2'"; }
 require_optional() { [ -z "$2" ] || require "$1" "$2" "$3"; }
 require_path() {
@@ -127,6 +135,7 @@ cmd_switch() {
     mkdir -p "$(dirname "$TUNING_FILE")"
     if [ ! -e "$BACKUP" ] && [ ! -e "$ABSENT_MARK" ]; then
         if [ -f "$TUNING_FILE" ]; then cp -p "$TUNING_FILE" "$BACKUP"; else : > "$ABSENT_MARK"; fi
+        if [ -e "$DEBUG_DROPIN" ]; then : > "$DROPIN_MARK"; else rm -f "$DROPIN_MARK"; fi
     fi
     orig=""
     if [ -f "$BACKUP" ]; then
@@ -147,6 +156,36 @@ cmd_switch() {
     start_and_time "$unit" "$t_issue" "$t_stopped" "$out" "$mode"
 }
 
+# apply-floors: adds calibrated sigma floors to the tuning line and restarts
+# the sensor, timing the restart. The floors are appended after the flags
+# already there, so the capture mode and baseline path from the switch stay in
+# force (the sensor takes the last value given for a flag).
+cmd_apply_floors() {
+    local flags="$1" unit="$2" out="$3" mode="${4:-}" before t_issue t_stopped
+    require flags "$flags" "$FLOORS_RE"
+    require unit "$unit" "$UNIT_RE"
+    require_path out-file "$out"
+    [ -z "$mode" ] || require_mode mode "$mode"
+    [ -f "$TUNING_FILE" ] || die "no tuning file to extend, run switch first"
+    refuse_symlink "$out"
+    before=$(grep -E '^FLOD_TUNING=' "$TUNING_FILE" | tail -1 | cut -d= -f2-)
+    : > "$out"
+    echo "action=apply-floors" >> "$out"
+    echo "applied_flags=$flags" >> "$out"
+    echo "tuning_before=$before" >> "$out"
+    t_issue=$(now)
+    systemctl stop "$unit"
+    t_stopped=$(now)
+    {
+        grep -vE '^FLOD_TUNING=' "$TUNING_FILE"
+        echo "FLOD_TUNING=$before $flags"
+    } > "${TUNING_FILE}.new"
+    chmod 644 "${TUNING_FILE}.new"
+    mv "${TUNING_FILE}.new" "$TUNING_FILE"
+    echo "tuning_after=$before $flags" >> "$out"
+    start_and_time "$unit" "$t_issue" "$t_stopped" "$out" "$mode"
+}
+
 cmd_rollback() {
     local unit="$1" out="$2" mode="${3:-}" dir="${4:-}" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}"
     local t_issue t_stopped restored_ok="none"
@@ -164,6 +203,12 @@ cmd_rollback() {
     t_issue=$(now)
     systemctl stop "$unit"
     t_stopped=$(now)
+    if { [ -f "$BACKUP" ] || [ -e "$ABSENT_MARK" ]; } && [ -e "$DEBUG_DROPIN" ] && [ ! -e "$DROPIN_MARK" ]; then
+        rm -f "$DEBUG_DROPIN"
+        systemctl daemon-reload
+        echo "removed_debug_dropin=1" >> "$out"
+    fi
+    rm -f "$DROPIN_MARK"
     if [ -f "$BACKUP" ]; then
         cp -p "$BACKUP" "${TUNING_FILE}.restore" && mv "${TUNING_FILE}.restore" "$TUNING_FILE"
         if cmp -s "$BACKUP" "$TUNING_FILE"; then restored_ok="identical"; else restored_ok="differs"; fi
@@ -231,6 +276,7 @@ cmd_snapshot() {
 
 case "${1:-}" in
     snapshot) cmd_snapshot ;;
+    apply-floors) shift; cmd_apply_floors "${1:?flags}" "${2:?stage1 unit}" "${3:?out file}" "${4:-}" ;;
     reset-enforcement)
         shift
         require unit "${1:?stage2 unit}" "$UNIT_RE"

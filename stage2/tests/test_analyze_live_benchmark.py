@@ -253,5 +253,42 @@ class VariantFileTests(unittest.TestCase):
         self.assertEqual(bench.load_variants("/nonexistent"), {})
 
 
+class CalibrationLogTests(unittest.TestCase):
+    LOG = ("collecting: 10.0.0.2 10/1000\r\n"
+           "target              windows  flagged   mean pps   peak pps   rate flr   entr flr\n"
+           "10.0.0.2                980     1.2%       25.1       60.3        7.8     0.2263\n"
+           "10.0.0.3               1000     0.5%       22.0       55.0        7.1     0.2100\n"
+           "warning: 10.0.0.2 has a long tail\n"
+           "\nRecommended, covering every target:\n"
+           "  --rate-sigma-floor 7.8 --entropy-sigma-floor 0.2263\n")
+
+    def test_per_target_rows_are_read_from_the_table(self):
+        targets, _, _ = bench.parse_calibration_log(self.LOG)
+        self.assertEqual([t["target"] for t in targets], ["10.0.0.2", "10.0.0.3"])
+        self.assertEqual(targets[0]["windows"], 980)
+        self.assertAlmostEqual(targets[0]["mean_pps"], 25.1)
+        self.assertAlmostEqual(targets[1]["entropy_floor"], 0.21)
+
+    def test_warnings_and_notes_are_kept(self):
+        _, notes, _ = bench.parse_calibration_log(self.LOG)
+        self.assertEqual(notes, ["warning: 10.0.0.2 has a long tail"])
+
+    def test_the_recommended_flags_line_is_found_after_its_heading(self):
+        _, _, flags = bench.parse_calibration_log(self.LOG)
+        self.assertEqual(flags, "--rate-sigma-floor 7.8 --entropy-sigma-floor 0.2263")
+
+    def test_floors_are_read_out_of_the_flags(self):
+        flags = "--rate-sigma-floor 7.8 --entropy-sigma-floor 0.2263 --entropy-sigma-ceiling 0.9"
+        self.assertAlmostEqual(bench.floor_from_flags(flags, "rate-sigma-floor"), 7.8)
+        self.assertAlmostEqual(bench.floor_from_flags(flags, "entropy-sigma-floor"), 0.2263)
+        self.assertIsNone(bench.floor_from_flags("", "rate-sigma-floor"))
+
+    def test_a_log_with_no_table_gives_empty_results(self):
+        self.assertEqual(bench.parse_calibration_log("error: no per window samples\n"), ([], [], ""))
+
+    def test_a_run_without_calibration_files_has_no_calibration(self):
+        self.assertIsNone(bench.load_calibration("/nonexistent"))
+
+
 if __name__ == "__main__":
     unittest.main()

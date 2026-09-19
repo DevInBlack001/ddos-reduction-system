@@ -598,10 +598,91 @@ def analyze_run(run_dir):
         "info": info,
         "switch": switch,
         "verify": load_checks(os.path.join(run_dir, "mode_verify.txt")),
+        "calibration": load_calibration(run_dir),
         "phases": phases,
         "variants": variants,
         "system_samples": system_samples,
     }
+
+
+CALIBRATION_ROW_RE = re.compile(
+    r"^(\S+)\s+(\d+)\s+([\d.]+)%\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$"
+)
+
+
+def parse_calibration_log(text):
+    """Per target rows, the notes calibrate.py printed, and the floors it recommended."""
+    targets, notes, flags = [], [], ""
+    lines = [l.strip() for l in text.replace("\r", "\n").split("\n")]
+    for i, line in enumerate(lines):
+        m = CALIBRATION_ROW_RE.match(line)
+        if m:
+            targets.append({
+                "target": m.group(1), "windows": int(m.group(2)), "flagged_pct": float(m.group(3)),
+                "mean_pps": float(m.group(4)), "peak_pps": float(m.group(5)),
+                "rate_floor": float(m.group(6)), "entropy_floor": float(m.group(7)),
+            })
+        elif line.startswith(("warning:", "note:")):
+            notes.append(line)
+        elif line.startswith("Recommended, covering every target:") and i + 1 < len(lines):
+            flags = lines[i + 1]
+    return targets, notes, flags
+
+
+def floor_from_flags(flags, name):
+    m = re.search(rf"--{name} ([\d.]+)", flags or "")
+    return float(m.group(1)) if m else None
+
+
+def load_calibration(run_dir):
+    info = load_key_values(os.path.join(run_dir, "calibration.txt"))
+    if not info:
+        return None
+    text = ""
+    path = os.path.join(run_dir, "calibration.log")
+    if os.path.exists(path):
+        with open(path, errors="replace") as f:
+            text = f.read()
+    targets, notes, flags = parse_calibration_log(text)
+    flags = flags or info.get("recommended_flags", "")
+    return {
+        "info": info,
+        "apply": load_key_values(os.path.join(run_dir, "calibration_apply.txt")),
+        "targets": targets,
+        "notes": notes,
+        "rate_floor": floor_from_flags(flags, "rate-sigma-floor"),
+        "entropy_floor": floor_from_flags(flags, "entropy-sigma-floor"),
+        "mean_pps": (sum(t["mean_pps"] for t in targets) / len(targets)) if targets else None,
+    }
+
+
+def print_calibration(result):
+    cal = result.get("calibration")
+    if not cal:
+        return
+    info, applied = cal["info"], cal["apply"]
+    print(f"--- Calibration ({info.get('mode', '?')}) during the warm-up stage, {result['mode']} backend ---")
+    print(f"  Outcome: {info.get('status', '?')}, took {info.get('duration_secs', '?')}s, asked for "
+          f"{info.get('windows_requested', '?')} clean windows per target (exit {info.get('exit_code', '?')})")
+    for t in cal["targets"]:
+        print(f"    {t['target']}: {t['windows']} clean windows, {t['flagged_pct']:.1f}% flagged, "
+              f"mean {t['mean_pps']:.1f} pps, peak {t['peak_pps']:.1f} pps, "
+              f"floors rate {t['rate_floor']:.1f} entropy {t['entropy_floor']:.4f}")
+    if info.get("recommended_flags"):
+        print(f"  Recommended for all targets: {info['recommended_flags']}")
+    if info.get("status") == "applied":
+        print(f"  Floors in force before: {applied.get('tuning_before', 'n/a')}")
+        print(f"  Floors in force after:  {applied.get('tuning_after', 'n/a')}")
+        print(f"  Restart to apply them: first capture status line after "
+              f"{applied.get('downtime_to_first_status_secs', 'n/a')}s"
+              + (" (timed out)" if applied.get("timed_out") == "1" else "")
+              + f"; baseline back after ~{info.get('rewarm_secs', '?')}s"
+              + ("" if info.get("rewarm_ok") == "1" else " (not confirmed)"))
+    elif info.get("status") == "failed":
+        print("  Calibration produced no usable floors, so this run used the floors already in force.")
+    for note in cal["notes"]:
+        print(f"  {note}")
+    print()
 
 
 def fmt(value, spec=".1f", missing="n/a"):
@@ -867,10 +948,50 @@ def print_comparison(results):
             print(f"  {phase:<22}{cells}{delta}")
         print()
 
+    print_calibration_comparison(by_mode, modes)
     print_attack_types(by_mode, modes, phases)
     print_agreement(by_mode, modes, phases)
     print_run_to_run(by_mode, phases)
     print_switching(results, by_mode)
+
+
+def print_calibration_comparison(by_mode, modes):
+    calibrated = {m: [r["calibration"] for r in runs if r.get("calibration")] for m, runs in by_mode.items()}
+    if not any(calibrated.values()):
+        return
+    print("--- Calibration by backend ---")
+    header = "".join(f"{m:>14}" for m in modes)
+    print(f"  {'':<40}{header}")
+
+    def avg(values):
+        values = [v for v in values if v is not None]
+        return sum(values) / len(values) if values else None
+
+    rows = (
+        ("Outcome (last run)", lambda cals: cals[-1]["info"].get("status") if cals else None, "s"),
+        ("Recommended rate floor (pps)", lambda cals: avg([c["rate_floor"] for c in cals]), ".1f"),
+        ("Recommended entropy floor", lambda cals: avg([c["entropy_floor"] for c in cals]), ".4f"),
+        ("Mean rate per target (pps)", lambda cals: avg([c["mean_pps"] for c in cals]), ".1f"),
+        ("Calibration time (s)", lambda cals: avg([float(c["info"].get("duration_secs", "nan")) for c in cals]), ".0f"),
+        ("Restart to apply floors (s)",
+         lambda cals: avg([float(c["apply"]["downtime_to_first_status_secs"]) for c in cals
+                           if c["apply"].get("downtime_to_first_status_secs")]), ".1f"),
+    )
+    for label, getter, spec in rows:
+        cells = []
+        for m in modes:
+            cals = calibrated.get(m) or []
+            value = getter(cals) if cals else None
+            cells.append("n/a" if value is None else (value if spec == "s" else format(value, spec)))
+        print(f"  {label:<40}" + "".join(f"{c:>14}" for c in cells))
+    if len(modes) == 2:
+        a = avg([c["rate_floor"] for c in calibrated.get(modes[0]) or []])
+        b = avg([c["rate_floor"] for c in calibrated.get(modes[1]) or []])
+        if a and b and abs(b - a) / a > 0.10:
+            print(f"  The rate floors differ by {100.0 * (b - a) / a:+.0f}% between the backends. With CALIBRATE=apply each")
+            print("  backend then ran its phases under its own thresholds, which is part of any difference in the")
+            print("  detection figures below.")
+    print()
 
 
 def attack_type_descriptions(results):
@@ -1042,6 +1163,7 @@ def analyze(directory):
     results = [analyze_run(d) for d in run_dirs]
     for r in results:
         print_run_report(r)
+        print_calibration(r)
         system_health_whole_run(r)
         print_firewall_state(r["run_dir"])
         print()

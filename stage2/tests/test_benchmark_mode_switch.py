@@ -142,6 +142,53 @@ class BenchmarkModeSwitchTests(unittest.TestCase):
         self.assertEqual(calls[2], "systemctl restart s2.service")
         self.assertLess(calls.index("systemctl restart s2.service"), calls.index("systemctl stop s1.service"))
 
+    def test_applied_floors_are_added_after_the_switch_flags_and_survive_a_rollback_restore(self):
+        self.run_helper("switch", "kernel", "/var/lib/x/flod_benchmark_kernel_run1.json", "s1.service", self.out())
+        flags = "--rate-sigma-floor 7.8 --entropy-sigma-floor 0.4944 --entropy-sigma-ceiling 0.9"
+        result = self.run_helper("apply-floors", flags, "s1.service", self.out("apply.txt"), "kernel")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(self.tuning) as handle:
+            line = handle.read().strip()
+        self.assertTrue(line.startswith("FLOD_TUNING=--k 2 --capture-mode kernel --baseline-path /var/lib/x/flod_benchmark_kernel_run1.json"))
+        self.assertTrue(line.endswith(flags))
+        with open(self.out("apply.txt")) as handle:
+            record = handle.read()
+        self.assertIn("applied_flags=" + flags, record)
+        self.assertIn("tuning_before=--k 2 --capture-mode kernel", record)
+        self.run_helper("rollback", "s1.service", self.out("rb.txt"), "kernel")
+        with open(self.tuning) as handle:
+            self.assertEqual(handle.read(), "FLOD_TUNING=--k 2\n")
+
+    def test_floors_with_extra_flags_are_refused_so_nothing_else_reaches_the_sensor(self):
+        result = self.run_helper("apply-floors", "--rate-sigma-floor 7.8 --bpf-object /tmp/evil.o", "s1.service", self.out("a.txt"), "pcap")
+        self.assertEqual(result.returncode, 2)
+        result = self.run_helper("apply-floors", "--rate-sigma-floor 7.8; id", "s1.service", self.out("a.txt"), "pcap")
+        self.assertEqual(result.returncode, 2)
+
+    def test_floors_without_a_switch_first_are_refused(self):
+        os.remove(self.tuning)
+        result = self.run_helper("apply-floors", "--rate-sigma-floor 7.8", "s1.service", self.out("a.txt"), "pcap")
+        self.assertEqual(result.returncode, 2)
+
+    def test_a_rollback_removes_a_debug_dropin_that_appeared_during_the_benchmark(self):
+        dropin = os.path.join(self.dir, "10-calibration-debug.conf")
+        self.env["FLOD_DEBUG_DROPIN"] = dropin
+        self.run_helper("switch", "pcap", "/b.json", "s1.service", self.out())
+        with open(dropin, "w") as handle:
+            handle.write("[Service]\n")
+        self.run_helper("rollback", "s1.service", self.out("rb.txt"), "")
+        self.assertFalse(os.path.exists(dropin))
+        self.assertIn("daemon-reload", self.calls())
+
+    def test_a_rollback_keeps_a_debug_dropin_that_was_there_before_the_benchmark(self):
+        dropin = os.path.join(self.dir, "10-calibration-debug.conf")
+        with open(dropin, "w") as handle:
+            handle.write("[Service]\n")
+        self.env["FLOD_DEBUG_DROPIN"] = dropin
+        self.run_helper("switch", "pcap", "/b.json", "s1.service", self.out())
+        self.run_helper("rollback", "s1.service", self.out("rb.txt"), "")
+        self.assertTrue(os.path.exists(dropin))
+
 
 class BenchmarkLiveConfigTests(unittest.TestCase):
     BASE = (

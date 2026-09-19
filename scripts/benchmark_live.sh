@@ -90,6 +90,9 @@ source "$CONFIG"
 : "${ATTACK_SOURCE_FILE:=}"
 : "${ATTACK_SOURCES_MIN:=30}"
 : "${ATTACK_SOURCES_MAX:=40}"
+: "${CALIBRATE:=off}"
+: "${CALIBRATE_WINDOWS:=1000}"
+: "${CALIBRATE_TIMEOUT_MINS:=30}"
 : "${NORMAL_SOURCE_FILE:=}"
 : "${FLASHCROWD_SOURCE_FILE:=}"
 
@@ -126,6 +129,11 @@ validate_config() {
     for mode in $CAPTURE_MODES; do
         [[ "$mode" =~ ^(pcap|kernel)$ ]] || config_error "CAPTURE_MODES holds '$mode', expected pcap or kernel"
     done
+    [[ "$CALIBRATE" =~ ^(off|measure|apply)$ ]] || config_error "CALIBRATE is '$CALIBRATE', expected off, measure or apply"
+    for name in CALIBRATE_WINDOWS CALIBRATE_TIMEOUT_MINS; do
+        check_value "$name" "${!name}" '^[0-9]{1,6}$'
+    done
+    [ "$CALIBRATE_WINDOWS" -ge 2 ] || config_error "CALIBRATE_WINDOWS must be at least 2"
     for name in ATTACK_SWEEP_SECS TYPE_GAP_SECS ATTACK_SOURCES_MIN ATTACK_SOURCES_MAX; do
         check_value "$name" "${!name}" '^[0-9]{1,6}$'
     done
@@ -146,7 +154,7 @@ validate_config() {
 }
 validate_config
 
-GW_SSH="ssh -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 $GATEWAY_HOST"
+GW_SSH="ssh -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=8 $GATEWAY_HOST"
 GW_SCP="scp -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
 SESSION_DIR="$OUTPUT_DIR/session_$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$SESSION_DIR"
@@ -445,6 +453,83 @@ run_attack_sweep() {
     done
 }
 
+# wait_for_warmup <journal since>: waits until Stage 1 reports a finished
+# warm-up or a restored baseline since the given time. Sets WARM_OK and
+# WARM_SECS.
+WARM_OK=0
+WARM_SECS=0
+wait_for_warmup() {
+    local since="$1" elapsed=0
+    WARM_OK=0
+    while [ "$elapsed" -lt "$WARMUP_TIMEOUT_SECS" ]; do
+        sleep 10
+        elapsed=$((elapsed + 10))
+        if $GW_SSH "journalctl -u $STAGE1_UNIT --no-pager --since '$since' 2>/dev/null | grep -qE 'warm-up complete|restored baseline'"; then
+            WARM_OK=1
+            break
+        fi
+    done
+    WARM_SECS="$elapsed"
+}
+
+# run_calibration <mode> <run-dir>: runs scripts/calibrate.py on the gateway
+# under this run's Normal traffic, as part of the warm-up stage and before any
+# measured phase. calibrate.py only measures here. It is never allowed to write
+# tuning.env itself, because it would replace the whole file and drop the
+# capture mode and baseline path this run depends on, so with CALIBRATE=apply
+# the helper adds the derived floors to the existing tuning line, restarts the
+# sensor under timing, and the run waits for the baseline again. Everything is
+# written to calibration.txt, calibration.log and calibration_apply.txt.
+CALIBRATE_LOCAL="$(dirname "$0")/calibrate.py"
+CALIBRATE_REMOTE="$REMOTE_DIR/calibrate.py"
+FLOORS_LINE_RE='^--rate-sigma-floor [0-9]+(\.[0-9]+)?( --entropy-sigma-floor [0-9]+(\.[0-9]+)?)?( --entropy-sigma-ceiling [0-9]+(\.[0-9]+)?)?$'
+run_calibration() {
+    local mode="$1" dir="$2" status="failed" rc=0 started ended flags="" apply_since rewarm_ok=0 rewarm_secs=0
+    log "Calibrating the sigma floors under this run's Normal traffic ($CALIBRATE, $CALIBRATE_WINDOWS windows per target, up to $CALIBRATE_TIMEOUT_MINS minutes)..."
+    if ! $GW_SCP "$CALIBRATE_LOCAL" "$GATEWAY_HOST:$CALIBRATE_REMOTE" >/dev/null 2>&1; then
+        log "WARNING: could not copy calibrate.py to the gateway, skipping calibration"
+        printf 'mode=%s\nstatus=skipped\nreason=copy failed\n' "$CALIBRATE" > "$dir/calibration.txt"
+        return
+    fi
+    started=$(date +%s)
+    $GW_SSH "python3 $CALIBRATE_REMOTE --windows $CALIBRATE_WINDOWS --timeout $CALIBRATE_TIMEOUT_MINS --partial --auto-debug" > "$dir/calibration.log" 2>&1
+    rc=$?
+    ended=$(date +%s)
+    flags=$(tr '\r' '\n' < "$dir/calibration.log" | sed -n '/^Recommended, covering every target:/{n;s/^ *//;p;q}')
+    if [ "$rc" -eq 0 ] && [[ "$flags" =~ $FLOORS_LINE_RE ]]; then
+        status="measured"
+        if [ "$CALIBRATE" = apply ]; then
+            $GW_SSH "$HELPER_REMOTE apply-floors '$flags' $STAGE1_UNIT $REMOTE_DIR/calibration_apply.txt $mode" >/dev/null 2>&1
+            $GW_SCP "$GATEWAY_HOST:$REMOTE_DIR/calibration_apply.txt" "$dir/calibration_apply.txt" >/dev/null 2>&1
+            apply_since=$(sed -n 's/^t_started=//p' "$dir/calibration_apply.txt")
+            if [ -n "$apply_since" ]; then
+                log "Floors applied ($flags). Waiting for the baseline after the restart..."
+                wait_for_warmup "@${apply_since%.*}"
+                rewarm_ok="$WARM_OK"; rewarm_secs="$WARM_SECS"
+                status="applied"
+            else
+                log "WARNING: the helper did not report the floors restart, treating calibration as failed"
+                status="failed"
+            fi
+        fi
+    else
+        log "WARNING: calibration did not produce usable floors (exit $rc), the run continues with the floors already in force"
+        flags=""
+    fi
+    {
+        echo "mode=$CALIBRATE"
+        echo "status=$status"
+        echo "exit_code=$rc"
+        echo "windows_requested=$CALIBRATE_WINDOWS"
+        echo "timeout_mins=$CALIBRATE_TIMEOUT_MINS"
+        echo "duration_secs=$((ended - started))"
+        echo "recommended_flags=$flags"
+        echo "rewarm_ok=$rewarm_ok"
+        echo "rewarm_secs=$rewarm_secs"
+    } > "$dir/calibration.txt"
+    log "Calibration $status in $((ended - started))s"
+}
+
 # run_session <mode> <run-number> <run-dir>: the seven phase set against
 # whichever backend Stage 1 is currently running.
 run_session() {
@@ -466,24 +551,22 @@ run_session() {
     mark_phase "session_start"
     start_system_sampling
 
-    log "--- Phase 1: Normal ---"
-    goto_phase "normal" 1 0 0
+    log "--- Warm-up stage: Normal traffic, warm-up, and calibration ---"
+    goto_phase "warmup" 1 0 0
 
     log "Waiting for warm-up (up to ${WARMUP_TIMEOUT_SECS}s)..."
-    local normal_start warmed=0 elapsed=0
-    normal_start=$(awk -F'\t' '$1=="normal"{print $2}' "$PHASES_FILE")
-    normal_start="${normal_start%.*}"
-    while [ "$elapsed" -lt "$WARMUP_TIMEOUT_SECS" ]; do
-        sleep 10
-        elapsed=$((elapsed + 10))
-        if $GW_SSH "journalctl -u $STAGE1_UNIT --no-pager --since '$normal_start' 2>/dev/null | grep -qE 'warm-up complete|restored baseline'"; then
-            log "warm-up complete after ~${elapsed}s"
-            warmed=1
-            break
-        fi
-    done
-    if [ "$warmed" -eq 0 ]; then
+    local warmup_start warmed elapsed
+    warmup_start=$(awk -F'\t' '$1=="warmup"{print $2}' "$PHASES_FILE")
+    warmup_start="${warmup_start%.*}"
+    wait_for_warmup "$warmup_start"
+    warmed="$WARM_OK"; elapsed="$WARM_SECS"
+    if [ "$warmed" -eq 1 ]; then
+        log "warm-up complete after ~${elapsed}s"
+    else
         log "WARNING: no warm-up completion seen after ${WARMUP_TIMEOUT_SECS}s, proceeding anyway"
+    fi
+    if [ "$CALIBRATE" != off ]; then
+        run_calibration "$mode" "$dir"
     fi
     {
         echo "mode=$mode"
@@ -501,8 +584,11 @@ run_session() {
         echo "flashcrowd_variants=$(get_var FLASHCROWD_VARIANTS default)"
         echo "attack_variants=$(get_var ATTACK_VARIANTS default)"
         echo "attack_sweep_secs=$ATTACK_SWEEP_SECS"
+        echo "calibrate=$CALIBRATE"
     } > "$dir/run_info.txt"
 
+    log "--- Phase 1: Normal ---"
+    goto_phase "normal" 1 0 0
     log "Observing Normal for ${NORMAL_SECS}s..."
     sleep "$NORMAL_SECS"
 
@@ -555,7 +641,7 @@ run_session() {
     $GW_SSH "ipset list $BLOCKLIST_SET; echo; ipset list $RATELIMIT_SET" > "$dir/firewall.log" 2>&1
     $GW_SSH "cat $SAMPLER_OUT_REMOTE 2>/dev/null" > "$dir/system_samples.csv" 2>&1
     $GW_SSH "getconf CLK_TCK" > "$dir/clk_tck.txt" 2>&1
-    $GW_SSH "rm -f $SAMPLER_REMOTE $SAMPLER_OUT_REMOTE $SAMPLER_PIDFILE $SAMPLER_LOG_REMOTE" >/dev/null 2>&1
+    $GW_SSH "rm -f $SAMPLER_REMOTE $SAMPLER_OUT_REMOTE $SAMPLER_PIDFILE $SAMPLER_LOG_REMOTE $CALIBRATE_REMOTE $REMOTE_DIR/calibration_apply.txt" >/dev/null 2>&1
     log "=== $mode run $run complete. Logs in $dir ==="
 }
 
