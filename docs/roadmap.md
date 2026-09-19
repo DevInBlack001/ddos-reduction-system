@@ -525,36 +525,36 @@ equivalent phases. Totalling a whole run makes the backends look 49% apart,
 which is entirely the flood phase differing in peak and duration between two
 runs of a generator that does not repeat exactly.
 
-**The first backend comparison ran on 2026-09-19.** Detection is preserved
+**The backend comparison has run twice (2026-09-19).** Detection is preserved
 across the backends and the resource figures differ a great deal. In the
-simulated lab environment, one run per backend, the kernel backend's Stage 1
-averaged 3.2% CPU, 6 context switches a second and 7.8 MB, against 10.8%, 4,179
-and 271 MB for libpcap. At an unpaced SYN flood of about 110,000 packets a second
-the order flipped on CPU (78% to 80% for the kernel backend against 54% to 55%).
-Handoff from the sensor to Stage 2 was longer on the kernel backend (28 ms
-against 7.6 ms) and inference took about 26 ms on both. See
-[Backend Benchmark](benchmark-backends.md) for the figures and their limits:
-one run each, and each backend calibrated to its own floors.
+simulated lab environment, one run per backend, the second and cleaner session
+had the kernel backend's Stage 1 at 4.3% CPU, 6.5 context switches a second and
+8 MB, against 12.9%, 3,759 and 271 MB for libpcap, and the first session agreed.
+At the unpaced floods (about 82,000 to 108,000 packets a second) the CPU order
+flipped (75% to 82% for the kernel backend against 48% to 53%). Handoff from the
+sensor to Stage 2 was longer on the kernel backend in both sessions (median 43 ms
+against 12 ms in the second), and inference took about 30 ms on both. See
+[Backend Benchmark](benchmark-backends.md) for the figures and their limits: one
+run each, and libpcap's rare multi-second handoff stalls.
 
-For V14 the run answers the first risk it lists. Of the window close to rule
-applied path (51 ms kernel, 28 ms libpcap), the enforcement call is 0.05 to
-0.08 ms and inference is 26 ms, so the classifier is the largest piece that
-V14 could remove, and the handoff is the next.
+For V14 the runs answer the first risk it lists. Of the window close to rule
+applied path (median 45 to 72 ms), the enforcement call is 0.05 to 0.1 ms and
+inference is about 30 ms, so the classifier is the largest piece V14 could
+remove, and the handoff is the next. They also show a limit that V14 would not
+remove by itself: Stage 2 handles windows one after another, and when it falls
+behind the socket fills, Stage 1 logs the write failing, and handoff reaches
+tens of seconds.
 
-**The `hot` Flash Crowd is treated as an attack.** One source sending far more
-than the rest, run with Normal traffic, drew DDoS verdicts (34 on the kernel
-backend, 15 on libpcap) and rate limits on more than 100 legitimate addresses.
-The training data has no concentrated legitimate crowd, so the classifier has
-never seen this shape.
+**Flash Crowd is misread.** With Normal traffic, the `hot` variant (one source
+far above the rest) drew DDoS verdicts on both backends in both sessions (26 and
+65 in the second) and rate limits on more than 100 legitimate addresses. The
+even variant also drew verdicts and rate limits in the second session on
+libpcap (24 and 522). The training data has no concentrated legitimate crowd.
 
 **Enforcement can rate limit the previous phase's sources.** In an attack-only
-phase both backends rate limited the 97 Flash Crowd addresses from the phase
-before, along with the 35 attack sources. The cause is not established.
-
-**The `mp_flood` generator sends nothing.** `attack_mp` on the lab attacker
-uses `mapfile` under `#!/bin/sh`, which is busybox and has no `mapfile`. Change
-the shebang to bash, as was done for `high_traffic`. Until then that attack type
-has no data.
+phase of the first session both backends rate limited the 97 Flash Crowd
+addresses from the phase before, along with the 35 attack sources. The cause is
+not established.
 
 **Scripted traffic generators can make the rate look artificially steady,
 fixed by jittering generator timing.** `sigma_r`, the standard deviation
@@ -650,7 +650,8 @@ forwarding. It happens on both backends. It hit the kernel backend's first 30
 minutes in the 2026-09-19 comparison, so that run's warm-up, calibration,
 `normal` and `flash_crowd` phases are not comparable with the libpcap run's. The profile was
 changed to `ipv4.method manual` with IPv6 off on 2026-09-19 (13:52 UTC), which
-removed the cycle. The comparison needs a rerun.
+removed the cycle: the second session had no NetworkManager event on that
+interface.
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

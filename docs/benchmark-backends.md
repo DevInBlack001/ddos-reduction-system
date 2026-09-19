@@ -11,12 +11,10 @@ All runs happen in my simulated lab environment. The figures describe that
 environment. Other networks, other hardware, and other traffic mixes may
 produce different numbers.
 
-Status: the first session ran on 2026-09-19 from 10:30 to 12:30 UTC in the
-simulated lab environment, one run per backend (kernel, then libpcap), with
-calibration on `apply`, the attack type sweep on, and Normal, Flash Crowd and
-attack variants rotating. The results are at the end of this page. They come
-from a single run per backend, so nothing here shows how much a figure moves
-between identical runs.
+Status: two sessions have run on 2026-09-19 in the simulated lab environment
+(10:30 to 12:30 and 14:11 to 16:14 UTC), one run per backend each. The second is
+the reliable one, and the results are at the end of this page. One run per
+backend means nothing here shows how much a figure moves between identical runs.
 
 ## Running it
 
@@ -224,167 +222,161 @@ interval's p95 and the maximum is the largest seen.
 
 ## Results
 
-Read against the raw files of `session_20260919T103029Z`. The kernel run's
-warm-up, calibration, `normal` and `flash_crowd` phases ran mostly without a
-working path to the targets (see the egress fault under the problems below), so
-the two runs are not equivalent in those phases. Figures are means
-over the phases that carried traffic (the seven standard phases and the sweep
-phases for the `mixed`, `shapeb` and `single_mp` attacks), with the range across
-those phases beside them. The `syn_flood` phases are separate, since an unpaced
-flood at 105,000 to 123,000 packets per second is a different regime, and the
-`mp_flood` phases sent no traffic (see the problems below).
+Two sessions have run in the simulated lab environment, each with one run per
+backend (kernel, then libpcap), calibration on `apply`, the attack type sweep on,
+and Normal, Flash Crowd and attack variants rotating. Both were read against the
+raw files. Figures are means over the phases that carried traffic (the seven
+standard phases and the sweep phases for `mixed`, `shapeb` and `single_mp`),
+with the range beside them, and latency uses the median across phases because
+single phases carry multi-second outliers.
 
-### Capture and resource use
+The second session (`session_20260919T141144Z`, 14:11 to 16:14 UTC) is the one
+to rely on. Forwarding to the targets worked throughout (no NetworkManager event
+on the egress interface, and no phase with incoming traffic and no egress), the
+`mp_flood` generator sent traffic, and the two backends calibrated to nearly the
+same floors (rate 2.3 and 2.2, entropy 0.0780 and 0.0787). The first session
+(`session_20260919T103029Z`, 10:30 to 12:30 UTC) ran its kernel half with the
+egress interface down for most of the first 30 minutes, so its warm-up,
+calibration, `normal` and `flash_crowd` phases are not comparable, and its
+`mp_flood` phases carry no data (see the problems below).
+
+### Capture and resource use (second session)
 
 | Figure | Kernel | libpcap |
 |-|-|-|
-| Packets captured against the interface counter | within about 5% in most phases (83% during `syn_flood`) | within about 5% in most phases (88% during `syn_flood`) |
-| Packets dropped at capture, and at the interface | 0 drain errors, 0 interface drops | 0 dropped at capture, 0 interface drops |
-| Stage 1 CPU | 3.2% (0.8 to 6.1) | 10.8% (2.4 to 20.4) |
-| System CPU busy | 8.1% (2.1 to 15.0) | 10.8% (3.3 to 19.4) |
-| Stage 1 context switches per second | 6 (4 to 7) | 4,179 (289 to 6,598) |
-| System context switches per second | 727 (372 to 1,195) | 8,239 (1,057 to 12,475) |
-| Stage 1 memory, average | 7.8 MB (peak 11.8 MB) | 271 MB (peak 272.8 MB) |
-| Stage 2 CPU | 24.2% | 23.9% |
-| Stage 2 memory, average | 250.6 MB (peak 273.2 MB) | 249.7 MB (peak 268.3 MB) |
+| Stage 1 CPU | 4.3% (1.0 to 10.4) | 12.9% (3.8 to 24.7) |
+| Stage 1 context switches per second | 6.5 (4 to 12) | 3,759 (279 to 5,252) |
+| Stage 1 memory, average | 8.0 MB (peak 11.8 MB) | 271 MB |
+| System CPU busy | 12.2% (3.3 to 25.3) | 13.6% (6.1 to 24.6) |
+| Stage 2 CPU | 31.7% (13 to 53) | 31.9% (21 to 72) |
+| Packets dropped at the interface | 0 | 0 |
+| Stage 1 CPU at the four unpaced flood phases (82,000 to 108,000 packets per second) | 75% to 82% | 48% to 53% |
+| Packets the backend counted, as a share of the interface counter, at those floods | 79% to 89% | 89% to 100% |
 
-At the flood rate the order of the CPU figures changes. During `syn_flood`
-Stage 1 used 78% to 80% of a CPU in the kernel run and 54% to 55% in the
-libpcap run, and system CPU was 18% to 34% and 32% to 35%. The kernel run's
-Stage 1 context switches stayed at 12 to 21 per second while libpcap's reached
-21,000. The kernel backend's own counters showed no drain errors at that rate.
-
-Throughput at the interface reached 4,700 to 5,500 packets per second (2.4 to
-3.0 Mbit/s) in the standard attack phases and 105,000 to 123,000 packets per
-second (54 to 63 Mbit/s) during `syn_flood`. The two runs saw the same
-interface rates in each phase to within a few percent.
+The first session gave the same picture: Stage 1 at 3.2% against 10.8% CPU, 6
+against 4,179 context switches a second, and 7.8 MB against 271 MB, with the CPU
+order also reversed at the SYN flood (78% to 80% against 54% to 55%). So these
+figures replicated. Interface throughput in the standard attack phases was 4,600
+to 5,400 packets per second (about 2.4 to 3 Mbit/s) and the two runs saw the same
+rate in each phase to within a few percent.
 
 ### Latency
 
-| Figure (mean per phase) | Kernel | libpcap |
+| Median across phases (ms) | Kernel | libpcap |
 |-|-|-|
-| Handoff from the sensor to Stage 2 | 28 ms (18 to 48) | 7.6 ms (1.6 to 34) |
-| Inference (frame build, Random Forest, Isolation Forest) | 26 ms (17 to 42) | 27 ms (16 to 51) |
-| One enforcement call | 0.08 ms | 0.05 ms |
-| Window close to rule applied | 51 ms (37 to 83) | 28 ms (19 to 40) |
-| Attack start to first block | 0.5 to 1.4 s (9.5 s for `syn_flood`) | 0.6 to 0.8 s (6.4 s for `syn_flood`) |
+| Handoff from the sensor to Stage 2 | 43 (first session 30) | 12 (first session 5) |
+| Inference (frame build, Random Forest, Isolation Forest) | 32 (28) | 30 (28) |
+| Window close to rule applied | 72 (45) | 45 (30) |
+| One enforcement call | 0.05 to 0.10 | 0.04 to 0.09 |
 
-Inference is the largest measured piece of the path in both runs and takes
-about as long on either backend. The kernel run's handoff was longer in every
-phase, and this run does not show why. During `syn_flood` handoff rose to 78 to
-87 ms (kernel) and window close to rule applied to 116 to 122 ms.
+The kernel backend's handoff was longer than libpcap's in both sessions, and in
+most attack phases by 1.5 to 12 times (in the Normal and Flash Crowd phases the
+two were close or libpcap was longer). This run does not show why. Inference took
+about the same on both. The libpcap run had rare, large stalls that a mean
+hides: in the second session one phase (`normal_flashcrowd`) had a mean handoff
+of 2.8 s and a 25 second maximum, and Stage 1 logged three IPC writes to Stage 2
+failing with "Resource temporarily unavailable" (the socket to Stage 2 was full,
+so Stage 2 was behind). The first session had one such stall per run around
+Stage 2 restarts. With inference at 30 ms a window and six targets, Stage 2
+handles windows one after another, and the run shows what happens when it falls
+behind. Attack start to first block was 0.4 to 1.3 s for the jittered attacks
+(libpcap never blocked `single_mp`, it rate limited it) and 5.7 to 9.1 s for the
+unpaced floods, apart from `mp_flood` on libpcap, where the first block came 90 s in.
 
 ### Switching, rollback and calibration
 
-| Figure | Kernel | libpcap |
+| Figure (second session) | Kernel | libpcap |
 |-|-|-|
-| Capture attached after the restart | 1.66 s | 0.11 s |
-| First capture status line | 6.7 s | 16.2 s |
-| Baseline back after the first warm-up | 200 s | 210 s |
-| Calibration | 1,134 s, 1,001 to 1,091 clean windows per target | 1,224 s, 1,006 to 1,167 |
-| Floors derived | rate 3.4, entropy 0.0936 | rate 2.5, entropy 0.1089 |
-| Restart to apply the floors | 7.1 s | 5.2 s |
+| Capture attached after the restart | 1.60 s | 0.13 s |
+| First capture status line | 6.6 s | not seen within 60 s |
+| Calibration | 1,209 s | 1,163 s |
+| Floors derived | rate 2.3, entropy 0.0780 | rate 2.2, entropy 0.0787 |
+| Restart to apply the floors | 7.0 s | 5.3 s |
 
 The rollback restored `tuning.env` byte for byte, the sensor came back in the
-kernel backend with XDP attached, both ipsets were present, and all checks
-passed (attach after 1.69 s, first status after 6.7 s).
+kernel backend with XDP attached, and all six checks passed (attach after 1.72 s,
+first status after 6.76 s). The first session's figures were the same to within
+0.1 s.
 
 The libpcap first status line is not a readiness measure. That line is logged
-only when a packet arrives, and generators were stopped at the switch, so the
-16.2 s is the wait for Normal traffic. Read the attach time for the restart.
+only when a packet arrives, and generators are stopped at the switch, so it
+waited for Normal traffic (16.2 s in the first session and past the 60 s limit in
+the second). Read the attach time for the restart.
 
-The two backends calibrated to different rate floors (3.4 against 2.5, a 26%
-difference), so each ran its phases under its own thresholds. Calibration also
-flagged 3.5% to 10.3% of the kernel run's windows against 0% to 0.9% of the
-libpcap run's, on Normal traffic of about 11 packets per second per target.
+### Detection (second session)
 
-### Detection
+- The backends agreed on whether a DDoS verdict was issued in 14 of 17 phases and
+  on whether enforcement acted in 17 of 17. Enforcement matched the expected
+  outcome in 15 phases on each backend, and the two misses are the Flash Crowd
+  phases, where both backends acted.
+- DDoS verdicts stayed rare, and the rate limit and block tiers did most of the
+  mitigating. In the sweep phases that add Normal traffic to an attack, DDoS
+  verdicts were 0 for every attack type on both backends while blocks and rate
+  limits continued.
+- Flash Crowd is where the system errs. The `hot` variant (one source far above
+  the rest, with Normal traffic) drew 26 DDoS verdicts on kernel and 65 on
+  libpcap, and rate limits of 725 and 620. The even variant drew 2 verdicts and
+  14 rate limits on kernel and 24 verdicts and 522 rate limits on libpcap. In the
+  first session the `hot` variant drew 34 and 15 verdicts. The training data has
+  no concentrated legitimate crowd, and the even variant's libpcap result
+  suggests that even it can be misread at these rates. The interface rate of the
+  even variant differed between the runs (about 1,000 against 600 packets per
+  second), so the two are not identical loads.
+- Every attack type was mitigated on both backends, including `mp_flood`, which
+  now sent about 100,000 packets per second. Verdict counts differ by type and
+  backend: `mixed` 53 and 53, `shapeb` 23 and 22, `syn_flood` 58 and 0,
+  `mp_flood` 0 and 89, `single_mp` 57 and 93 (kernel and libpcap). The unpaced
+  floods produced verdicts on one backend and none on the other, which shows how
+  much the verdict count depends on timing at those rates.
+- In an attack-only phase of the first session both backends rate limited the 97
+  Flash Crowd addresses from the phase before. The cause is not established.
 
-- In the three phases without an attack, `normal` had no verdicts or actions on
-  either backend, and `flash_crowd` (the even variant) had none on the kernel
-  backend and 2 DDoS verdicts and 31 rate limits on libpcap. The third,
-  `normal_flashcrowd`, is described next.
-- The `hot` Flash Crowd variant (one source far above the rest, run with Normal
-  traffic) drew DDoS verdicts on both backends: 34 (2.3% of flagged windows) on
-  kernel and 15 (1.1%) on libpcap, and rate limits on 131 and 109 distinct
-  addresses. This is the concentrated legitimate crowd that the training data
-  lacks, and it is a false positive.
-- Every attack type except `mp_flood` produced enforcement on both backends. DDoS
-  verdicts stayed rare, 0% to 12% of flagged windows and mostly 2% to 5%, and the
-  rate limit and block tiers did most of the mitigating. In the sweep phases that
-  add Normal traffic to an attack, DDoS verdicts were 0 for every attack type on
-  both backends while blocks and rate limits continued. In the standard
-  `normal_attacker` phase they were 54 (kernel) and 42 (libpcap).
-- `syn_flood` alone drew 0 verdicts and 280 blocks on kernel and 46 verdicts and
-  314 blocks on libpcap. `single_mp` (one source) drew 8 verdicts on kernel and
-  74 on libpcap.
-- The backends agreed on whether a DDoS verdict was issued in 14 of 17 phases,
-  and on whether enforcement acted in 16 of 17 (`flash_crowd`).
-- In the standard `attacker` phase, which has no Flash Crowd traffic, both
-  backends rate limited the 97 Flash Crowd source addresses from the phase before
-  as well as the 35 attack sources. The attack type sweep, which empties the ipsets and restarts
-  Stage 2 first, hit only the 35 attack addresses. The cause is not established.
-
-### Entropy
+### Entropy (second session)
 
 The attack's 35 source addresses put its entropy well below Normal's. On flagged
-windows the mean entropy was 0.80 to 0.84 for the distributed attacks alone,
-0.61 to 0.71 with Normal traffic added, and 0.001 for the single source attack
-alone (0.13 to 0.18 with Normal). Entropy took part in 49% to 66% of the flagged
-windows when a distributed attack ran alone (rate did the rest) and in 83% to 99%
-once Normal or Flash Crowd traffic was added. The unpaced `syn_flood` kept mean
-entropy at 0.93 to 0.97 alone, with entropy involved in 2% to 15% of its flagged
-windows, and 60% to 80% with Normal traffic added.
+windows the mean entropy was 0.81 to 0.85 for the jittered distributed attacks
+alone, 0.61 to 0.72 with Normal traffic added, and 0.000 for the single source
+attack alone (0.13 to 0.14 with Normal). Entropy took part in 57% to 63% of the
+flagged windows when a jittered distributed attack ran alone and in 87% to 95%
+once Normal traffic was added; the same shift showed in the first session (49% to
+66%, then 83% to 99%). The unpaced floods kept mean entropy at 0.90 to 0.97
+alone, with entropy involved in 4% to 37% of flagged windows, and 73% to 97% with
+Normal traffic added.
 
-### Problems found in this session
+### Problems found
 
-- The `mp_flood` attack sent no traffic in either run. `attack_mp` on the
-  attacker machine has a `#!/bin/sh` line and uses `mapfile`, which busybox `sh`
-  does not have, so it exits at once. This is the same fault `high_traffic` had.
-  The generator is on the lab machine and outside this repository. Its two
-  phases in each run carry no data.
-- The analysis mixed the two libpcap capture threads. With an egress interface the
-  sensor logs status lines for both interfaces and the lines interleave, and the
-  analysis read them as one series. It also credited a previous phase's traffic
-  to a phase after a quiet gap, since libpcap logs its status only when packets
-  arrive. Both are fixed, and the figures above use the fixed analysis.
-- The gateway's egress interface goes down for minutes at a time, and that
-  affected the kernel run more than the libpcap run. `ens256` belongs to a
-  NetworkManager profile ("Wired connection 3") set to DHCP (`ipv4.method
-  auto`) with the static address 10.0.0.254/24 added. No DHCP server answers on
-  that network, so each activation fails after 45 seconds with
-  `ip-config-unavailable`, NetworkManager takes the interface down and the
-  address and the route to the targets go with it, and after three attempts it
-  waits five minutes before trying again. While it is down the gateway cannot
-  forward, so the targets receive nothing, the egress counters read zero and the
-  dashboard shows all the incoming traffic as not reaching the target. Restarting
-  NetworkManager re-adopts the interface (`assume`) and gives about two minutes
-  of forwarding before the cycle repeats, which is why it looked as if it
-  needed a restart every couple of minutes. The interface's own egress counter
-  follows the cycle sample for sample: egress traffic in 35 of 35 samples during
-  three activation attempts (10:33:58 to 10:36:58) and in 1 of 58 during the
-  backoff that followed, with incoming traffic in all of them. It is not caused
-  by the capture backend. The failure loop ran in both runs (45 failed
-  activations in the kernel run's window, 66 in the libpcap run's, 32 since the
-  session ended with no restarts), and the runs differ because NetworkManager
-  was restarted 16 times during the kernel window, the first 30 minutes in, and
-  31 times during the libpcap window, from the start. In the kernel run the
-  warm-up, the calibration and the `normal` and `flash_crowd` phases therefore
-  ran mostly without a working path to the targets (samples with incoming
-  traffic and no egress: 59% of warm-up, 23 of 23 in `normal`, 24 of 24 in
-  `flash_crowd`; none in the libpcap run). Those phases, and the floors derived
-  from them, are not comparable between the runs. The profile was
-  changed to `ipv4.method manual` with IPv6 off on 2026-09-19 at 13:52 UTC, after which
-  it stayed connected and forwarding worked. The benchmark now refuses to start
-  when the egress interface has no address, and the report warns about any phase
-  where more than 20% of the sample intervals had incoming traffic and no
-  egress traffic. The comparison needs a rerun for the kernel run's early phases. Separately, the vmxnet3 driver reinitializes `ens192` at every XDP
-  attach and detach (the kernel log shows the link coming up again at each
-  kernel mode start), and NetworkManager logged nothing for `ens192` at those
-  moments, so this run does not show that it matters.
-- Antigravity restarted NetworkManager by hand during the session (47 times).
-  The script does not do this and nothing recorded it in the results. The
-  restarts were a workaround for the profile fault above, and manual changes
-  during a session should still not happen.
-- One run per backend, so the spread between identical runs is unknown, and the
-  backends ran under different floors.
+- **The egress interface fault (first session).** `ens256` belonged to a
+  NetworkManager profile set to DHCP with a static address added, and no DHCP
+  server answers on that network. Each activation failed after 45 seconds, the
+  interface lost its address and the route to the targets, and after three
+  attempts NetworkManager waited five minutes. While it was down the gateway
+  could not forward, so the targets received nothing, the egress counters read
+  zero and the dashboard showed all incoming traffic as not reaching the target.
+  A NetworkManager restart gave about two minutes of forwarding. The interface's
+  own counter followed the cycle sample for sample (egress traffic in 35 of 35
+  samples during three activation attempts and 1 of 58 during the backoff). It
+  affected both backends (45 failed activations in the kernel run's window, 66 in
+  libpcap's, 32 after the session with no restarts) and the runs differed because
+  NetworkManager was restarted 16 times in the kernel window and 31 times in the
+  libpcap window. The profile was changed to `ipv4.method manual` with IPv6 off
+  on 2026-09-19 at 13:52 UTC, and the second session had no NetworkManager event
+  for the whole run. The benchmark now refuses to start when the egress interface
+  has no address, and the report warns about a phase with legitimate traffic where
+  more than 20% of the sample intervals had incoming traffic and no egress.
+  Separately, the vmxnet3 driver reinitializes `ens192` at every XDP attach and
+  detach, and NetworkManager logged nothing for `ens192` at those moments, so
+  this run does not show that it matters.
+- **`mp_flood` sent nothing in the first session.** `attack_mp` had a `#!/bin/sh`
+  line and uses `mapfile`, which busybox `sh` does not have. The shebang is bash
+  now and the second session shows the attack running.
+- **The analysis mixed the two libpcap capture threads.** With an egress
+  interface the sensor logs status lines for both interfaces and the lines
+  interleave, and the analysis read them as one series. It also credited a
+  previous phase's traffic to a phase after a quiet gap. Both are fixed. The
+  egress stall warning applies only to phases with Normal or Flash Crowd traffic,
+  because the firewall drops an attack-only phase's traffic by design.
+- **Manual changes during a session.** In the first session NetworkManager was
+  restarted by hand 47 times as a workaround for the egress fault. The second
+  session had none.
+- **One run per backend.** The spread between identical runs is still unknown,
+  and the latency stalls above show that some figures move a lot from run to run.

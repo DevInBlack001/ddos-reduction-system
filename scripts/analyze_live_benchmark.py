@@ -826,7 +826,10 @@ def print_run_report(result):
             print(f"  Interface: ingress {fmt(net.get('ingress_pps'), ',.0f')} pps / {fmt(net.get('ingress_mbps'))} Mbit/s, "
                   f"egress {fmt(net.get('egress_pps'), ',.0f')} pps / {fmt(net.get('egress_mbps'))} Mbit/s, "
                   f"NIC rx drops {fmt(net.get('nic_rx_dropped'), '.0f')}, rx errors {fmt(net.get('nic_rx_errors'), '.0f')}")
-        if net.get("egress_stall_pct", 0) > 20:
+        # Only phases with legitimate traffic can show a forwarding failure. In an
+        # attack-only phase the firewall drops the attack, so no egress is expected.
+        has_legitimate = any(cls in m["variants"] for cls in ("normal", "flashcrowd"))
+        if has_legitimate and net.get("egress_stall_pct", 0) > 20:
             print(f"  WARNING: {net['egress_stall_pct']:.0f}% of the sample intervals had incoming traffic and no "
                   "egress traffic. The gateway was probably not forwarding, so this phase may not reflect the system.")
         if "firewall_dropped" in m:
