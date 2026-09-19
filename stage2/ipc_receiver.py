@@ -25,6 +25,7 @@ import state
 import db
 import enforcement
 import alerts
+from latency import LatencyStats
 
 
 # Track which capture files have already logged the size-cap warning, so we
@@ -196,6 +197,35 @@ def _write_ddos_capture_row(**feature_values):
     _append_csv_row(config.DDOS_CAPTURE_CSV_PATH, DDOS_CAPTURE_CSV_HEADER, _base_feature_row(feature_values))
 
 
+latency_stats = LatencyStats()
+
+
+def _timed_enforcement(window_ts, action, *args, **kwargs):
+    """Run one enforcement action and record how long it took, and how long
+    after the window closed the rule was in place."""
+    started = time.time()
+    result = action(*args, **kwargs)
+    finished = time.time()
+    latency_stats.record("enforcement", (finished - started) * 1000.0)
+    latency_stats.record("window_to_rule", (finished - window_ts) * 1000.0)
+    return result
+
+
+_latency_log_state = {"last": time.time()}
+
+
+def _log_latency_if_due(now=None):
+    interval = config.LATENCY_LOG_INTERVAL_SECS
+    if interval <= 0:
+        return
+    now = time.time() if now is None else now
+    if now - _latency_log_state["last"] < interval:
+        return
+    _latency_log_state["last"] = now
+    if latency_stats.has_samples():
+        logging.info(latency_stats.summary_line(interval))
+
+
 def _should_capture_pretraining_row(clf, is_warmup):
     """Cold-start capture fires only before any RandomForest model exists
     (the actual "before the first model is trained" case) and never during
@@ -352,6 +382,7 @@ def run_ipc_receiver():
                     if len(data) < config.PAYLOAD_SIZE:
                         break
 
+                received_at = time.time()
                 unpacked = struct.unpack(config.FEATURE_VECTOR_FORMAT, data)
                 entropy = unpacked[0]
                 ewma_rate = unpacked[1]
@@ -362,6 +393,9 @@ def run_ipc_receiver():
                 proto_ratio = unpacked[6]
                 dominant_ip_ratio = unpacked[7]
                 timestamp = unpacked[8]
+                handoff_ms = (received_at - timestamp) * 1000.0
+                if 0.0 <= handoff_ms < 60000.0:
+                    latency_stats.record("handoff", handoff_ms)
                 proto_tcp = unpacked[9]
                 proto_udp = unpacked[10]
                 proto_icmp = unpacked[11]
@@ -422,6 +456,8 @@ def run_ipc_receiver():
 
                 pred_class = 0
                 features_df = None
+                inference_secs = 0.0
+                inference_started = time.perf_counter()
                 if clf or if_clf:
                     import pandas as pd
                     features_df = pd.DataFrame([[
@@ -442,6 +478,7 @@ def run_ipc_receiver():
                 # default (0, Normal) as this model's own opinion.
                 if not is_warmup and clf:
                     pred_class = int(clf.predict(features_df)[0])
+                inference_secs += time.perf_counter() - inference_started
 
                 if _should_capture_pretraining_row(clf, is_warmup):
                     _write_pretraining_row(
@@ -479,7 +516,9 @@ def run_ipc_receiver():
                 is_anomalous = False
                 if not is_warmup and if_clf and pred_class in (0, 1):
                     # -1 = outlier, 1 = inlier, IsolationForest's own convention.
+                    if_started = time.perf_counter()
                     is_anomalous = int(if_clf.predict(features_df)[0]) == -1
+                    inference_secs += time.perf_counter() - if_started
                     if is_anomalous:
                         pred_name = "Anomalous"
                         if_score = if_clf.decision_function(features_df)[0]
@@ -496,6 +535,9 @@ def run_ipc_receiver():
                             ttl_variance=ttl_variance, fingerprint_diversity=fingerprint_diversity,
                             timestamp=timestamp,
                         )
+
+                if not is_warmup and (clf or if_clf):
+                    latency_stats.record("inference", inference_secs * 1000.0)
 
                 # Confidence gated automatic labeling's only path to new DDoS
                 # examples: the RandomForest already confidently calling this
@@ -610,7 +652,7 @@ def run_ipc_receiver():
                         # clearly drives the attack (both concentrated AND
                         # fast). Gated by hysteresis like every block action.
                         if block_ready and dominant_ip_ratio >= cfg["dominant_ip_ratio_block_threshold"] and dominant_rate >= dominant_rate_threshold:
-                            enforcement.block_ip(ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate, entropy=entropy)
+                            _timed_enforcement(timestamp, enforcement.block_ip, ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate, entropy=entropy)
                             _maybe_alert_block(ip_str, victim_ip_str, dominant_rate, cfg)
                             acted_on.add(ip_str)
 
@@ -631,7 +673,7 @@ def run_ipc_receiver():
                                         f"[!] Per-source block: {f_ip} sustaining {agg_rate:.2f} pps "
                                         f"(threshold {block_threshold:.2f}) across its active flows."
                                     )
-                                    enforcement.block_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate, entropy=entropy)
+                                    _timed_enforcement(timestamp, enforcement.block_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                     _maybe_alert_block(f_ip, victim_ip_str, agg_rate, cfg)
                                     acted_on.add(f_ip)
 
@@ -650,7 +692,7 @@ def run_ipc_receiver():
                             if f_ip in acted_on:
                                 continue
                             if agg_rate >= flow_threshold:
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate, entropy=entropy)
+                                _timed_enforcement(timestamp, enforcement.ratelimit_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                 acted_on.add(f_ip)
 
                         # Tier 4, aggregate cap fallback. Class-2 verdict but
@@ -672,7 +714,7 @@ def run_ipc_receiver():
                                 f"rate-limited {len(per_source_rate)} active flows as a fallback."
                             )
                             for f_ip, f_rate in per_source_rate.items():
-                                enforcement.ratelimit_ip(f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate, entropy=entropy)
+                                _timed_enforcement(timestamp, enforcement.ratelimit_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate, entropy=entropy)
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
@@ -695,7 +737,9 @@ def run_ipc_receiver():
                         # Recorded as a flash crowd cap, not as a DDoS action:
                         # the verdict here was class 1, and the dashboard
                         # separates confirmed attack sources from precautions.
-                        enforcement.ratelimit_ip(
+                        _timed_enforcement(
+                            timestamp,
+                            enforcement.ratelimit_ip,
                             ip_str,
                             victim_ip=victim_ip_str,
                             duration=cfg["ratelimit_duration_seconds"],
@@ -710,6 +754,8 @@ def run_ipc_receiver():
                     if dominant_ip_known:
                         db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
+
+                _log_latency_if_due()
 
             conn.close()
         except Exception as e:

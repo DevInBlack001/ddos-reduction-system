@@ -328,5 +328,49 @@ class AppendCsvRowSizeConstraintTests(unittest.TestCase):
         self.assertGreater(os.path.getsize(self.path), 50)
 
 
+class LatencyLoggingTests(unittest.TestCase):
+    def setUp(self):
+        self._interval = config.LATENCY_LOG_INTERVAL_SECS
+        self._last = ipc_receiver._latency_log_state["last"]
+        ipc_receiver.latency_stats = ipc_receiver.LatencyStats()
+        config.LATENCY_LOG_INTERVAL_SECS = 30.0
+        ipc_receiver._latency_log_state["last"] = 1000.0
+
+    def tearDown(self):
+        config.LATENCY_LOG_INTERVAL_SECS = self._interval
+        ipc_receiver._latency_log_state["last"] = self._last
+
+    def test_a_timed_enforcement_call_returns_the_actions_result(self):
+        result = ipc_receiver._timed_enforcement(1.0, lambda a, b=0: a + b, 2, b=3)
+        self.assertEqual(result, 5)
+
+    def test_a_timed_enforcement_call_records_both_latency_kinds(self):
+        ipc_receiver._timed_enforcement(1.0, lambda: None)
+        line = ipc_receiver.latency_stats.summary_line(30)
+        self.assertIn("enforcement_n=1", line)
+        self.assertIn("window_to_rule_n=1", line)
+
+    def test_no_summary_is_logged_before_the_interval_has_passed(self):
+        ipc_receiver.latency_stats.record("inference", 1.0)
+        with self.assertNoLogs(level="INFO"):
+            ipc_receiver._log_latency_if_due(now=1010.0)
+
+    def test_a_summary_is_logged_once_the_interval_has_passed(self):
+        ipc_receiver.latency_stats.record("inference", 1.0)
+        with self.assertLogs(level="INFO") as captured:
+            ipc_receiver._log_latency_if_due(now=1031.0)
+        self.assertIn("Latency: summary", captured.output[0])
+
+    def test_an_interval_with_no_windows_logs_nothing(self):
+        with self.assertNoLogs(level="INFO"):
+            ipc_receiver._log_latency_if_due(now=1031.0)
+
+    def test_an_interval_of_zero_turns_the_summary_off(self):
+        config.LATENCY_LOG_INTERVAL_SECS = 0.0
+        ipc_receiver.latency_stats.record("inference", 1.0)
+        with self.assertNoLogs(level="INFO"):
+            ipc_receiver._log_latency_if_due(now=5000.0)
+
+
 if __name__ == "__main__":
     unittest.main()

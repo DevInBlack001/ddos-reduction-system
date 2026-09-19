@@ -108,6 +108,10 @@ AUTO_LABELED_CSV_PATH = os.environ.get("AUTO_LABELED_CSV_PATH", os.path.join(_ST
 # agreement against before trusting a label. Never loaded by
 # ipc_receiver.py; only auto_label.py and train_second_model.py touch it.
 SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(_STATE_DIR, "ddos_gb_model.joblib"))
+# Seconds between the "Latency: summary" log lines Stage 2 writes (window
+# handoff, inference, enforcement, and window close to rule applied). 0
+# turns them off. A starting point, not a proven value.
+LATENCY_LOG_INTERVAL_SECS = float(os.environ.get("LATENCY_LOG_INTERVAL_SECS", "30"))
 # Starting points, not proven values, same convention as every other
 # tuning default in this project.
 AUTO_LABEL_DELAY_HOURS = float(os.environ.get("AUTO_LABEL_DELAY_HOURS", "24"))
