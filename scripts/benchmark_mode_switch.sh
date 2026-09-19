@@ -14,8 +14,8 @@
 # the original tuning.env back byte for byte.
 #
 # Usage:
-#   benchmark_mode_switch.sh switch <pcap|kernel> <baseline-path> <stage1-unit> <out-file>
-#   benchmark_mode_switch.sh rollback <stage1-unit> <out-file> <original-mode> [benchmark-baseline-glob]
+#   benchmark_mode_switch.sh switch <pcap|kernel> <baseline-path> <stage1-unit> <out-file> [stage2-unit blocklist-set ratelimit-set]
+#   benchmark_mode_switch.sh rollback <stage1-unit> <out-file> <original-mode> [benchmark-baseline-glob] [stage2-unit blocklist-set ratelimit-set]
 #   benchmark_mode_switch.sh verify <stage1-unit> <stage2-unit> <ingress-iface> <expected-mode> <blocklist-set> <ratelimit-set>
 #   benchmark_mode_switch.sh snapshot
 set -uo pipefail
@@ -76,8 +76,23 @@ start_and_time() {
     } >> "$out"
 }
 
+# reset_enforcement <stage2-unit> <blocklist-set> <ratelimit-set>: empties both
+# ipsets and restarts Stage 2, so every run starts with no blocks left over
+# from an earlier one (a block lasts an hour) and no in-memory enforcement
+# state. Runs before the sensor swap, so the swap's own timing excludes it.
+reset_enforcement() {
+    local unit2="${1:-}" blocklist="${2:-}" ratelimit="${3:-}" t0
+    [ -n "$blocklist" ] && ipset flush "$blocklist" 2>/dev/null
+    [ -n "$ratelimit" ] && ipset flush "$ratelimit" 2>/dev/null
+    if [ -n "$unit2" ]; then
+        t0=$(now)
+        systemctl restart "$unit2"
+        wait_for_line "$unit2" "$t0" "IPC socket listening" >/dev/null || true
+    fi
+}
+
 cmd_switch() {
-    local mode="$1" baseline="$2" unit="$3" out="$4" orig t_issue t_stopped
+    local mode="$1" baseline="$2" unit="$3" out="$4" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}" orig t_issue t_stopped
     case "$mode" in pcap|kernel) ;; *) echo "mode must be pcap or kernel" >&2; exit 2 ;; esac
     : > "$out"
     echo "action=switch" >> "$out"
@@ -92,6 +107,7 @@ cmd_switch() {
     fi
     orig="${orig%\"}"; orig="${orig#\"}"
 
+    reset_enforcement "$unit2" "$blocklist" "$ratelimit"
     t_issue=$(now)
     systemctl stop "$unit"
     t_stopped=$(now)
@@ -105,9 +121,11 @@ cmd_switch() {
 }
 
 cmd_rollback() {
-    local unit="$1" out="$2" mode="${3:-}" glob="${4:-}" t_issue t_stopped restored_ok="none"
+    local unit="$1" out="$2" mode="${3:-}" glob="${4:-}" unit2="${5:-}" blocklist="${6:-}" ratelimit="${7:-}"
+    local t_issue t_stopped restored_ok="none"
     : > "$out"
     echo "action=rollback" >> "$out"
+    reset_enforcement "$unit2" "$blocklist" "$ratelimit"
     t_issue=$(now)
     systemctl stop "$unit"
     t_stopped=$(now)
@@ -173,8 +191,8 @@ cmd_snapshot() {
 
 case "${1:-}" in
     snapshot) cmd_snapshot ;;
-    switch)   shift; cmd_switch "${1:?mode}" "${2:?baseline path}" "${3:?stage1 unit}" "${4:?out file}" ;;
-    rollback) shift; cmd_rollback "${1:?stage1 unit}" "${2:?out file}" "${3:-}" "${4:-}" ;;
+    switch)   shift; cmd_switch "${1:?mode}" "${2:?baseline path}" "${3:?stage1 unit}" "${4:?out file}" "${5:-}" "${6:-}" "${7:-}" ;;
+    rollback) shift; cmd_rollback "${1:?stage1 unit}" "${2:?out file}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
     verify)   shift; cmd_verify "${1:?stage1 unit}" "${2:?stage2 unit}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     *) echo "Usage: $0 switch|rollback|verify ..." >&2; exit 2 ;;
 esac

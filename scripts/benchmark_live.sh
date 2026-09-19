@@ -16,7 +16,9 @@
 # phases and the same generators, and the analysis compares them. Between
 # backends the script switches Stage 1's capture mode through
 # /etc/ddos_stage1/tuning.env, times the downtime, and at the end restores the
-# original configuration and times that rollback too. If the script is
+# original configuration and times that rollback too. Each run starts from a
+# clean enforcement state (both ipsets emptied, Stage 2 restarted), so blocks
+# from an earlier run cannot change a later run's results. If the script is
 # interrupted, an exit trap performs the same rollback.
 #
 # Per phase and per backend it records: traffic and throughput (packets and
@@ -40,8 +42,9 @@
 # changed from the previous phase, so a generator already running into a
 # mixed phase keeps running without a restart.
 #
-# The gateway's Stage 1 sensor restarts once per run. Do not run this while
-# the gateway protects live traffic.
+# The gateway's Stage 1 sensor and Stage 2 service restart once per run, and
+# the two ipsets are emptied each time. Do not run this while the gateway
+# protects live traffic.
 #
 # Usage:
 #   bash scripts/benchmark_live.sh <config-file>
@@ -208,7 +211,7 @@ switch_mode() {
     local baseline="$BASELINE_DIR/flod_benchmark_${mode}_run${run}.json"
     log "Switching Stage 1 to the $mode backend (fresh baseline file $baseline)..."
     SWITCHED=1
-    $GW_SSH "$HELPER_REMOTE switch $mode $baseline $STAGE1_UNIT /tmp/flod_mode_switch.txt"
+    $GW_SSH "$HELPER_REMOTE switch $mode $baseline $STAGE1_UNIT /tmp/flod_mode_switch.txt $STAGE2_UNIT $BLOCKLIST_SET $RATELIMIT_SET"
     $GW_SCP "$GATEWAY_HOST:/tmp/flod_mode_switch.txt" "$dir/mode_switch.txt" >/dev/null 2>&1
     verify_gateway "$mode" "$dir/mode_verify.txt"
     log "Switch to $mode: $(grep -E '^downtime_to_first_status_secs=' "$dir/mode_switch.txt" | tr '\n' ' ')"
@@ -218,7 +221,7 @@ do_rollback() {
     # do_rollback <out-prefix>
     local prefix="$1"
     log "Rolling Stage 1 back to the original configuration (mode: ${ORIGINAL_MODE:-unknown})..."
-    $GW_SSH "$HELPER_REMOTE rollback $STAGE1_UNIT /tmp/flod_rollback.txt '$ORIGINAL_MODE' '$BASELINE_DIR/flod_benchmark_*.json'"
+    $GW_SSH "$HELPER_REMOTE rollback $STAGE1_UNIT /tmp/flod_rollback.txt '$ORIGINAL_MODE' '$BASELINE_DIR/flod_benchmark_*.json' $STAGE2_UNIT $BLOCKLIST_SET $RATELIMIT_SET"
     $GW_SCP "$GATEWAY_HOST:/tmp/flod_rollback.txt" "${prefix}_switch.txt" >/dev/null 2>&1
     verify_gateway "$ORIGINAL_MODE" "${prefix}_verify.txt"
     SWITCHED=0

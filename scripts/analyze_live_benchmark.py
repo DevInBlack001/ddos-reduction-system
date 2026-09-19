@@ -11,7 +11,7 @@ that run's report only.
 Not directly comparable, row for row, to scripts/benchmark_fixed_threshold.py:
 that script scores every post-warmup CSV row, this one only sees what Stage 1
 actually forwarded to Stage 2 (anomaly-or-heartbeat windows), which is a
-narrower, real-world-shaped view with a different denominator.
+narrower view with a different denominator.
 
 Usage: python3 scripts/analyze_live_benchmark.py <session-or-run-dir>
 A run directory holds stage1.log, stage2.log, firewall.log,
@@ -893,8 +893,8 @@ def analyze(directory):
     print("Note: these counts are not a like-for-like comparison against")
     print("scripts/benchmark_fixed_threshold.py's own numbers. That script scores")
     print("every post-warmup CSV row; this report only sees windows Stage 1 chose")
-    print("to forward to Stage 2 (anomaly-or-heartbeat), a narrower, real-world")
-    print("view of the same system with a different denominator.")
+    print("to forward to Stage 2 (anomaly-or-heartbeat), a narrower view of the")
+    print("same system with a different denominator.")
     print("Attack phases after the first inherit blocks from the earlier ones, since a")
     print("block lasts an hour, so their time to first block reads shorter than a cold start.")
     print("Process CPU excludes work the kernel does on the process's behalf in softirq")
