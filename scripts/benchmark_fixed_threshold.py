@@ -364,8 +364,8 @@ def measure_performance(df, rf_depth, if_contamination):
     train_isolation_forest.py do for the model that actually ships, and
     times it plus prediction over the full dataset. This is deliberately
     separate from the LOSO sweeps above, which exist to select a
-    hyperparameter and evaluate generalisation, not to represent
-    real-world training or inference cost."""
+    hyperparameter and evaluate generalisation, and say nothing about
+    the training or inference cost of a single fit."""
     results = {}
 
     X_train, y_train = balance_classes(df[FEATURE_COLS], df[LABEL_COL])
@@ -410,9 +410,9 @@ def measure_performance(df, rf_depth, if_contamination):
 
 def print_performance_report(perf, rf_sweep_seconds, if_loso_seconds):
     print("\n=== Performance ===")
-    print("Training and prediction cost of a production-shaped fit on the full")
-    print("dataset (not the LOSO sweeps above, which exist to pick a hyperparameter")
-    print("and measure generalisation, not real-world cost). This is CSV-replay")
+    print("Training and prediction cost of a single fit on the full")
+    print("dataset (the LOSO sweeps above exist to pick a hyperparameter and")
+    print("measure generalisation, and say nothing about cost). This is CSV-replay")
     print("cost only: packets/sec, Gbps, and Stage 1 overhead need a live traffic")
     print("phase and are out of reach of this script by construction.\n")
     for name, key in (("RandomForest", "rf"), ("Isolation Forest", "if")):
