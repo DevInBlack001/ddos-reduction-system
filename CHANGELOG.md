@@ -58,6 +58,19 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 ### Fixed
 
+- Model files are loaded through `storage.load_trusted_model`, which refuses a
+  symlink, and a file or directory that another account could have written
+  (root owned with no group or other write bit under a root run service, owned
+  by the operator with no world write bit otherwise), checked on the open
+  descriptor. `joblib.load` unpickles, so this closes a code execution path for
+  a replaced model. A refused model leaves Stage 2 in its passive mode.
+- `install.sh` and `update.sh` validate the values they write into root run
+  systemd units: the `--training-csv` path (safe characters only), and in
+  `install.sh` the interface, address lists and tuning numbers, after the flags
+  and after the prompts.
+- The benchmark helper checks the tuning path itself (directory ownership and
+  mode, no symlinks among the files it replaces), and the driver refuses a
+  config file owned by another account or writable by everyone.
 - The benchmark scripts now validate every config value that reaches a command
   line on the gateway, delete only `flod_benchmark_*.json` files in one named
   directory instead of expanding a glob, keep their helper and output files in

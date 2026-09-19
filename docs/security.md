@@ -226,6 +226,23 @@ sit at predictable paths in `/tmp`, where another account could swap a file
 between the copy and the run. Output paths that are symlinks are refused.
 Regression tests cover each of these.
 
+A second review at 09:54 UTC the same day found four more things, all fixed.
+Model files are now loaded through `storage.load_trusted_model`, which opens the
+file without following a symlink and refuses it, or its directory, unless it is
+owned by root with no group or other write bit when Stage 2 runs as root (owned
+by the operator with no world write bit when run by hand). It checks the open
+descriptor, so the file cannot be swapped between the check and the load, and a
+refused model leaves the service in its existing passive mode. The benchmark
+helper checks the tuning path itself: the directory must belong to the account
+running it and be closed to group and others, and the tuning file, its backup
+and the marker files must not be symlinks. `install.sh` and `update.sh` accept
+a `--training-csv` path only if it is made of letters, digits and `_ . / + @ = , : -`
+(it is written into a root run systemd unit as an `Environment` line and a
+`bash -c` command), and `install.sh` checks the interface name, address lists
+and tuning numbers that go into the sensor unit's `ExecStart` after the flags
+and again after the prompts. The benchmark driver refuses a config file that is
+owned by another account or writable by everyone, since it sources that file.
+
 The calibration step copies `scripts/calibrate.py` into the same private
 directory and runs it as root on the gateway. It only measures, so it cannot
 write `tuning.env`. When floors are applied, the helper accepts only the exact
