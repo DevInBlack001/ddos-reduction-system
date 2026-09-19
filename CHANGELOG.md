@@ -58,6 +58,11 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 ### Fixed
 
+- The benchmark refuses to start when the gateway's egress interface has no IPv4
+  address, and the report warns about any phase where more than 20% of the
+  sample intervals had incoming traffic and no egress traffic. A gateway whose
+  egress interface had dropped out would otherwise have every phase measure that
+  failure (found on 2026-09-19).
 - `scripts/analyze_live_benchmark.py` mixed the two libpcap capture threads. With
   an egress interface the sensor logs a `Capture: status` line per interface and
   the lines interleave, so the cumulative counters were read as one series and a

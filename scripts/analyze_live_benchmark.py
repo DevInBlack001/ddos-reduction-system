@@ -362,6 +362,31 @@ def system_cpu_metrics(samples, start_ts, end_ts):
     }
 
 
+def egress_stall_share(samples, start_ts, end_ts, min_rx=50):
+    """Share of sample intervals with incoming traffic and no egress traffic.
+
+    Forwarded traffic leaves through the egress interface, so incoming traffic
+    with none leaving means the gateway was not forwarding (a down egress
+    interface, a lost route). Attack traffic that the firewall drops also
+    shows this, so a small share is normal in an attack phase.
+    """
+    rows = [s for s in samples if start_ts <= s["timestamp"] < end_ts
+            and s.get("ingress_rx_packets") not in (None, "") and s.get("egress_tx_packets") not in (None, "")]
+    total = stalled = 0
+    for previous, current in zip(rows, rows[1:]):
+        try:
+            rx = int(current["ingress_rx_packets"]) - int(previous["ingress_rx_packets"])
+            tx = int(current["egress_tx_packets"]) - int(previous["egress_tx_packets"])
+        except ValueError:
+            continue
+        if rx < 0 or tx < 0:
+            continue
+        if rx > min_rx:
+            total += 1
+            stalled += int(tx == 0)
+    return None if total == 0 else 100.0 * stalled / total
+
+
 def network_metrics(samples, start_ts, end_ts):
     metrics = {}
     rx = cumulative_delta(samples, start_ts, end_ts, "ingress_rx_packets")
@@ -376,6 +401,9 @@ def network_metrics(samples, start_ts, end_ts):
     errors = cumulative_delta(samples, start_ts, end_ts, "ingress_rx_errors")
     if errors:
         metrics["nic_rx_errors"] = errors[0]
+    stall = egress_stall_share(samples, start_ts, end_ts)
+    if stall is not None:
+        metrics["egress_stall_pct"] = stall
     tx = cumulative_delta(samples, start_ts, end_ts, "egress_tx_packets")
     if tx:
         metrics["egress_pps"] = tx[0] / tx[1]
@@ -798,6 +826,9 @@ def print_run_report(result):
             print(f"  Interface: ingress {fmt(net.get('ingress_pps'), ',.0f')} pps / {fmt(net.get('ingress_mbps'))} Mbit/s, "
                   f"egress {fmt(net.get('egress_pps'), ',.0f')} pps / {fmt(net.get('egress_mbps'))} Mbit/s, "
                   f"NIC rx drops {fmt(net.get('nic_rx_dropped'), '.0f')}, rx errors {fmt(net.get('nic_rx_errors'), '.0f')}")
+        if net.get("egress_stall_pct", 0) > 20:
+            print(f"  WARNING: {net['egress_stall_pct']:.0f}% of the sample intervals had incoming traffic and no "
+                  "egress traffic. The gateway was probably not forwarding, so this phase may not reflect the system.")
         if "firewall_dropped" in m:
             print(f"  Firewall drops (DROP rules on the ddos ipsets): {m['firewall_dropped']} packets "
                   f"({fmt(m.get('firewall_drop_pps'), ',.1f')} pps)")

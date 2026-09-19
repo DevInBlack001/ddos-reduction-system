@@ -279,6 +279,20 @@ count_sources() {
     run_remote "$1" "$2" "grep -c . '$3'" 2>/dev/null | tr -d '[:space:]'
 }
 
+# The gateway forwards traffic to the targets out of the egress interface. If
+# that interface has no IPv4 address the gateway cannot forward, the targets
+# receive nothing, and every phase of the session would measure that failure
+# and not the system. Seen on 2026-09-19, when a NetworkManager profile kept
+# taking the interface down.
+check_egress_interface() {
+    [ -n "$EGRESS_IFACE" ] || return 0
+    if ! $GW_SSH "ip -4 -br addr show dev '$EGRESS_IFACE' | grep -q ' [0-9]'" >/dev/null 2>&1; then
+        log "ERROR: $EGRESS_IFACE has no IPv4 address on the gateway, so it cannot forward to the targets. Fix that before running."
+        exit 1
+    fi
+    log "Egress interface $EGRESS_IFACE has an address"
+}
+
 # The attack's spread of source addresses decides how much entropy separates
 # it from Normal and Flash Crowd traffic, so the count is checked against the
 # configured range before anything runs, and recorded with each run.
@@ -659,6 +673,7 @@ run_session() {
 # --- Main ---
 log "=== FLOD live benchmark starting: backends '$CAPTURE_MODES', $RUNS_PER_MODE run(s) each ==="
 install_helper
+check_egress_interface
 check_attack_sources
 verify_gateway "" "$SESSION_DIR/original_state.txt"
 ORIGINAL_MODE=$(sed -n 's/^check=capture_mode result=info detail=//p' "$SESSION_DIR/original_state.txt")

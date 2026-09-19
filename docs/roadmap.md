@@ -648,8 +648,9 @@ that lasts, egress reads zero, and the dashboard shows all incoming traffic as
 not reaching the target. A NetworkManager restart gives about two minutes of
 forwarding. It happens on both backends. It hit the kernel backend's first 30
 minutes in the 2026-09-19 comparison, so that run's warm-up, calibration,
-`normal` and `flash_crowd` phases are not comparable with the libpcap run's. The
-proposed fix is `ipv4.method manual` and IPv6 off on that profile.
+`normal` and `flash_crowd` phases are not comparable with the libpcap run's. The profile was
+changed to `ipv4.method manual` with IPv6 off on 2026-09-19 (13:52 UTC), which
+removed the cycle. The comparison needs a rerun.
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

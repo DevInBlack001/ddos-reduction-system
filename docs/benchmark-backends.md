@@ -373,9 +373,12 @@ windows, and 60% to 80% with Normal traffic added.
   ran mostly without a working path to the targets (samples with incoming
   traffic and no egress: 59% of warm-up, 23 of 23 in `normal`, 24 of 24 in
   `flash_crowd`; none in the libpcap run). Those phases, and the floors derived
-  from them, are not comparable between the runs. A change to the profile
-  (`ipv4.method manual`, IPv6 off) should remove the cycle and is proposed, not
-  applied. Separately, the vmxnet3 driver reinitializes `ens192` at every XDP
+  from them, are not comparable between the runs. The profile was
+  changed to `ipv4.method manual` with IPv6 off on 2026-09-19 at 13:52 UTC, after which
+  it stayed connected and forwarding worked. The benchmark now refuses to start
+  when the egress interface has no address, and the report warns about any phase
+  where more than 20% of the sample intervals had incoming traffic and no
+  egress traffic. The comparison needs a rerun for the kernel run's early phases. Separately, the vmxnet3 driver reinitializes `ens192` at every XDP
   attach and detach (the kernel log shows the link coming up again at each
   kernel mode start), and NetworkManager logged nothing for `ens192` at those
   moments, so this run does not show that it matters.

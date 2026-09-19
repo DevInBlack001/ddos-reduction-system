@@ -333,5 +333,34 @@ class StaleSampleTests(unittest.TestCase):
         self.assertEqual(total["raw_captured"], 500)
 
 
+class EgressStallTests(unittest.TestCase):
+    def rows(self, pairs):
+        rx = tx = 0
+        result = []
+        for i, (drx, dtx) in enumerate(pairs):
+            rx += drx
+            tx += dtx
+            result.append(sample(f"2026-09-19 08:00:{i * 5:02d}", ingress_rx_packets=rx, egress_tx_packets=tx))
+        return result
+
+    def test_incoming_traffic_with_no_egress_counts_as_a_stall(self):
+        rows = self.rows([(0, 0), (500, 0), (500, 0), (500, 400), (500, 400)])
+        share = bench.egress_stall_share(rows, "2026-09-19 08:00:00", "2026-09-19 08:01:00")
+        self.assertAlmostEqual(share, 50.0)
+
+    def test_traffic_that_leaves_is_not_a_stall(self):
+        rows = self.rows([(0, 0), (500, 450), (500, 450), (500, 450)])
+        self.assertEqual(bench.egress_stall_share(rows, "2026-09-19 08:00:00", "2026-09-19 08:01:00"), 0.0)
+
+    def test_intervals_with_almost_no_incoming_traffic_are_ignored(self):
+        rows = self.rows([(0, 0), (10, 0), (10, 0)])
+        self.assertIsNone(bench.egress_stall_share(rows, "2026-09-19 08:00:00", "2026-09-19 08:01:00"))
+
+    def test_a_counter_reset_is_skipped(self):
+        rows = [sample("2026-09-19 08:00:00", ingress_rx_packets=9000, egress_tx_packets=9000),
+                sample("2026-09-19 08:00:05", ingress_rx_packets=10, egress_tx_packets=5)]
+        self.assertIsNone(bench.egress_stall_share(rows, "2026-09-19 08:00:00", "2026-09-19 08:01:00"))
+
+
 if __name__ == "__main__":
     unittest.main()
