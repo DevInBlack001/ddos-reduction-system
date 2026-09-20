@@ -63,6 +63,14 @@ class BenchmarkModeSwitchTests(unittest.TestCase):
             content = handle.read()
         self.assertIn("FLOD_TUNING=--k 2 --capture-mode pcap --baseline-path /var/lib/x/flod_benchmark_pcap_run1.json", content)
 
+    def test_a_switch_removes_the_runs_baseline_left_by_an_earlier_session(self):
+        baseline = os.path.join(self.dir, "flod_benchmark_kernel_run1.json")
+        with open(baseline, "w") as handle:
+            handle.write("{}")
+        result = self.run_helper("switch", "kernel", baseline, "ddos-stage1.service", self.out())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(baseline))
+
     def test_a_mode_other_than_pcap_or_kernel_is_refused_before_anything_runs(self):
         result = self.run_helper("switch", "pcap; touch /tmp/pwned", "/b.json", "s1.service", self.out())
         self.assertEqual(result.returncode, 2)

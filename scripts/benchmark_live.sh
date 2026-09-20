@@ -168,10 +168,28 @@ validate_config
 
 GW_SSH="ssh -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=8 $GATEWAY_HOST"
 GW_SCP="scp -i $GATEWAY_SSH_KEY -o BatchMode=yes -o ConnectTimeout=10"
+mkdir -p "$OUTPUT_DIR"
+# Two drivers on the same gateway and generators start and stop each other's
+# traffic and restart the sensor under each other. The lock is held until this
+# process exits.
+exec 9>"$OUTPUT_DIR/.benchmark.lock"
+if ! flock -n 9; then
+    echo "ERROR: another benchmark_live.sh is already running from $OUTPUT_DIR. Wait for it or stop it first." >&2
+    exit 1
+fi
 SESSION_DIR="$OUTPUT_DIR/session_$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$SESSION_DIR"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# A sampler already running on the gateway means a benchmark is in progress
+# (possibly from another workstation), or one died without cleaning up.
+check_no_other_run() {
+    if $GW_SSH "pgrep -f '[s]ystem_sampler.sh' >/dev/null" 2>/dev/null; then
+        log "ERROR: a benchmark sampler is already running on the gateway. Another benchmark is in progress, or one ended without cleaning up (pkill -f '[s]ystem_sampler.sh' on the gateway)."
+        exit 1
+    fi
+}
 
 # Set per run by run_session.
 PHASES_FILE=""
@@ -698,6 +716,7 @@ run_session() {
 # --- Main ---
 log "=== FLOD live benchmark starting: backends '$CAPTURE_MODES', $RUNS_PER_MODE run(s) each ==="
 install_helper
+check_no_other_run
 check_egress_interface
 check_idle_ingress
 check_attack_sources

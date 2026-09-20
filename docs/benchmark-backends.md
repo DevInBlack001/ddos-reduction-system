@@ -483,6 +483,18 @@ This session (`session_20260919T222223Z/`) ran with the retrained models (the co
 - **The Flash Crowd fix worked on live traffic (libpcap run, clean).** The `hot` variant with Normal traffic drew 2 DDoS verdicts and 29 rate limits, against 65 and 620 in the second session. The even variant drew 2 and 34, against 24 and 522. Normal drew 0 verdicts and 0 actions. The remaining rate limits are the designed precaution on a concentrated crowd's dominant source.
 - **The Stage 2 stall from the auto-label job is gone.** The job ran five times in the session, taking 3 to 10 seconds of wall clock each (3 min 42 s before), and the intervals around the runs at 23:12:59 and 00:15:39 have a handoff maximum of 485 ms or less.
 - **A different stall remains, and it is now placed.** In the kernel run Stage 2 spent 15.5 seconds handling one window at 22:37:41 with no CPU use (inference 31 ms) while a flood of 23,000 enforcement calls in 30 seconds was under way. The slow window warning shows it was inside the handling of one window and outside every enforcement call (the enforcement maximum for the interval was 70 ms). The libpcap stall of 27 seconds at 15:45:40 in the second session has the same signature. Both fall in windows with the aggregate fallback rate limiting thousands of flows. Stage 2 now lists the time spent in inference, the database write, the flow snapshot and enforcement in that warning.
+- **The kernel rerun on 2026-09-20 is not usable either.** Two drivers ran at once:
+  `session_20260920T014714Z` (started 01:47) and `session_20260920T015001Z`
+  (started 01:50), with their phases about three minutes apart. Each session's
+  generators fed traffic into the other's phases (ingress in the second session's
+  Normal phase rose from 68 to 900 packets a second at 02:20:30 and to 5,000 at
+  02:22:30, before the phases that would send it, with all 35 attack addresses and
+  the 97 legitimate addresses actioned), and when the first finished at 02:54 it
+  removed the sampler files the second was still writing, so the second has no
+  resource samples. The second also restored a baseline left by the earlier
+  attempts and warmed up in 10 seconds. Neither session's detection or resource
+  figures can be used. The benchmark now takes a lock, refuses to start while a
+  sampler runs on the gateway, and deletes the run's baseline file at each switch.
 - **The staged queue after the third session.** The gateway's staged file is
   cumulative. After a run at 01:16 with the delay set to zero it held 35,965 rows
   (21,867 from the first pass, 14,013 from the second, 85 from the third): 26,376

@@ -63,6 +63,11 @@ minor bump adds a feature, milestones are numbered separately from tags.
   summary) and logs a warning for any window that takes a second or more, listing
   the time spent in inference, the database write, the flow snapshot and
   enforcement.
+- The live benchmark refuses to start while another driver holds its lock or a
+  benchmark sampler is running on the gateway, and each switch deletes the run's
+  baseline file so a run always warms up from scratch. Two drivers started three
+  minutes apart ran the same phases against one gateway and spoiled each other's
+  results.
 - The live benchmark stops every generator before a session and refuses to start
   while the ingress interface carries more than `IDLE_INGRESS_MAX_PPS` packets a
   second (300 by default). A generator left running by an interrupted session sent

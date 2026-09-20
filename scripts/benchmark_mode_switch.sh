@@ -164,6 +164,7 @@ cmd_switch() {
     t_issue=$(now)
     systemctl stop "$unit"
     t_stopped=$(now)
+    rm -f "$baseline"
     {
         if [ -f "$BACKUP" ]; then grep -vE '^FLOD_TUNING=' "$BACKUP"; fi
         echo "FLOD_TUNING=$orig --capture-mode $mode --baseline-path $baseline"
