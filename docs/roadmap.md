@@ -196,7 +196,8 @@ recorded elsewhere in this project's notes, is the cautionary example),
 which is why the firewall backend work below sits behind the playbook work
 despite being smaller in surface area.
 
-**V9, operator defined playbooks and granular incident reporting.** The
+**V9, operator defined playbooks, granular incident reporting, and a redesigned
+web interface.** The
 four existing enforcement tiers keep running automatically on every window
 exactly as they do today; a playbook is a separate layer on top that starts
 when a trigger condition fires and adds three kinds of stage the tiers do
@@ -237,10 +238,20 @@ need to keep them itself: the latency summary it already logs every 30 seconds
 and periodic samples of its own and Stage 1's counters, stored with the same
 retention as the incident data.
 
+The whole web interface is redesigned in the same milestone. The console is
+functional and plain: static styling, no motion, and nothing that gives a first
+time visitor a reason to keep looking, which limits how many people will try the
+project however well the detection works. The redesign covers the layout,
+typography and color, the charts, and motion where it helps someone read the
+state of the gateway, across every page under `stage2/static/`. It sits in V9
+because the playbook builder and the redesigned reports are new pages, and
+building them on the old styling would mean designing them twice. Not designed
+yet, and it should be checked in a browser as it is built.
+
 Large in surface area (a new schema, a new dashboard builder, a stateful
-per host execution engine) but entirely application level, no verifier to
-satisfy and no kernel programming risk, which is why it ranks below V8 on
-raw scope but above V10 on difficulty.
+per host execution engine, and a redesign of every page) but entirely
+application level, no verifier to satisfy and no kernel programming risk, which
+is why it ranks below V8 on raw scope but above V10 on difficulty.
 
 **V10, firewall backend abstraction.** Enforcement currently assumes
 `iptables` and two `ipset`s unconditionally. Not every deployment runs
@@ -406,15 +417,6 @@ Suggested order of work: prototype on its own branch after V10 lands, and
 prove that the kernel output matches the user space model before anything
 else. Treat the prototype as exploration. It becomes a committed milestone
 once it earns that.
-
-**Dashboard redesign.** No milestone number yet. The console is functional
-and plain: static styling, no motion, and nothing that gives a first time
-visitor a reason to keep looking. That limits how many people will try the
-project, however well the detection works. A visual redesign is planned,
-covering the layout, typography and color, the charts, and motion where it
-helps someone read the state of the gateway. Not designed yet, and
-deliberately after the detection and training work in flight settles, so the
-redesign covers pages that have stopped changing.
 
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own
