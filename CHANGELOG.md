@@ -6,7 +6,7 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
-## Unreleased
+## 1.6.1, 2026-09-20
 
 ### Added
 
@@ -74,13 +74,6 @@ minor bump adds a feature, milestones are numbered separately from tags.
   5,000 to 6,800 packets a second through one run's warm-up and calibration, and
   the sensor learned it as Normal.
 
-### Changed
-
-- `train.py` picks the tree depth that clears the auto-labeling confidence
-  threshold most often among the depths that tie on accuracy, so the gate is no
-  longer close to arbitrary (depth 6 on the current corpus, where depth 3 was
-  chosen before).
-
 ### Fixed
 
 - Stage 2 no longer waits on a capture file's lock in its receive loop.
@@ -132,6 +125,10 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 ### Changed
 
+- `train.py` picks the tree depth that clears the auto-labeling confidence
+  threshold most often among the depths that tie on accuracy, so the gate is no
+  longer close to arbitrary (depth 6 on the current corpus, where depth 3 was
+  chosen before).
 - Documentation describes results as coming from the simulated lab
   environment throughout.
 
