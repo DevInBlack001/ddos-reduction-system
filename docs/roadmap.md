@@ -417,6 +417,21 @@ its own and Stage 1's counters, stored with the same retention as the
 incident data. Not designed yet, and it belongs after the dashboard redesign
 settles what the report pages look like.
 
+**A possible future as a plugin for other platforms.** No milestone number,
+and not a commitment: a direction to keep in mind. FLOD runs today as its own
+gateway on Linux, with Stage 1 on the packet path and Stage 2 enforcing
+through iptables and ipset. Firewall and router platforms such as OPNsense
+and pfSense have plugin systems, and packaging FLOD as a plugin would let
+people use it inside a firewall they already run. The main obstacle is that
+those two are FreeBSD based and use pf, so neither the XDP and TC capture
+nor the ipset enforcement would carry over. A port would need a capture
+backend and an enforcement backend for each platform, with detection
+(entropy, the baselines, the models) staying as it is, since it does not
+depend on either. V10's firewall backend abstraction is the natural
+starting point, and a libpcap capture already exists as the portable
+option. Platforms that are Linux based would be closer to a packaging job.
+Which platforms, and whether the effort is worth it, is undecided.
+
 ## Relative Sigma Floors
 
 The sigma floors are global while the baselines they bound are per victim, so
