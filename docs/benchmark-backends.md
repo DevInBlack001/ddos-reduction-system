@@ -483,4 +483,17 @@ This session (`session_20260919T222223Z/`) ran with the retrained models (the co
 - **The Flash Crowd fix worked on live traffic (libpcap run, clean).** The `hot` variant with Normal traffic drew 2 DDoS verdicts and 29 rate limits, against 65 and 620 in the second session. The even variant drew 2 and 34, against 24 and 522. Normal drew 0 verdicts and 0 actions. The remaining rate limits are the designed precaution on a concentrated crowd's dominant source.
 - **The Stage 2 stall from the auto-label job is gone.** The job ran five times in the session, taking 3 to 10 seconds of wall clock each (3 min 42 s before), and the intervals around the runs at 23:12:59 and 00:15:39 have a handoff maximum of 485 ms or less.
 - **A different stall remains, and it is now placed.** In the kernel run Stage 2 spent 15.5 seconds handling one window at 22:37:41 with no CPU use (inference 31 ms) while a flood of 23,000 enforcement calls in 30 seconds was under way. The slow window warning shows it was inside the handling of one window and outside every enforcement call (the enforcement maximum for the interval was 70 ms). The libpcap stall of 27 seconds at 15:45:40 in the second session has the same signature. Both fall in windows with the aggregate fallback rate limiting thousands of flows. Stage 2 now lists the time spent in inference, the database write, the flow snapshot and enforcement in that warning.
+- **The staged queue after the third session.** The gateway's staged file is
+  cumulative. After a run at 01:16 with the delay set to zero it held 35,965 rows
+  (21,867 from the first pass, 14,013 from the second, 85 from the third): 26,376
+  DDoS, 9,480 Flash Crowd and 109 Normal. Every row within a benchmark phase agrees
+  with the phase's traffic (16,341 DDoS, 77 Normal and 1 Flash Crowd, no
+  disagreement), but 19,514 of the 35,965 fall in gaps, phase margins or the earlier
+  September 18 runs, where no phase file survives. That includes 9,479 of the Flash
+  Crowd rows, which are all from the earlier tuning regime (`sigma_h` 0.4944) and
+  mostly below the corpus's Flash Crowd rate range (6,328 between 100 and 173
+  packets a second, where the corpus's fifth percentile is 173). The rows from the
+  third session are not in it yet, since the models were retrained before that
+  session and a row is only eligible once both models postdate it. Merging it would
+  add DDoS the models already call DDoS and Flash Crowd rows nothing can verify.
 - **Next change if the step figures point at enforcement.** Each rate limit runs an `ipset` subprocess and reads two files, and the aggregate fallback does that for every flow. Batching the flows into one `ipset restore` is the next change if the per step figures point there.
