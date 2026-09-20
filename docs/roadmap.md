@@ -398,6 +398,25 @@ helps someone read the state of the gateway. Not designed yet, and
 deliberately after the detection and training work in flight settles, so the
 redesign covers pages that have stopped changing.
 
+**System performance in the incident reports.** No milestone number yet. The
+PDF incident report describes what was detected and what was done about it,
+and says nothing about how the gateway itself coped. The live benchmark
+already measures that, and several of its figures would help someone reading
+a report: packets per second through the gateway and how many were dropped
+at capture, the interface and the firewall, Stage 1 and Stage 2 CPU and
+memory, context switches, the Stage 2 latency breakdown (handoff from the
+sensor, inference, the enforcement call, and window close to rule applied),
+the time from the start of an attack to the first DDoS verdict and the first
+block, and how consistently the verdict held across the incident. A report
+would show them for the incident's own time range, beside the detection
+figures, so the reader can tell whether the gateway was under strain while
+it mitigated. Today those figures exist only as benchmark output read from
+the journal and a sampler, so Stage 2 would first need to keep them itself:
+the latency summary it already logs every 30 seconds and periodic samples of
+its own and Stage 1's counters, stored with the same retention as the
+incident data. Not designed yet, and it belongs after the dashboard redesign
+settles what the report pages look like.
+
 ## Relative Sigma Floors
 
 The sigma floors are global while the baselines they bound are per victim, so
