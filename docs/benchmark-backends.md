@@ -11,12 +11,12 @@ All runs happen in my simulated lab environment. The figures describe that
 environment. Other networks, other hardware, and other traffic mixes may
 produce different numbers.
 
-Status: three sessions have run on 2026-09-19 in the simulated lab environment
-(10:30 to 12:30, 14:11 to 16:14 and 22:22 to 00:32 UTC), one run per backend each.
-The second is the reliable comparison. The third has a clean libpcap run and a
-kernel run that a stray generator spoiled, and both are described at the end of
-this page. One run per backend means nothing here shows how much a figure moves
-between identical runs.
+Status: three sessions ran on 2026-09-19 in the simulated lab environment
+(10:30 to 12:30, 14:11 to 16:14 and 22:22 to 00:32 UTC), one run per backend each,
+and a kernel rerun followed on 2026-09-20. The second session and the clean pair
+(the third session's libpcap run and the 2026-09-20 kernel run) are the reliable
+comparisons, and the last sections of this page describe them. One run per backend
+means nothing here shows how much a figure moves between identical runs.
 
 ## Running it
 
@@ -509,3 +509,49 @@ This session (`session_20260919T222223Z/`) ran with the retrained models (the co
   session and a row is only eligible once both models postdate it. Merging it would
   add DDoS the models already call DDoS and Flash Crowd rows nothing can verify.
 - **Next change if the step figures point at enforcement.** Each rate limit runs an `ipset` subprocess and reads two files, and the aggregate fallback does that for every flow. Batching the flows into one `ipset restore` is the next change if the per step figures point there.
+
+### The clean comparison (2026-09-20)
+
+The kernel run of `session_20260920T064941Z/` (06:50 to 07:58 UTC) is the first
+clean kernel run of the retrained models: one driver, an idle interface before it
+started (2 packets a second), a baseline learned from scratch (warm-up 200 seconds),
+calibration under Normal traffic (floors 2.4 and 0.0904, 1,708 seconds), and a
+sampler that kept its files. It was checked against the raw files and set beside the
+clean libpcap run of the third session (`session_20260919T222223Z/pcap_run1`). The two
+runs come from different sessions, so they are one run each, about 20 hours apart.
+
+| Figure | Kernel | libpcap |
+|-|-|-|
+| Stage 1 CPU, phases without an unpaced flood | 0.8% to 5.9% | 3.0% to 39.7% |
+| Stage 1 CPU at the unpaced floods (116,000 to 138,000 packets a second) | 72% to 79% | 44% to 50% |
+| Stage 1 context switches a second, same phases | 4 to 6 | 285 to 4,844 |
+| Stage 1 memory | 7.1 MB (11.4 MB at the floods) | 271 MB |
+| Window handoff to Stage 2, mean per phase | 13 to 65 ms | 2.6 to 34 ms |
+| Inference, mean per phase | 14 to 37 ms | 27 to 65 ms |
+| Window close to rule applied, mean per phase | 31 to 94 ms | 33 to 91 ms |
+| Calibrated rate floor, entropy floor | 2.4, 0.0904 | 2.5, 0.0776 |
+
+- **The resource result holds a third time.** The kernel backend's Stage 1 uses a
+  fraction of the CPU, one to two orders of magnitude fewer context switches and
+  about a fortieth of the memory outside the unpaced floods, and the order reverses at the floods, as in the
+  two earlier sessions. Inference was faster on the kernel run (the same Stage 2 code
+  and models), most likely because libpcap's capture threads share the four CPUs with
+  Stage 2, which this run does not show directly.
+- **Handoff is longer on the kernel backend again** (13 to 65 ms against 2.6 to 34),
+  and window close to rule applied is about even because inference is shorter.
+- **Detection.** The backends agreed on DDoS verdicts in 16 of 17 phases and on
+  enforcement in 16 of 17. Normal drew 14 anomaly flags, no verdict and no action on
+  the kernel run. The even Flash Crowd drew no verdict and no action on the kernel run
+  (2 verdicts and 34 rate limits on libpcap), and the `hot` variant with Normal traffic
+  drew 2 verdicts and 6 rate limits (26 and 725 in the second session). The retrained
+  models fix the concentrated Flash Crowd on both backends. Every attack type was
+  mitigated (blocks, rate limits or both) on both.
+- **Stage 2 kept up.** No window took a second or more, the largest handoff maximum was
+  429 ms, and the auto-label job ran once during the run (4.5 seconds) with no effect. Stage 1
+  logged five failed IPC writes, one at each Stage 2 restart between the attack types.
+- **One caveat in the calibration.** Four targets had 0.6% to 4.1% of their windows
+  flagged. The fifth, 10.0.0.5, had 40% flagged and the report warned about it, so its
+  floors may be biased. Antigravity's summary said under 5% for all.
+- **Limits.** One run per backend, the two from different sessions, so the run to run
+  spread is still unknown. The side by side report is in
+  `benchmark-live-results/combined_clean_20260920/report.txt`.

@@ -562,9 +562,14 @@ had the kernel backend's Stage 1 at 4.3% CPU, 6.5 context switches a second and
 At the unpaced floods (about 82,000 to 108,000 packets a second) the CPU order
 flipped (75% to 82% for the kernel backend against 48% to 53%). Handoff from the
 sensor to Stage 2 was longer on the kernel backend in both sessions (median 43 ms
-against 12 ms in the second), and inference took about 30 ms on both. See
-[Backend Benchmark](benchmark-backends.md) for the figures and their limits: one
-run each, and libpcap's rare multi-second handoff stalls.
+against 12 ms in the second), and inference took about 30 ms on both. A clean pair
+of runs on 2026-09-20 (libpcap from the third session, the kernel backend rerun
+alone) repeated it: Stage 1 at 0.8% to 5.9% CPU, 4 to 6 context switches a second and
+7 MB on the kernel backend against 3% to 40%, 285 to 4,844 and 271 MB on libpcap
+outside the unpaced floods, the CPU order reversed at the floods (72% to 79% against
+44% to 50%), and handoff longer on the kernel backend (13 to 65 ms against 2.6 to
+34). See [Backend Benchmark](benchmark-backends.md) for the figures and their
+limits: one run each, and libpcap's rare multi-second handoff stalls.
 
 For V14 the runs answer the first risk it lists. Of the window close to rule
 applied path (median 45 to 72 ms), the enforcement call is 0.05 to 0.1 ms and
@@ -593,7 +598,9 @@ windows from the phase ground truth. With 176 such rows added and the tree depth
 chosen by confidence (depth 6), the third session's clean libpcap run drew 2 DDoS
 verdicts and 29 rate limits on the `hot` variant (65 and 620 before) and 2 and 34 on
 the even variant (24 and 522 before). The kernel run of that session was spoiled by
-a stray generator, so the fix is confirmed on one backend.
+a stray generator, and a clean kernel rerun on 2026-09-20 confirmed it there too: the
+`hot` variant drew 2 verdicts and 6 rate limits (26 and 725 before) and the even
+variant none.
 
 **Enforcement could rate limit the previous phase's sources.** In an attack-only
 phase of the first session both backends rate limited the 97 Flash Crowd
