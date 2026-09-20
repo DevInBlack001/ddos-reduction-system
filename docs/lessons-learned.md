@@ -262,3 +262,39 @@ cycle. The capture backend was innocent, and the two runs differed only in when
 someone restarted NetworkManager. A fix that has to be repeated is a symptom, so
 find what the restart resets, and read the raw counters on both sides of the
 component under suspicion before blaming it.
+
+## A pass that did not check its own inputs
+
+Two benchmark sessions in a row reported a pass and were unusable. In the first,
+a generator left running by an interrupted attempt sent 4,600 to 6,800 packets a
+second through warm-up and calibration, so the sensor learned it as Normal and set a
+rate floor of 209.3 against 2.5 for the same traffic on the other backend. The report
+had warned that every target's sample was not peacetime traffic, and the summary said
+pass. In the second, two copies of the script ran at once against one gateway and
+fed traffic into each other's phases. Each failure showed in the raw interface
+counters, and neither showed in the detection figures, which looked like a system
+misbehaving. A run should prove its own preconditions (an idle interface, one driver,
+a baseline learned from scratch) before it measures, and whoever reads the result
+should read the calibration section first.
+
+## The answer was where rows enter the queue
+
+The auto-label job staged 21,867 rows and every one was DDoS, after runs that
+included Normal and Flash Crowd phases. The two capture files that feed it only
+receive windows the Random Forest called DDoS or the Isolation Forest flagged, so
+ordinary traffic never reaches it in bulk, and 36,000 of the anomalous file's 50,000
+rows were zero-traffic windows the job never labels. Reading where rows enter a
+pipeline explained the result faster than reading the models. The Flash Crowd the
+models misread had the same shape: a class that only shows up when it is
+misclassified cannot be learned from the captures of the model that misclassifies it,
+so its labels had to come from what the benchmark was sending.
+
+## Waiting on a lock in the loop that must not wait
+
+Stage 2 fell behind by tens of seconds while a background job scored a capture
+file. The job held the file's lock through a whole read, score and rewrite pass,
+one row at a time, and the receive loop blocked on that lock. The fix has two
+halves: the job locks only to read and to swap in the result, and scores in one batch
+per model (2 seconds against about 18 minutes), and the loop tries the lock without
+waiting and queues rows in a bounded buffer. A loop that serves a live stream should
+never block on something a slower job can hold.

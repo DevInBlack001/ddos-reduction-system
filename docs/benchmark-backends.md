@@ -62,6 +62,9 @@ in each phase) and `run_info.txt` (including the source address counts).
 
 For each run the script:
 
+0. Before anything else, takes a lock in the output directory, refuses to start
+   while a benchmark sampler runs on the gateway, stops every generator, and
+   requires the ingress interface to stay under `IDLE_INGRESS_MAX_PPS`.
 1. Empties `ddos_blocklist` and `ddos_ratelimit` and restarts Stage 2. A block
    lasts an hour, so without this a later run would start with the earlier
    run's sources already blocked.
@@ -69,7 +72,9 @@ For each run the script:
    `--baseline-path` to `FLOD_TUNING` in `/etc/ddos_stage1/tuning.env`, and
    starts it again. The sensor takes the last value given for a flag, so the
    unit file stays untouched, and each backend learns its own baseline from
-   scratch. The production baseline file is left alone.
+   scratch (the run's baseline file is deleted at the switch, so an earlier
+   session's baseline is never restored). The production baseline file is left
+   alone.
 3. Verifies the switch (unit active, the capture backend the sensor logged,
    whether an XDP program is attached, both ipsets present).
 4. Starts Normal traffic and waits for warm-up. This is the warm-up stage,

@@ -179,7 +179,11 @@ for the first run's results.
 within a tolerance of the best accuracy. `1.5.0` added `ddos_capture.csv`, a
 third capture file, so automatic labeling can stage DDoS rows. `1.6.0` added
 paging to the Auto Label review page, so a staged queue larger than 500 rows
-can be reviewed in full.
+can be reviewed in full. `1.6.1` stopped Stage 2 from waiting on the auto-label
+job, limited enforcement to the flows of the host under attack, chose the
+Random Forest's tree depth by how often its answers clear the confidence
+threshold, and added the live benchmark that compares the kernel and libpcap
+capture backends.
 
 ## Planned
 
