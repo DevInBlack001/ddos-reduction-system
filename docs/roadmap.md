@@ -583,10 +583,14 @@ now takes 2.0 seconds for 50,000 rows and the loop never waits on the lock). A
 stall of 25 seconds in the libpcap run and one of 15 seconds in the third session's
 kernel run have no auto-label run behind them. In both, Stage 2 was handling one
 window with no CPU use, outside every enforcement call, during an aggregate
-fallback over thousands of flows. Stage 2 now lists the time in inference, the
-database write, the flow snapshot and enforcement in the slow window warning, and
-the auto-label job's own stall is gone (five runs in the third session, none with
-a handoff maximum above 485 ms).
+fallback over thousands of flows, while legitimate Flash Crowd traffic was being
+called DDoS. The cause was never identified. The clean kernel run on 2026-09-20 had
+no slow window and a largest handoff maximum of 429 ms, and the retrained models no
+longer make those calls, so the issue is closed as not reproducing. Stage 2 lists the
+time in inference, the database write, the flow snapshot and enforcement in the slow
+window warning, so a recurrence would be placed at once. The auto-label job's own
+stall is gone (five runs in the third session, none with a handoff maximum above
+485 ms).
 
 **Flash Crowd was misread, and the retrained model fixes it on live traffic.**
 With Normal traffic, the `hot` variant (one source far above the rest) drew DDoS
