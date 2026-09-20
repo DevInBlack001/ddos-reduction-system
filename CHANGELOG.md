@@ -57,7 +57,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
   calibration and compares the floors between backends.
 
 - `scripts/label_from_benchmark.py` labels captured windows from the traffic a
-  benchmark recorded for each phase, for training on shapes the corpus lacks
+  benchmark recorded for each phase, for training on shapes the training set lacks
   (the concentrated Flash Crowd read as DDoS in both backend sessions).
 - Stage 2 records how long it spends handling each window (`busy` in the latency
   summary) and logs a warning for any window that takes a second or more, listing
@@ -127,7 +127,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 - `train.py` picks the tree depth that clears the auto-labeling confidence
   threshold most often among the depths that tie on accuracy, so the gate is no
-  longer close to arbitrary (depth 6 on the current corpus, where depth 3 was
+  longer close to arbitrary (depth 6 on the current training set, where depth 3 was
   chosen before).
 - Documentation describes results as coming from the simulated lab
   environment throughout.
@@ -156,7 +156,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
 
 - `docs/benchmark-live-v1.3.0.md` and the benchmark report no longer call the
   Isolation Forest labeling nearly every live window `Anomalous` correct
-  operation. Most of it comes from the training corpus and the deployed sensor
+  operation. Most of it comes from the training set and the deployed sensor
   running different sigma floors, which changes two of the Isolation Forest's
   inputs. Scored against 3,000 gateway rows it flagged 100% as they stand and
   27.3% (Normal) and 0.0% (Flash Crowd) with just those two columns swapped.
@@ -185,7 +185,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
   `auto_label.py` re-scores it exactly like the other two capture
   files, same dual-model agreement, same confidence threshold, same
   freshness check. Previously the pipeline only ever grew the Normal
-  and Flash Crowd share of the training corpus.
+  and Flash Crowd share of the training set.
 
 ## 1.4.1, 2026-09-18
 
@@ -251,7 +251,7 @@ minor bump adds a feature, milestones are numbered separately from tags.
   `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity`
   reading exactly `0.0`) regardless of model agreement or confidence.
   Found in a simulated lab run: this pattern occurs across all three labels in
-  the training corpus, so agreement on it reflects a shared blind spot.
+  the training set, so agreement on it reflects a shared blind spot.
 - `--auto-label-interval` and `--retrain-interval` flags on
   `install.sh`/`update.sh`, both operator configurable.
 - `scripts/benchmark_live.sh` extended from four phases to the full seven:

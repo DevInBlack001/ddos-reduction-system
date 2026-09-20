@@ -169,7 +169,7 @@ combine and [training.md](training.md#the-isolation-forest) for how it is
 trained.
 
 The Isolation Forest fits on every feature column, including the sensor's own
-learned standard deviations (`sigma_h` and `sigma_r`). Trained on a corpus
+learned standard deviations (`sigma_h` and `sigma_r`). Trained on a training set
 captured under different sigma floors than the ones deployed, it flags most
 live windows as outliers because those two columns sit outside anything it
 saw. Capture under the tuning you will deploy; see

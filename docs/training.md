@@ -408,7 +408,7 @@ of them carried `entropy`, `proto_ratio`, `dominant_ip_ratio`,
 `source_port_entropy`, `ttl_variance`, and `fingerprint_diversity` all
 exactly `0.0`, a zero-traffic window rather than a genuine observation of
 any class. That same all-zero pattern occurs across every label in the
-training corpus, Normal, Flash Crowd, and DDoS alike, so two models
+training set, Normal, Flash Crowd, and DDoS alike, so two models
 agreeing on it reflects a gap shared by both models' training data, not a
 real signal.
 
@@ -477,18 +477,18 @@ case, the checkout otherwise, per [Training](#training) above.
 The classifier and the Isolation Forest are trained on feature rows, and two
 of those columns, `sigma_h` and `sigma_r`, are not measurements of traffic.
 They are the sensor's learned standard deviations, clamped between the
-configured sigma floors and ceilings. A corpus captured under one set of
+configured sigma floors and ceilings. A training set captured under one set of
 floors and a sensor running another hold the same traffic at different
 values in those two columns.
 
 The Random Forest and the second model barely use them (importance 0.0015 and
 0.0020 for `sigma_h` and `sigma_r` in the Random Forest). The Isolation Forest
 fits on every column, so it is affected. Measured on 2026-09-18: the
-canonical corpus was captured with `sigma_h` near 0.05 to 0.08 and `sigma_r`
+canonical training set was captured with `sigma_h` near 0.05 to 0.08 and `sigma_r`
 pinned at 50.0 in 57% of rows, and rows from a gateway running recalibrated
-floors carry `sigma_h` 0.4944. An Isolation Forest trained on the corpus
+floors carry `sigma_h` 0.4944. An Isolation Forest trained on the training set
 flagged 100% of those gateway rows as outliers. With only those two columns
-swapped into the corpus's range, it flagged 27.3% of the Normal rows and 0.0%
+swapped into the training set's range, it flagged 27.3% of the Normal rows and 0.0%
 of the Flash Crowd rows.
 
 Practical rules:
@@ -498,7 +498,7 @@ Practical rules:
   regimes.
 - Rows captured on a deployed gateway (`ddos_capture.csv`,
   `anomalous_capture.csv`, the auto-labeled file) are in the deployed
-  regime. Do not pool them with an older corpus without checking the two
+  regime. Do not pool them with an older training set without checking the two
   columns first: `sigma_h` and `sigma_r` per label, distinct values, and
   the share sitting exactly on a floor.
 - A sensor restart re-runs warm-up for every target, and baselines restore
@@ -512,11 +512,11 @@ probability at or above `AUTO_LABEL_CONFIDENCE_THRESHOLD` (default 0.90). A
 Random Forest's probability is the average of its trees' leaf purities, so
 its ceiling depends on tree depth. The depth sweep used to pick the simplest
 depth within `ACCURACY_TOLERANCE` of the best accuracy, which on the current
-corpus is depth 3, tied with depths 4 and 5 at 0.997. It now also measures,
+training set is depth 3, tied with depths 4 and 5 at 0.997. It now also measures,
 for every depth, the share of held-out rows classified correctly at or above
 `AUTO_LABEL_CONFIDENCE_THRESHOLD`. Among the depths within the accuracy
 tolerance it keeps those within 2 points of the best share and takes the
-simplest, which is depth 6 on the current corpus (0.995 accuracy, 88% of
+simplest, which is depth 6 on the current training set (0.995 accuracy, 88% of
 held-out rows correct at 0.90 or above, against 75% at depth 3).
 
 On live DDoS windows from the gateway, the depth 3 forest tops out near 0.86
@@ -564,9 +564,9 @@ are skipped. By default only labels 0 and 1 are written, since the capture files
 hold windows the models called DDoS or doubted, so a Normal or Flash Crowd row in
 them is one the models got wrong. `--labels 0,1,2` adds the DDoS rows.
 
-This is how a shape the corpus lacks gets into it. The benchmark's `hot` Flash
+This is how a shape the training set lacks gets into it. The benchmark's `hot` Flash
 Crowd variant (one source far above the rest) has a dominant source share of 0.2
-to 0.3, where the corpus's Flash Crowd rows have 0.03 to 0.09, and a depth 3
+to 0.3, where the training set's Flash Crowd rows have 0.03 to 0.09, and a depth 3
 forest calls it DDoS. Merge the output into the training CSV the way any other
 labeled rows are merged, then retrain. `train.py` drops Flash Crowd rows below
 100 packets per second, so a hot window below that rate does not reach training.

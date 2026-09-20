@@ -145,7 +145,7 @@ the "trained after capture" check until `ddos-stage2-retrain.timer` (see
 [training.md](training.md#periodic-retraining)) gave it something to
 retrain against. Once that ran, 32,595 of the 32,597 labeled rows turned
 out to be zero-traffic windows both models agreed on for the wrong reason:
-a shared blind spot in the training corpus. See
+a shared blind spot in the training set. See
 [training.md](training.md#degenerate-windows-are-never-auto-labeled) for
 the guard this added. The retrain timer itself also only covered the RF
 and second model; the Isolation Forest, which depends on neither
@@ -659,21 +659,21 @@ since DDoS never reaches that check. `auto_label.py` re-scores it the
 same way as the other two: same dual-model agreement, same confidence
 threshold, same freshness check, nothing about the safety gate
 weakened. DDoS now has a real, automated path into the training
-corpus, gated exactly as carefully as Normal and Flash Crowd already
+training set, gated exactly as carefully as Normal and Flash Crowd already
 were. See [training.md](training.md#confidence-gated-automatic-labeling).
 
-**The training corpus and the deployed sigma floors are captured under
-different tuning.** The canonical corpus has `sigma_h` near 0.05 to 0.08 and
+**The training set and the deployed sigma floors are captured under
+different tuning.** The canonical training set has `sigma_h` near 0.05 to 0.08 and
 `sigma_r` pinned at 50.0 in 57% of rows. A gateway running recalibrated
 floors writes `sigma_h` 0.4944, later 0.2263 and about 0.08, and a different
 `sigma_r` range. The Random Forest ignores both columns, the Isolation Forest
 does not: measured 2026-09-18, it flags 100% of the gateway's Normal and
 Flash Crowd rows as outliers, and 27.3% and 0.0% with only those two
-columns swapped into the corpus's range. This accounts for most of the
+columns swapped into the training set's range. This accounts for most of the
 Isolation Forest labeling nearly every live window `Anomalous`. Fixing it
 takes a recapture of all three labels under the floors that will be deployed,
 or training the Isolation Forest on rows from the deployed regime. Until
-then, do not merge gateway captures into the older corpus. See
+then, do not merge gateway captures into the older training set. See
 [training.md](training.md#capture-under-the-tuning-you-deploy).
 
 **The confidence gate depends on tree depth.** The depth sweep picks depth 3

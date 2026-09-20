@@ -200,12 +200,12 @@ that included the header) and were caught only by doing that.
 
 ## Data captured under a different configuration than the one deployed
 
-A training corpus captured under one set of sigma floors was used to train an
+A training set captured under one set of sigma floors was used to train an
 Isolation Forest that then ran on a sensor with other floors. Two of its
 inputs, the learned standard deviations, sat in a range it had never seen,
 and it flagged every live window as an outlier. A benchmark write-up first
 explained that as the lab's traffic differing from a captured session, which
-was plausible and untested. Swapping just those two columns into the corpus's
+was plausible and untested. Swapping just those two columns into the training set's
 range changed the flag rate from 100% to 27% and 0%, which was the test that
 should have come first. The rule: when a model misbehaves on live data, change
 one input at a time before writing an explanation, and capture training data

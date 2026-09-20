@@ -423,10 +423,10 @@ and a replay of the captured windows. Nothing here needed a new run.
   through the deployed RandomForest and the safety overrides. The RandomForest
   called them DDoS. The overrides changed no verdict. The hot windows have a
   dominant source share of 0.2 to 0.3 (median 0.21 to 0.32 per run) where the Flash
-  Crowd corpus has 0.03 to 0.09, so a shallow forest reads them as concentrated.
+  Crowd training rows have 0.03 to 0.09, so a shallow forest reads them as concentrated.
   `scripts/label_from_benchmark.py` labels captured windows from the traffic the
   benchmark recorded for each phase. Adding one session's labeled rows (Normal, Flash
-  Crowd and DDoS windows, repeated 5 times) to the corpus and testing on the other
+  Crowd and DDoS windows, repeated 5 times) to the training set and testing on the other
   session, hot and even Flash Crowd windows called DDoS fell from 39 of 45 to 3 of 45
   and from 20 of 27 to 0 of 27 (depth 5). DDoS windows in the attack phases were
   still called DDoS (20,099 of 20,099, and 5,906 against 5,982 of 6,217).
@@ -438,11 +438,11 @@ and a replay of the captured windows. Nothing here needed a new run.
   rows reach 0.90 confidence, and 64% of the correctly called live DDoS windows do.
   Depth 6 gives 88% and 96%. The rule now prefers the depth that clears the gate
   more often among depths that tie on accuracy, and picks depth 6 on the current
-  corpus with 0.995 accuracy.
+  training set with 0.995 accuracy.
 - **Isolation Forest flag rate.** Under the deployed tuning the Isolation Forest
   flagged 0.3% to 1.2% of Normal windows and 0.0% to 1.7% of Flash Crowd windows in
   the four runs (1 to 3 of 257 to 300 windows in Normal, 15 of 876 at most in Flash
-  Crowd). The 100% and 27% figures came from the corpus and the deployed sigma floors
+  Crowd). The 100% and 27% figures came from the training set and the deployed sigma floors
   disagreeing. The model retrained on 2026-09-19 at 16:43 has not been measured live.
 - **Egress against ingress.** In the second session legitimate phases had egress
   packets at 94% to 100% of ingress on both backends. The 2.4 times gap recorded
@@ -477,7 +477,7 @@ and a replay of the captured windows. Nothing here needed a new run.
 
 ### Third session, after the fixes (2026-09-19 22:22 to 2026-09-20 00:32 UTC)
 
-This session (`session_20260919T222223Z/`) ran with the retrained models (the corpus plus 176 rows labeled from the earlier benchmark phases, depth 6) and the Stage 2 fixes above. Its kernel run is not usable for detection, and its libpcap run is clean.
+This session (`session_20260919T222223Z/`) ran with the retrained models (the training set plus 176 rows labeled from the earlier benchmark phases, depth 6) and the Stage 2 fixes above. Its kernel run is not usable for detection, and its libpcap run is clean.
 
 - **The kernel run had a stray generator.** From the start of warm-up to about 23:02, 4,600 to 6,800 packets a second reached the gateway (an interrupted earlier attempt at 20:28 had left a generator running; the libpcap run's warm-up carried 56 to 78). Calibration ran 1,810 seconds and every target spent 47% to 92% of the sample flagged, so it learned a rate floor of 209.3 against 2.5 for libpcap. The `normal` and `flash_crowd` phases show 289 and 285 DDoS verdicts, 1,517 and 1,501 rate limits and about 3,600 firewall drops a second, and every later kernel phase ran under the 209.3 floor. Kernel figures for detection from this session are not comparable, and the resource figures for the later phases ran under a different calibration from libpcap's. The benchmark now stops every generator and refuses to start on a busy interface (`IDLE_INGRESS_MAX_PPS`).
 - **The Flash Crowd fix worked on live traffic (libpcap run, clean).** The `hot` variant with Normal traffic drew 2 DDoS verdicts and 29 rate limits, against 65 and 620 in the second session. The even variant drew 2 and 34, against 24 and 522. Normal drew 0 verdicts and 0 actions. The remaining rate limits are the designed precaution on a concentrated crowd's dominant source.
@@ -503,8 +503,8 @@ This session (`session_20260919T222223Z/`) ran with the retrained models (the co
   disagreement), but 19,514 of the 35,965 fall in gaps, phase margins or the earlier
   September 18 runs, where no phase file survives. That includes 9,479 of the Flash
   Crowd rows, which are all from the earlier tuning regime (`sigma_h` 0.4944) and
-  mostly below the corpus's Flash Crowd rate range (6,328 between 100 and 173
-  packets a second, where the corpus's fifth percentile is 173). The rows from the
+  mostly below the training set's Flash Crowd rate range (6,328 between 100 and 173
+  packets a second, where the training set's fifth percentile is 173). The rows from the
   third session are not in it yet, since the models were retrained before that
   session and a row is only eligible once both models postdate it. Merging it would
   add DDoS the models already call DDoS and Flash Crowd rows nothing can verify.

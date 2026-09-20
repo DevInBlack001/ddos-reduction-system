@@ -69,9 +69,9 @@ def is_row_degenerate(features):
     """True if every field in DEGENERATE_FIELDS reads exactly 0.0, the
     signature of a zero-traffic window (an idle capture interval, not a
     real observation of any class). Confirmed against the real training
-    corpus: this exact all-zero pattern appears across all three labels
+    set: this exact all-zero pattern appears across all three labels
     (Normal, Flash Crowd, and DDoS alike), so two models agreeing on such
-    a row reflects a shared corpus-level blind spot, not a real signal,
+    a row reflects a blind spot shared through the training set, not a real signal,
     and must never be auto-labeled regardless of confidence or agreement."""
     return all(features[field] == 0.0 for field in DEGENERATE_FIELDS)
 

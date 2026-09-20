@@ -137,8 +137,8 @@ class IsRowDegenerateTests(unittest.TestCase):
 class ProcessCaptureFileSkipsDegenerateRowsTests(unittest.TestCase):
     """A degenerate (all-zero-feature) row must never be auto-labeled, even
     when both models confidently agree on it. Confirmed against the real
-    training corpus that this exact all-zero pattern occurs across all
-    three labels, so agreement here reflects a shared corpus blind spot,
+    training set that this exact all-zero pattern occurs across all
+    three labels, so agreement here reflects a blind spot shared through the training set,
     not a real signal."""
 
     class _FakeConfidentModel:

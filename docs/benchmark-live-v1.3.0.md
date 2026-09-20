@@ -59,19 +59,19 @@ version of this section called that correct operation, on the reasoning that
 the lab's live traffic profile differs from a captured session. A check on
 2026-09-18 points to a tuning mismatch as the main cause.
 
-The training corpus was captured under the old sigma floors (`sigma_h`
+The training set was captured under the old sigma floors (`sigma_h`
 around 0.05 to 0.08, `sigma_r` pinned at 50.0 in 57% of rows). The gateway
 runs recalibrated floors, so its rows carry `sigma_h` 0.4944 and a different
 `sigma_r` range. The Random Forest barely uses those two columns (importance
 0.0015 and 0.0020). The Isolation Forest fits on all of them. Scored against
 3,000 auto-labeled Normal rows from the gateway, it flags 100% as outliers
 as they stand and 27.3% once only `sigma_h` and `sigma_r` are swapped into
-the corpus's range. For Flash Crowd rows the figures are 100% and 0.0%.
+the training set's range. For Flash Crowd rows the figures are 100% and 0.0%.
 
 The label never drives enforcement on its own, and the zero enforcement
 actions during Normal and Flash Crowd above confirm that directly. The
 blocking decision belongs to the RandomForest, whose 0% false positive rate
-on generated Flash Crowd traffic is the number that matters. The corpus and the
+on generated Flash Crowd traffic is the number that matters. The training set and the
 deployed floors need to be captured under the same tuning for `Anomalous` to
 mean what it says. See [Training](training.md#capture-under-the-tuning-you-deploy).
 

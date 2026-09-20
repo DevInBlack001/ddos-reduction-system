@@ -93,7 +93,7 @@ PRETRAINING_CSV_PATH = os.environ.get("PRETRAINING_CSV_PATH", os.path.join(_STAT
 # Forest is never consulted for these (see the pred_class in (0, 1) check
 # around ANOMALOUS_CSV_PATH's own write site), so without this path DDoS
 # never had any way into confidence gated automatic labeling, the training
-# corpus only ever grew Normal and Flash Crowd. auto_label.py re-scores
+# set only ever grew Normal and Flash Crowd. auto_label.py re-scores
 # these the same way, same agreement, confidence, and freshness checks,
 # before any of it reaches training data. See docs/roadmap.md#known-gaps
 # for the full reasoning this closes.
