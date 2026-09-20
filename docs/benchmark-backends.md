@@ -11,10 +11,12 @@ All runs happen in my simulated lab environment. The figures describe that
 environment. Other networks, other hardware, and other traffic mixes may
 produce different numbers.
 
-Status: two sessions have run on 2026-09-19 in the simulated lab environment
-(10:30 to 12:30 and 14:11 to 16:14 UTC), one run per backend each. The second is
-the reliable one, and the results are at the end of this page. One run per
-backend means nothing here shows how much a figure moves between identical runs.
+Status: three sessions have run on 2026-09-19 in the simulated lab environment
+(10:30 to 12:30, 14:11 to 16:14 and 22:22 to 00:32 UTC), one run per backend each.
+The second is the reliable comparison. The third has a clean libpcap run and a
+kernel run that a stray generator spoiled, and both are described at the end of
+this page. One run per backend means nothing here shows how much a figure moves
+between identical runs.
 
 ## Running it
 
@@ -472,3 +474,13 @@ and a replay of the captured windows. Nothing here needed a new run.
   longer written to the anomalous capture. Rows labeled from benchmark phases fill the
   gap (`scripts/label_from_benchmark.py`).
 
+
+### Third session, after the fixes (2026-09-19 22:22 to 2026-09-20 00:32 UTC)
+
+This session (`session_20260919T222223Z/`) ran with the retrained models (the corpus plus 176 rows labeled from the earlier benchmark phases, depth 6) and the Stage 2 fixes above. Its kernel run is not usable for detection, and its libpcap run is clean.
+
+- **The kernel run had a stray generator.** From the start of warm-up to about 23:02, 4,600 to 6,800 packets a second reached the gateway (an interrupted earlier attempt at 20:28 had left a generator running; the libpcap run's warm-up carried 56 to 78). Calibration ran 1,810 seconds and every target spent 47% to 92% of the sample flagged, so it learned a rate floor of 209.3 against 2.5 for libpcap. The `normal` and `flash_crowd` phases show 289 and 285 DDoS verdicts, 1,517 and 1,501 rate limits and about 3,600 firewall drops a second, and every later kernel phase ran under the 209.3 floor. Kernel figures for detection from this session are not comparable, and the resource figures for the later phases ran under a different calibration from libpcap's. The benchmark now stops every generator and refuses to start on a busy interface (`IDLE_INGRESS_MAX_PPS`).
+- **The Flash Crowd fix worked on live traffic (libpcap run, clean).** The `hot` variant with Normal traffic drew 2 DDoS verdicts and 29 rate limits, against 65 and 620 in the second session. The even variant drew 2 and 34, against 24 and 522. Normal drew 0 verdicts and 0 actions. The remaining rate limits are the designed precaution on a concentrated crowd's dominant source.
+- **The Stage 2 stall from the auto-label job is gone.** The job ran five times in the session, taking 3 to 10 seconds of wall clock each (3 min 42 s before), and the intervals around the runs at 23:12:59 and 00:15:39 have a handoff maximum of 485 ms or less.
+- **A different stall remains, and it is now placed.** In the kernel run Stage 2 spent 15.5 seconds handling one window at 22:37:41 with no CPU use (inference 31 ms) while a flood of 23,000 enforcement calls in 30 seconds was under way. The slow window warning shows it was inside the handling of one window and outside every enforcement call (the enforcement maximum for the interval was 70 ms). The libpcap stall of 27 seconds at 15:45:40 in the second session has the same signature. Both fall in windows with the aggregate fallback rate limiting thousands of flows. Stage 2 now lists the time spent in inference, the database write, the flow snapshot and enforcement in that warning.
+- **Next change if the step figures point at enforcement.** Each rate limit runs an `ipset` subprocess and reads two files, and the aggregate fallback does that for every flow. Batching the flows into one `ipset restore` is the next change if the per step figures point there.

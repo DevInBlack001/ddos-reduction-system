@@ -546,20 +546,25 @@ behind the socket fills, Stage 1 logs the write failing, and handoff reaches
 tens of seconds. One cause is fixed: `auto_label.py` held a capture file lock
 through a whole scoring pass and Stage 2 waited on it in its receive loop (scoring
 now takes 2.0 seconds for 50,000 rows and the loop never waits on the lock). A
-stall of about 25 seconds in the libpcap run with no auto-label run behind it is
-not explained, and Stage 2 now logs how long it spends on each window so the next
-one can be placed.
+stall of 25 seconds in the libpcap run and one of 15 seconds in the third session's
+kernel run have no auto-label run behind them. In both, Stage 2 was handling one
+window with no CPU use, outside every enforcement call, during an aggregate
+fallback over thousands of flows. Stage 2 now lists the time in inference, the
+database write, the flow snapshot and enforcement in the slow window warning, and
+the auto-label job's own stall is gone (five runs in the third session, none with
+a handoff maximum above 485 ms).
 
-**Flash Crowd is misread, with a data fix ready.** With Normal traffic, the `hot`
-variant (one source far above the rest) drew DDoS verdicts on both backends in
-both sessions (26 and 65 in the second) and rate limits on more than 100
-legitimate addresses. The even variant also drew verdicts and rate limits in the
-second session on libpcap (24 and 522). The RandomForest makes those calls and the
-safety overrides change none of them, because the training data has no
-concentrated legitimate crowd. `scripts/label_from_benchmark.py` labels captured
-windows from the phase ground truth, and in a test that trained on one session and
-scored the other it cut misread hot and even Flash Crowd windows from 39 of 45 to
-3 and from 20 of 27 to 0. The next benchmark run confirms it on live traffic.
+**Flash Crowd was misread, and the retrained model fixes it on live traffic.**
+With Normal traffic, the `hot` variant (one source far above the rest) drew DDoS
+verdicts on both backends in both earlier sessions (26 and 65 in the second) and
+rate limits on more than 100 legitimate addresses. The RandomForest made those
+calls and the safety overrides changed none of them, because the training data had
+no concentrated legitimate crowd. `scripts/label_from_benchmark.py` labels captured
+windows from the phase ground truth. With 176 such rows added and the tree depth
+chosen by confidence (depth 6), the third session's clean libpcap run drew 2 DDoS
+verdicts and 29 rate limits on the `hot` variant (65 and 620 before) and 2 and 34 on
+the even variant (24 and 522 before). The kernel run of that session was spoiled by
+a stray generator, so the fix is confirmed on one backend.
 
 **Enforcement could rate limit the previous phase's sources.** In an attack-only
 phase of the first session both backends rate limited the 97 Flash Crowd

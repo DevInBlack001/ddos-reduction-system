@@ -60,7 +60,14 @@ minor bump adds a feature, milestones are numbered separately from tags.
   benchmark recorded for each phase, for training on shapes the corpus lacks
   (the concentrated Flash Crowd read as DDoS in both backend sessions).
 - Stage 2 records how long it spends handling each window (`busy` in the latency
-  summary) and logs a warning for any window that takes a second or more.
+  summary) and logs a warning for any window that takes a second or more, listing
+  the time spent in inference, the database write, the flow snapshot and
+  enforcement.
+- The live benchmark stops every generator before a session and refuses to start
+  while the ingress interface carries more than `IDLE_INGRESS_MAX_PPS` packets a
+  second (300 by default). A generator left running by an interrupted session sent
+  5,000 to 6,800 packets a second through one run's warm-up and calibration, and
+  the sensor learned it as Normal.
 
 ### Changed
 
