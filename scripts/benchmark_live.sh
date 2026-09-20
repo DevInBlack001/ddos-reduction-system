@@ -106,6 +106,7 @@ source "$CONFIG"
 : "${CALIBRATE_TIMEOUT_MINS:=30}"
 : "${NORMAL_SOURCE_FILE:=}"
 : "${FLASHCROWD_SOURCE_FILE:=}"
+: "${IDLE_INGRESS_MAX_PPS:=300}"
 
 # The generator start and stop commands are shell you wrote, run over SSH on
 # the generator hosts, and this file is sourced as shell, so keep it out of
@@ -133,7 +134,7 @@ validate_config() {
         case "${!name}" in *..*|/) config_error "$name has an invalid value: '${!name}'" ;; esac
     done
     for name in WARMUP_TIMEOUT_SECS NORMAL_SECS FLASHCROWD_SECS ATTACK_SECS PAIR_SECS \
-                ALL_THREE_SECS SYSTEM_SAMPLE_INTERVAL_SECS RUNS_PER_MODE; do
+                ALL_THREE_SECS SYSTEM_SAMPLE_INTERVAL_SECS RUNS_PER_MODE IDLE_INGRESS_MAX_PPS; do
         check_value "$name" "${!name}" '^[0-9]{1,6}$'
     done
     [ "$RUNS_PER_MODE" -ge 1 ] || config_error "RUNS_PER_MODE must be at least 1"
@@ -291,6 +292,30 @@ check_egress_interface() {
         exit 1
     fi
     log "Egress interface $EGRESS_IFACE has an address"
+}
+
+# A generator left running by an interrupted session keeps sending after its
+# driver is gone, and warm-up and calibration would learn it as Normal. Stop
+# every class, wait, and refuse to start while the ingress interface still
+# carries more than IDLE_INGRESS_MAX_PPS packets a second.
+check_idle_ingress() {
+    [ -n "$INGRESS_IFACE" ] || return 0
+    local counter="/sys/class/net/$INGRESS_IFACE/statistics/rx_packets" first second pps
+    stop_class NORMAL; stop_class FLASHCROWD; stop_class ATTACK
+    sleep 10
+    first=$($GW_SSH "cat $counter" 2>/dev/null | tr -d '[:space:]')
+    sleep 10
+    second=$($GW_SSH "cat $counter" 2>/dev/null | tr -d '[:space:]')
+    if ! [[ "$first" =~ ^[0-9]+$ && "$second" =~ ^[0-9]+$ ]]; then
+        log "ERROR: could not read $counter on the gateway"
+        exit 1
+    fi
+    pps=$(( (second - first) / 10 ))
+    if [ "$pps" -gt "$IDLE_INGRESS_MAX_PPS" ]; then
+        log "ERROR: $INGRESS_IFACE carries $pps packets a second with every generator stopped (limit $IDLE_INGRESS_MAX_PPS). Find the traffic source before running: calibration would learn it as Normal."
+        exit 1
+    fi
+    log "Ingress interface $INGRESS_IFACE is idle ($pps packets a second)"
 }
 
 # The attack's spread of source addresses decides how much entropy separates
@@ -674,6 +699,7 @@ run_session() {
 log "=== FLOD live benchmark starting: backends '$CAPTURE_MODES', $RUNS_PER_MODE run(s) each ==="
 install_helper
 check_egress_interface
+check_idle_ingress
 check_attack_sources
 verify_gateway "" "$SESSION_DIR/original_state.txt"
 ORIGINAL_MODE=$(sed -n 's/^check=capture_mode result=info detail=//p' "$SESSION_DIR/original_state.txt")

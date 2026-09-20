@@ -267,6 +267,9 @@ def _write_ddos_capture_row(**feature_values):
 
 latency_stats = LatencyStats()
 
+# Seconds the current window has spent in each step, for the slow window warning.
+step_secs = {"database": 0.0, "flows": 0.0, "enforcement": 0.0}
+
 
 def _timed_enforcement(window_ts, action, *args, **kwargs):
     """Run one enforcement action and record how long it took, and how long
@@ -274,6 +277,7 @@ def _timed_enforcement(window_ts, action, *args, **kwargs):
     started = time.time()
     result = action(*args, **kwargs)
     finished = time.time()
+    step_secs["enforcement"] += finished - started
     latency_stats.record("enforcement", (finished - started) * 1000.0)
     latency_stats.record("window_to_rule", (finished - window_ts) * 1000.0)
     return result
@@ -451,6 +455,7 @@ def run_ipc_receiver():
                         break
 
                 received_at = time.time()
+                step_secs.update(database=0.0, flows=0.0, enforcement=0.0)
                 unpacked = struct.unpack(config.FEATURE_VECTOR_FORMAT, data)
                 entropy = unpacked[0]
                 ewma_rate = unpacked[1]
@@ -670,7 +675,9 @@ def run_ipc_receiver():
                 state.last_metrics_by_target[victim_ip_str] = state.last_metrics.copy()
 
                 # Save history
+                db_started = time.time()
                 db.log_metrics_history(timestamp, ewma_rate, entropy, mean_h, mean_r, sigma_h, sigma_r, k_multiplier, victim_ip_str)
+                step_secs["database"] += time.time() - db_started
 
                 # Track consecutive class-2 windows per victim for block
                 # hysteresis (rate-limiting is NOT gated by this, only the
@@ -702,7 +709,9 @@ def run_ipc_receiver():
                         # an attacker spreading across multiple dst ports can't
                         # dodge the per-source thresholds below by fragmenting
                         # its traffic into several smaller-looking flows.
+                        flows_started = time.time()
                         per_source_rate = _load_victim_flow_rates(victim_ip_str)
+                        step_secs["flows"] += time.time() - flows_started
 
                         acted_on = set()
 
@@ -818,7 +827,9 @@ def run_ipc_receiver():
                 if busy_secs >= config.SLOW_WINDOW_LOG_SECS:
                     logging.warning(
                         f"[!] Handling one window took {busy_secs:.1f}s "
-                        f"(inference {inference_secs * 1000.0:.0f} ms), later windows queue behind it."
+                        f"(inference {inference_secs * 1000.0:.0f} ms, database {step_secs['database'] * 1000.0:.0f} ms, "
+                        f"flow snapshot {step_secs['flows'] * 1000.0:.0f} ms, "
+                        f"enforcement {step_secs['enforcement'] * 1000.0:.0f} ms), later windows queue behind it."
                     )
                 _log_latency_if_due()
 

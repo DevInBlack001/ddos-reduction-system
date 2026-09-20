@@ -36,6 +36,7 @@ comparison:
 | `NORMAL_VARIANTS`, `FLASHCROWD_VARIANTS`, `ATTACK_VARIANTS` | empty | Named variants of each traffic class. See [Traffic variety](#traffic-variety). |
 | `ATTACK_SWEEP_SECS` | `0` | Seconds each attack type runs alone, and again with Normal traffic, after the seven phases. 0 skips the sweep. |
 | `ATTACK_SOURCE_FILE`, `ATTACK_SOURCES_MIN`, `ATTACK_SOURCES_MAX` | empty, `30`, `40` | The run counts the addresses in this file on the attack host and stops outside the range. |
+| `IDLE_INGRESS_MAX_PPS` | `300` | Before anything runs every generator is stopped, and the run refuses to start if the ingress interface (`INGRESS_IFACE`) carries more than this many packets a second. |
 | `CALIBRATE`, `CALIBRATE_WINDOWS`, `CALIBRATE_TIMEOUT_MINS` | `off`, `1000`, `30` | Runs `scripts/calibrate.py` during each run's warm-up stage. `off`, `measure` or `apply`. See [Calibration](#calibration-during-the-warm-up-stage). |
 | `REMOTE_DIR` | `/root/.flod_benchmark` | Root only directory on the gateway for the helper scripts and their output. |
 | `INGRESS_IFACE`, `EGRESS_IFACE` | empty | Interfaces whose kernel counters the sampler reads. Empty skips the interface figures. |
