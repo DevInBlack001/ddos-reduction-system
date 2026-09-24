@@ -128,6 +128,14 @@ fn baseline_has_drifted(mean: f64, reference: f64) -> bool {
 /// its own detection threshold without bound. Shared by the live boundary
 /// and the cooldown-triggering "real anomaly" check, which apply the same
 /// scaling against different `k` values.
+/// Rate sigma floor scaled by the target's own mean, mirroring `ceiling_r`
+/// one line below it in the window close pipeline. `rate_sigma_floor`
+/// remains the absolute backstop for a target still near zero during
+/// warm-up, so a fresh target is not floored at a fraction of nothing.
+fn scaled_rate_floor(cfg: &AnalysisConfig, mean_rate: f64) -> f64 {
+    (cfg.rate_sigma_floor_ratio * mean_rate).max(cfg.rate_sigma_floor)
+}
+
 fn scaled_rate_k(cfg: &AnalysisConfig, base_k: f64, r: f64, mean_rate: f64, sigma_r: f64, h: f64, mean_h: f64) -> f64 {
     if r > mean_rate + cfg.emergency_volume_sigma * sigma_r {
         base_k
@@ -194,12 +202,13 @@ fn entropy_anomaly_fires(h: f64, boundary: f64, packet_count: usize, min_packets
 /// startup instead of during an incident.
 pub fn log_effective_tuning(cfg: &AnalysisConfig) {
     info!(
-        "Analysis: tuning | entropy sigma {}..{} | rate sigma floor {} | \
+        "Analysis: tuning | entropy sigma {}..{} | rate sigma floor {} (or {} of mean) | \
          entropy min packets {} | distributed dominance {} | emergency {}σ | \
          cooldown {} windows | max tracked flows {}",
         cfg.entropy_sigma_floor,
         cfg.entropy_sigma_ceiling,
         cfg.rate_sigma_floor,
+        cfg.rate_sigma_floor_ratio,
         cfg.entropy_min_packets,
         cfg.distributed_dominance,
         cfg.emergency_volume_sigma,
@@ -242,6 +251,14 @@ pub fn log_effective_tuning(cfg: &AnalysisConfig) {
             "Analysis: --distributed-dominance is {}, so every entropy only window \
              updates the baseline. That weakens the slow ramp poisoning defence.",
             cfg.distributed_dominance
+        );
+    }
+    if cfg.rate_sigma_floor_ratio >= cfg.rate_sigma_ceiling_ratio {
+        warn!(
+            "Analysis: --rate-sigma-floor-ratio ({}) is not below \
+             --rate-sigma-ceiling-ratio ({}), so raw.max(floor).min(ceiling) resolves \
+             in the ceiling's favour and the rate boundary cannot adapt at all.",
+            cfg.rate_sigma_floor_ratio, cfg.rate_sigma_ceiling_ratio
         );
     }
 }
@@ -701,7 +718,8 @@ pub fn run_analysis_thread(cfg: AnalysisConfig, mut source: PacketSource) {
             // drift so wide that nothing ever trips it.
             let ceiling_r = (cfg.rate_sigma_ceiling_ratio * target_state.welford_rate.mean)
                 .max(cfg.rate_sigma_ceiling_floor);
-            let sigma_r = raw_sigma_r.max(cfg.rate_sigma_floor).min(ceiling_r);
+            let floor_r = scaled_rate_floor(&cfg, target_state.welford_rate.mean);
+            let sigma_r = raw_sigma_r.max(floor_r).min(ceiling_r);
             let sigma_h = raw_sigma_h.clamp(cfg.entropy_sigma_floor, cfg.entropy_sigma_ceiling);
 
             // Cooldown reduces k, floored at 1.0, so a target stays easier to
@@ -1176,6 +1194,29 @@ mod tests {
     fn the_entropy_sigma_ceiling_still_applies() {
         assert_eq!(0.9_f64.clamp(DEFAULT_ENTROPY_SIGMA_FLOOR, DEFAULT_ENTROPY_SIGMA_CEILING),
             DEFAULT_ENTROPY_SIGMA_CEILING);
+    }
+
+    #[test]
+    fn a_busy_host_gets_a_higher_rate_sigma_floor_than_a_quiet_one() {
+        let cfg = AnalysisConfig::default();
+        let quiet = scaled_rate_floor(&cfg, 50.0);
+        let busy = scaled_rate_floor(&cfg, 5000.0);
+        assert!(busy > quiet, "busy floor {busy} was not above quiet floor {quiet}");
+    }
+
+    #[test]
+    fn the_rate_sigma_floor_ratio_scales_with_the_targets_own_mean() {
+        let cfg = AnalysisConfig::default();
+        let mean_rate = 1000.0;
+        assert_eq!(scaled_rate_floor(&cfg, mean_rate), cfg.rate_sigma_floor_ratio * mean_rate);
+    }
+
+    #[test]
+    fn the_absolute_rate_sigma_floor_still_backstops_a_target_near_zero() {
+        // A brand new target's mean is still climbing out of warm-up, so the
+        // ratio alone would produce a floor near zero.
+        let cfg = AnalysisConfig::default();
+        assert_eq!(scaled_rate_floor(&cfg, 1.0), cfg.rate_sigma_floor);
     }
 
     /// A quiet window must not be read as an entropy anomaly.

@@ -22,6 +22,11 @@ use std::time::Instant;
 pub const DEFAULT_ENTROPY_SIGMA_FLOOR: f64 = 0.05;
 pub const DEFAULT_ENTROPY_SIGMA_CEILING: f64 = 0.15;
 pub const DEFAULT_RATE_SIGMA_FLOOR: f64 = 50.0;
+/// V9: rate sigma floor as a fraction of the target's own mean, measured
+/// across three hosts to sit between 0.22 and 0.26 of each host's mean.
+/// `DEFAULT_RATE_SIGMA_FLOOR` remains the absolute backstop for a target
+/// still near zero during warm-up. See `docs/roadmap.md`.
+pub const DEFAULT_RATE_SIGMA_FLOOR_RATIO: f64 = 0.24;
 pub const DEFAULT_DISTRIBUTED_DOMINANCE: f64 = 0.40;
 /// Five times the window close threshold. Sized so that "every packet came
 /// from one source" is a statement about the traffic rather than about a
@@ -92,8 +97,22 @@ pub struct AnalysisConfig {
     /// drift so wide that nothing ever trips it.
     pub entropy_sigma_ceiling: f64,
     /// Floor under the rate standard deviation, for the same reason as the
-    /// entropy floor.
+    /// entropy floor. The absolute backstop; see `rate_sigma_floor_ratio`
+    /// for the value actually applied once a target has a mean to scale
+    /// against.
     pub rate_sigma_floor: f64,
+    /// V9: rate sigma floor as a fraction of the target's own mean, mirroring
+    /// what `rate_sigma_ceiling_ratio` already does one line below in the
+    /// same expression. One global absolute floor cannot fit hosts spanning
+    /// a wide range of mean rates: sized for the busiest host it leaves a
+    /// quiet host needing several times its own normal volume before
+    /// anything trips, and sized for the quietest it flags the busiest
+    /// continuously, freezing that host's baseline and keeping its standard
+    /// deviation from ever growing to reflect real variation. Scaling
+    /// against the target's own mean gives each host its own floor,
+    /// `rate_sigma_floor` remaining the absolute backstop for a target still
+    /// near zero during warm-up.
+    pub rate_sigma_floor_ratio: f64,
     /// Dominance below which traffic is too spread out to be a concentrated
     /// flood, whatever the entropy figure says.
     ///
@@ -172,6 +191,7 @@ impl Default for AnalysisConfig {
             entropy_sigma_floor:   DEFAULT_ENTROPY_SIGMA_FLOOR,
             entropy_sigma_ceiling: DEFAULT_ENTROPY_SIGMA_CEILING,
             rate_sigma_floor:      DEFAULT_RATE_SIGMA_FLOOR,
+            rate_sigma_floor_ratio: DEFAULT_RATE_SIGMA_FLOOR_RATIO,
             distributed_dominance: DEFAULT_DISTRIBUTED_DOMINANCE,
             entropy_min_packets:   DEFAULT_ENTROPY_MIN_PACKETS,
             max_tracked_flows:     DEFAULT_MAX_TRACKED_FLOWS,

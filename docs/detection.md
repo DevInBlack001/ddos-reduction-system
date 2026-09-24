@@ -215,6 +215,7 @@ ceilings.
 | `--entropy-sigma-floor` | 0.05 |
 | `--entropy-sigma-ceiling` | 0.15 |
 | `--rate-sigma-floor` | 50.0 |
+| `--rate-sigma-floor-ratio` | 0.24 |
 | `--rate-sigma-ceiling-ratio` | 0.2 |
 | `--rate-sigma-ceiling-floor` | 10000.0 |
 
@@ -225,10 +226,22 @@ ordinary windows fall below their own mean by definition. That is a degenerate
 statistic, not a sensitive detector, and it spends the margin needed to
 recognise a real flood.
 
-The rate sigma ceiling is `--rate-sigma-ceiling-ratio` of the mean, or
+The rate sigma floor is `--rate-sigma-floor-ratio` of the target's own mean,
+or `--rate-sigma-floor`, whichever is larger (V9). A single global floor
+cannot fit hosts spanning a wide range of mean rates: sized for the busiest
+host it leaves a quiet host needing several times its own normal volume
+before anything trips, and sized for the quietest it flags the busiest
+continuously, which freezes that host's baseline before its standard
+deviation can ever grow to reflect real variation. Scaling against each
+target's own mean gives every host its own floor, with the absolute value
+remaining as a backstop for a target still near zero during warm-up. The
+rate sigma ceiling works the same way, one line below in the same
+expression: `--rate-sigma-ceiling-ratio` of the mean, or
 `--rate-sigma-ceiling-floor`, whichever is larger, so the boundary can widen
 with genuinely variable traffic without drifting so far that nothing ever
-trips it.
+trips it. The floor ratio must stay below the ceiling ratio; the sensor
+warns at startup if it does not, since `raw.max(floor).min(ceiling)` would
+otherwise resolve silently in the ceiling's favour.
 
 The defaults are starting points, not values proven optimal. The right floor
 depends on how much a given network's traffic naturally varies, which is why
@@ -295,12 +308,15 @@ continuously, which also freezes its baseline. The first is recoverable and
 the second is not. The script warns when the per host values differ by more
 than a factor of four, because one global value then fits neither.
 
-That warning marks a real limit rather than a tuning inconvenience. The
-baselines are per victim but the floors are global, so a set of protected
-hosts carrying very different volumes cannot be fitted by one number. The
-rate sigma *ceiling* already avoids this by scaling against each target's own
-mean; the floor does not. See V9 in
-[roadmap.md](roadmap.md#planned).
+That warning marked a real limit rather than a tuning inconvenience: the
+baselines are per victim but `--rate-sigma-floor` alone is global, so a set
+of protected hosts carrying very different volumes could not be fitted by
+one number. `--rate-sigma-floor-ratio` (V9) closes this the same way the
+ceiling already did, scaling against each target's own mean; see
+"Bounds on Sigma" above. This script still measures and recommends the
+absolute floor only, since a ratio needs several hosts' worth of relative
+spread to size sensibly rather than one session's own mean; deriving
+`--rate-sigma-floor-ratio` from observed per host spread is not built yet.
 
 ```bash
 sudo python3 scripts/calibrate.py --auto-debug              # measure, report

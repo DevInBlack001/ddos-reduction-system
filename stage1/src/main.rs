@@ -127,6 +127,7 @@ struct CliArgs {
     entropy_sigma_floor:   f64,
     entropy_sigma_ceiling: f64,
     rate_sigma_floor:      f64,
+    rate_sigma_floor_ratio: f64,
     distributed_dominance: f64,
     entropy_min_packets:   usize,
     emergency_volume_sigma:   f64,
@@ -165,6 +166,7 @@ impl CliArgs {
         let mut entropy_sigma_floor = state::DEFAULT_ENTROPY_SIGMA_FLOOR;
         let mut entropy_sigma_ceiling = state::DEFAULT_ENTROPY_SIGMA_CEILING;
         let mut rate_sigma_floor = state::DEFAULT_RATE_SIGMA_FLOOR;
+        let mut rate_sigma_floor_ratio = state::DEFAULT_RATE_SIGMA_FLOOR_RATIO;
         let mut distributed_dominance = state::DEFAULT_DISTRIBUTED_DOMINANCE;
         let mut entropy_min_packets = state::DEFAULT_ENTROPY_MIN_PACKETS;
         let mut max_sources = crate::kernel::DEFAULT_MAX_SOURCES;
@@ -232,6 +234,10 @@ impl CliArgs {
                 "--rate-sigma-floor" => {
                     i += 1;
                     rate_sigma_floor = parse_positive(args.get(i), "--rate-sigma-floor");
+                }
+                "--rate-sigma-floor-ratio" => {
+                    i += 1;
+                    rate_sigma_floor_ratio = parse_positive(args.get(i), "--rate-sigma-floor-ratio");
                 }
                 "--distributed-dominance" => {
                     i += 1;
@@ -435,7 +441,7 @@ impl CliArgs {
         };
 
         Self { interface, egress_interface, victim_targets, exclude_ips, k, alpha, socket, no_filter, log_file, train_csv, train_label, baseline_path, baseline_ttl_secs, capture_mode, bpf_object,
-               entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, distributed_dominance,
+               entropy_sigma_floor, entropy_sigma_ceiling, rate_sigma_floor, rate_sigma_floor_ratio, distributed_dominance,
                entropy_min_packets, max_sources, max_flows, max_protected_hosts,
                emergency_volume_sigma, entropy_k_fallback, rate_sigma_ceiling_ratio, rate_sigma_ceiling_floor,
                outlier_sigma, rate_mean_cap, cooldown_windows, cooldown_k_factor, peacetime_ewma_weight,
@@ -496,6 +502,9 @@ fn print_usage(bin: &str) {
     eprintln!("  --entropy-sigma-ceiling <F>  Largest, so the boundary cannot drift so");
     eprintln!("                               wide nothing trips it [default: {}]", state::DEFAULT_ENTROPY_SIGMA_CEILING);
     eprintln!("  --rate-sigma-floor <F>       Same floor for the rate, in pps [default: {}]", state::DEFAULT_RATE_SIGMA_FLOOR);
+    eprintln!("  --rate-sigma-floor-ratio <F>  Rate sigma floor as a fraction of the mean,");
+    eprintln!("                                the floor above is the absolute backstop");
+    eprintln!("                                [default: {}]", state::DEFAULT_RATE_SIGMA_FLOOR_RATIO);
     eprintln!("  --distributed-dominance <F>  Below this share from one source, traffic is");
     eprintln!("                               too spread out to be a flood [default: {}]", state::DEFAULT_DISTRIBUTED_DOMINANCE);
     eprintln!("  --entropy-min-packets <N>    Packets a window needs before its entropy may");
@@ -710,6 +719,7 @@ fn main() {
         entropy_sigma_floor:   args.entropy_sigma_floor,
         entropy_sigma_ceiling: args.entropy_sigma_ceiling,
         rate_sigma_floor:      args.rate_sigma_floor,
+        rate_sigma_floor_ratio: args.rate_sigma_floor_ratio,
         distributed_dominance: args.distributed_dominance,
         entropy_min_packets:   args.entropy_min_packets,
         // One flag sizes both backends, so the two stay comparable.
