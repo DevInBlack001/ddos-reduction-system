@@ -233,6 +233,45 @@ worked, rather than assuming it did because the order was given. What
 fraction of a window's traffic never made it through is a direct measurement
 of that.
 
+## Playbooks: Scripting a Response Over Time
+
+Everything above describes one automatic pass that runs on every window,
+for every protected server, whether or not anyone has configured
+anything extra. A playbook is an optional second layer an operator can
+add on top of that, and it never changes or interrupts the automatic
+pass underneath it. Nothing about writing a playbook makes the system
+enforce less, or differently, than it already does; a playbook only adds
+things that can happen *in addition*.
+
+The reason to want one is that the automatic pass decides what to do
+about one window at a time. It does not remember to check back later, it
+does not escalate on its own if the same problem keeps happening, and it
+only sends the one built-in alert when a window is first judged an
+attack. A playbook is how an operator scripts a response that unfolds
+*over time* instead: "if this keeps happening for a while, take it
+further," or "notify me right away, and then do something stronger a
+minute later if it's still going on."
+
+A playbook is written as two parts. The first part, the trigger, says
+when it should start: because a server's traffic was blocked or
+throttled, because the same server has looked like it's under attack for
+several windows in a row rather than just once, or because several
+protected servers all look like they're under attack in the same window,
+suggesting something bigger than one target. The second part, the
+stages, is an ordered list of things to do once the trigger fires, each
+one happening after however long a delay the operator chose: take
+stronger action against whoever is responsible, send an extra
+notification, or generate an incident report immediately instead of
+waiting for someone to ask for one.
+
+None of this introduces any new way of taking action. A playbook's
+"take stronger action" stage reaches for the exact same blocking and
+throttling described above; it just lets an operator decide it should
+happen automatically, later, instead of only right when a window is
+first judged an attack. See [Playbooks](playbooks.md) for the full
+reference: every trigger and stage in detail, ready-to-use examples, and
+how to build one from the dashboard.
+
 ## The Two Verdicts: What Kind of Traffic Is This, and Have We Seen Anything Like It Before
 
 Once a window's measurements are gathered, two independent programs each
