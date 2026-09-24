@@ -133,6 +133,47 @@ class SetPasswordPayload(BaseModel):
         return _check_password_strength(v)
 
 
+_PLAYBOOK_SCOPE_TYPES = {"host", "subnet", "all"}
+
+
+class PlaybookPayload(BaseModel):
+    """A playbook's editable fields. `definition` is validated by
+    playbooks.validate_definition() at the route, not here: that
+    validator is the one gate both the form builder and the raw
+    JSON/YAML editor go through, duplicating its rules into a second
+    pydantic schema would let the two drift apart."""
+    name: str
+    target_scope_type: str
+    target_scope_value: Optional[str] = None
+    enabled: bool = True
+    definition: dict
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v):
+        if not (1 <= len(v) <= 200):
+            raise ValueError("Playbook name must be 1-200 characters.")
+        return v
+
+    @field_validator("target_scope_type")
+    @classmethod
+    def _v_scope_type(cls, v):
+        if v not in _PLAYBOOK_SCOPE_TYPES:
+            raise ValueError(f"target_scope_type must be one of {sorted(_PLAYBOOK_SCOPE_TYPES)}.")
+        return v
+
+    @field_validator("target_scope_value")
+    @classmethod
+    def _v_scope_value(cls, v):
+        # Full cross-field check (host needs a value, subnet needs a
+        # valid CIDR) happens in the route, once target_scope_type is
+        # known; pydantic v2 field_validators run per field, not with
+        # access to sibling fields already validated, by default.
+        if v is not None and len(v) > 64:
+            raise ValueError("target_scope_value is too long.")
+        return v
+
+
 class AlertsConfigPayload(BaseModel):
     discord_enabled: Optional[bool] = None
     discord_webhook_url: Optional[str] = None

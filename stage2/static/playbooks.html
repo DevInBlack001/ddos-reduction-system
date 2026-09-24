@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        (function () {
+            var t = localStorage.getItem('flod-theme');
+            if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <title>FLOD System - Playbooks</title>
+    <link rel="stylesheet" href="/static/base.css">
+    <style>
+        .action-cell { text-align: right; }
+        .action-cell .btn { margin-left: 6px; }
+        .editor-panel { display: none; margin-top: 16px; }
+        .editor-panel.open { display: block; }
+        .row-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+        .row-item {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            background: var(--bg-surface-alt);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+        }
+        .row-item .form-input { width: auto; flex: 1 1 140px; min-width: 100px; }
+        .row-item .btn-sm-remove {
+            padding: 4px 9px;
+            font-size: 0.72rem;
+        }
+        .surface-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+        .surface-tab {
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-color);
+            background: var(--bg-surface);
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+        .surface-tab.active {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .surface-view { display: none; }
+        .surface-view.active { display: block; }
+        #defTextarea {
+            width: 100%;
+            min-height: 260px;
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            background: var(--bg-code);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 10px;
+            resize: vertical;
+        }
+        .text-format-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+        .validate-msg { font-size: 0.8rem; margin-top: 8px; }
+        .validate-msg.ok { color: var(--status-success); }
+        .validate-msg.err { color: var(--status-danger); white-space: pre-wrap; }
+        .events-list { font-size: 0.8rem; margin-top: 8px; padding-left: 0; list-style: none; }
+        .events-list li { padding: 4px 0; border-bottom: 1px dashed var(--border-color); }
+        .events-list li:last-child { border-bottom: none; }
+        .scope-value-row { display: none; }
+        .scope-value-row.shown { display: block; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="logo-text">FLOD System</div>
+        </div>
+        <ul class="nav-menu">
+            <li class="nav-item"><a href="/"><span>■</span> Dashboard</a></li>
+            <li class="nav-item"><a href="/active-ips.html"><span>■</span> Active Flows</a></li>
+            <li class="nav-item"><a href="/network.html"><span>■</span> Network Map</a></li>
+            <li class="nav-item"><a href="/traffic.html"><span>■</span> Traffic</a></li>
+            <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
+            <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
+            <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item active"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
+            <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
+            <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
+            <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
+            <li class="nav-item"><a href="/ir.html"><span>■</span> Incident Response</a></li>
+            <li class="nav-item"><a href="/auto-label.html"><span>■</span> Auto Label <span class="nav-badge" id="autoLabelBadge"></span></a></li>
+        </ul>
+        <div class="sidebar-footer">
+            FLOD System Console <span id="flodVersion"></span>
+        </div>
+    </div>
+
+    <div class="main-panel">
+        <div class="top-bar">
+            <div class="top-bar-title">
+                <h1>Playbooks</h1>
+            </div>
+            <div class="system-status">
+                <button id="themeToggle" class="theme-toggle"></button>
+            </div>
+        </div>
+
+        <div class="content-area">
+            <div class="info-note" style="font-size: 0.78rem; color: var(--text-secondary); background: var(--bg-surface-alt); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 20px;">
+                The four enforcement tiers keep running automatically on every window exactly as they do without any
+                playbook configured. A playbook is a separate layer on top that starts when its trigger condition
+                fires and runs a linear sequence of stages over time (escalate, notify, report); it never replaces
+                or gates the tiers.
+            </div>
+
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Configured Playbooks</div>
+                    <button class="btn" onclick="openEditor(null)">New Playbook</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Scope</th>
+                            <th>Status</th>
+                            <th class="action-cell">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="playbookTableBody">
+                        <tr><td colspan="4" class="table-empty">Loading playbooks...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="hud-panel editor-panel" id="editorPanel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title" id="editorTitle">New Playbook</div>
+                </div>
+
+                <div class="field">
+                    <label for="pbName">Name</label>
+                    <input type="text" id="pbName" class="form-input" maxlength="200" placeholder="e.g. Escalate sustained attacks">
+                </div>
+
+                <div class="field">
+                    <label for="pbScopeType">Applies to</label>
+                    <select id="pbScopeType" class="form-input" onchange="onScopeTypeChange()">
+                        <option value="host">A single host</option>
+                        <option value="subnet">A subnet (CIDR)</option>
+                        <option value="all">Every protected host</option>
+                    </select>
+                </div>
+                <div class="field scope-value-row" id="scopeValueRow">
+                    <label for="pbScopeValue" id="scopeValueLabel">Host address</label>
+                    <input type="text" id="pbScopeValue" class="form-input" placeholder="192.0.2.10">
+                </div>
+
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; margin-bottom: 16px;">
+                    <input type="checkbox" id="pbEnabled" checked style="width: 16px; height: 16px;">
+                    Enabled
+                </label>
+
+                <div class="surface-tabs">
+                    <button type="button" class="surface-tab active" id="tabForm" onclick="switchSurface('form')">Form Builder</button>
+                    <button type="button" class="surface-tab" id="tabText" onclick="switchSurface('text')">JSON / YAML</button>
+                </div>
+
+                <div class="surface-view active" id="viewForm">
+                    <div class="field">
+                        <label for="pbTriggerMode">Trigger mode</label>
+                        <select id="pbTriggerMode" class="form-input">
+                            <option value="any">Any trigger fires it</option>
+                            <option value="all">All triggers must fire</option>
+                        </select>
+                    </div>
+
+                    <div class="hud-panel-title" style="font-size: 0.85rem; margin-bottom: 8px;">Triggers</div>
+                    <div class="row-list" id="triggerList"></div>
+                    <button type="button" class="btn" onclick="addTriggerRow()">Add trigger</button>
+
+                    <div class="hud-panel-title" style="font-size: 0.85rem; margin: 20px 0 8px;">Stages, in order</div>
+                    <div class="row-list" id="stageList"></div>
+                    <button type="button" class="btn" onclick="addStageRow()">Add stage</button>
+                </div>
+
+                <div class="surface-view" id="viewText">
+                    <div class="text-format-row">
+                        <label style="font-size: 0.8rem; color: var(--text-secondary);">Format</label>
+                        <select id="textFormat" class="form-input" style="width: auto;">
+                            <option value="json">JSON</option>
+                            <option value="yaml">YAML</option>
+                        </select>
+                        <button type="button" class="btn" onclick="validateTextSurface()">Validate</button>
+                    </div>
+                    <textarea id="defTextarea" spellcheck="false"></textarea>
+                    <div id="textValidateMsg" class="validate-msg"></div>
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn" onclick="savePlaybook()">Save</button>
+                    <button class="btn btn-ghost" onclick="closeEditor()">Cancel</button>
+                </div>
+                <div id="saveMsg" class="validate-msg"></div>
+            </div>
+
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Run History</div>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Playbook</th>
+                            <th>Host</th>
+                            <th>Source</th>
+                            <th>Status</th>
+                            <th>Started</th>
+                            <th class="action-cell">Events</th>
+                        </tr>
+                    </thead>
+                    <tbody id="runTableBody">
+                        <tr><td colspan="6" class="table-empty">Loading run history...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="hud-panel">
+                <div class="hud-panel-header">
+                    <div class="hud-panel-title">Generated Reports</div>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px;">
+                    Written by a playbook's <code>report</code> stage, in addition to the reports you can already
+                    pull by hand from <a href="/ir.html">Incident Response</a>.
+                </p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Size</th>
+                            <th>Generated</th>
+                            <th class="action-cell">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reportTableBody">
+                        <tr><td colspan="4" class="table-empty">Loading reports...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/theme.js"></script>
+    <script>
+        var TRIGGER_TYPES = ['tier_reached', 'persistence', 'scale'];
+        var STAGE_TYPES = ['escalate', 'notify', 'report'];
+        var editingId = null;
+        var currentSurface = 'form';
+
+        // --- Trigger/stage row builders -------------------------------------------------
+
+        function triggerRowHtml(t) {
+            t = t || { type: 'tier_reached', min_tier: 1 };
+            var extra = '';
+            if (t.type === 'tier_reached') {
+                extra = '<input type="number" class="form-input trig-field" data-field="min_tier" min="1" max="4" value="' + (t.min_tier || 1) + '" placeholder="Minimum tier">';
+            } else if (t.type === 'persistence') {
+                extra = '<input type="number" class="form-input trig-field" data-field="consecutive_windows" min="1" value="' + (t.consecutive_windows || 1) + '" placeholder="Consecutive windows">';
+            } else if (t.type === 'scale') {
+                extra = '<input type="number" class="form-input trig-field" data-field="min_hosts_simultaneously" min="1" value="' + (t.min_hosts_simultaneously || 1) + '" placeholder="Hosts under attack">';
+            }
+            return '<div class="row-item">' +
+                '<select class="form-input trig-type" onchange="onTriggerTypeChange(this)">' +
+                TRIGGER_TYPES.map(function (ty) {
+                    return '<option value="' + ty + '"' + (ty === t.type ? ' selected' : '') + '>' + ty + '</option>';
+                }).join('') +
+                '</select>' +
+                '<span class="trig-extra">' + extra + '</span>' +
+                '<button type="button" class="btn btn-danger btn-sm-remove" onclick="this.closest(\'.row-item\').remove()">Remove</button>' +
+                '</div>';
+        }
+
+        function onTriggerTypeChange(select) {
+            var row = select.closest('.row-item');
+            var type = select.value;
+            var extraHtml = '';
+            if (type === 'tier_reached') {
+                extraHtml = '<input type="number" class="form-input trig-field" data-field="min_tier" min="1" max="4" value="1" placeholder="Minimum tier">';
+            } else if (type === 'persistence') {
+                extraHtml = '<input type="number" class="form-input trig-field" data-field="consecutive_windows" min="1" value="1" placeholder="Consecutive windows">';
+            } else if (type === 'scale') {
+                extraHtml = '<input type="number" class="form-input trig-field" data-field="min_hosts_simultaneously" min="1" value="1" placeholder="Hosts under attack">';
+            }
+            row.querySelector('.trig-extra').innerHTML = extraHtml;
+        }
+
+        function addTriggerRow(t) {
+            document.getElementById('triggerList').insertAdjacentHTML('beforeend', triggerRowHtml(t));
+        }
+
+        function stageRowHtml(s) {
+            s = s || { type: 'notify', delay_seconds: 0 };
+            var extra = '';
+            if (s.type === 'escalate') {
+                extra = '<input type="number" class="form-input stage-field" data-field="target_tier" min="1" max="4" value="' + (s.target_tier || 1) + '" placeholder="Target tier (1-4)">';
+            } else if (s.type === 'notify') {
+                extra = '<input type="text" class="form-input stage-field" data-field="channel" value="' + FlodSafe.escapeHtml(s.channel || 'all') + '" placeholder="Channel (all, discord, email)">';
+            }
+            return '<div class="row-item">' +
+                '<select class="form-input stage-type" onchange="onStageTypeChange(this)">' +
+                STAGE_TYPES.map(function (ty) {
+                    return '<option value="' + ty + '"' + (ty === s.type ? ' selected' : '') + '>' + ty + '</option>';
+                }).join('') +
+                '</select>' +
+                '<input type="number" class="form-input stage-delay" min="0" value="' + (s.delay_seconds || 0) + '" placeholder="Delay (seconds)">' +
+                '<span class="stage-extra">' + extra + '</span>' +
+                '<button type="button" class="btn" onclick="moveStageRow(this, -1)">&uarr;</button>' +
+                '<button type="button" class="btn" onclick="moveStageRow(this, 1)">&darr;</button>' +
+                '<button type="button" class="btn btn-danger btn-sm-remove" onclick="this.closest(\'.row-item\').remove()">Remove</button>' +
+                '</div>';
+        }
+
+        function onStageTypeChange(select) {
+            var row = select.closest('.row-item');
+            var type = select.value;
+            var extraHtml = '';
+            if (type === 'escalate') {
+                extraHtml = '<input type="number" class="form-input stage-field" data-field="target_tier" min="1" max="4" value="1" placeholder="Target tier (1-4)">';
+            } else if (type === 'notify') {
+                extraHtml = '<input type="text" class="form-input stage-field" data-field="channel" value="all" placeholder="Channel (all, discord, email)">';
+            }
+            row.querySelector('.stage-extra').innerHTML = extraHtml;
+        }
+
+        function addStageRow(s) {
+            document.getElementById('stageList').insertAdjacentHTML('beforeend', stageRowHtml(s));
+        }
+
+        function moveStageRow(btn, direction) {
+            var row = btn.closest('.row-item');
+            var list = row.parentElement;
+            if (direction < 0 && row.previousElementSibling) {
+                list.insertBefore(row, row.previousElementSibling);
+            } else if (direction > 0 && row.nextElementSibling) {
+                list.insertBefore(row.nextElementSibling, row);
+            }
+        }
+
+        // --- Form <-> definition object ---------------------------------------------
+
+        function formToDefinition() {
+            var triggers = Array.prototype.map.call(document.querySelectorAll('#triggerList .row-item'), function (row) {
+                var type = row.querySelector('.trig-type').value;
+                var t = { type: type };
+                var field = row.querySelector('.trig-field');
+                if (field) t[field.dataset.field] = parseInt(field.value, 10) || 1;
+                return t;
+            });
+            var stages = Array.prototype.map.call(document.querySelectorAll('#stageList .row-item'), function (row) {
+                var type = row.querySelector('.stage-type').value;
+                var delay = parseInt(row.querySelector('.stage-delay').value, 10) || 0;
+                var s = { type: type, delay_seconds: delay };
+                var field = row.querySelector('.stage-field');
+                if (field) {
+                    if (field.dataset.field === 'target_tier') {
+                        s.target_tier = parseInt(field.value, 10) || 1;
+                    } else {
+                        s[field.dataset.field] = field.value;
+                    }
+                }
+                return s;
+            });
+            return {
+                triggers: triggers,
+                trigger_mode: document.getElementById('pbTriggerMode').value,
+                stages: stages,
+            };
+        }
+
+        function definitionToForm(def) {
+            document.getElementById('pbTriggerMode').value = def.trigger_mode || 'any';
+            document.getElementById('triggerList').innerHTML = '';
+            (def.triggers || []).forEach(function (t) { addTriggerRow(t); });
+            document.getElementById('stageList').innerHTML = '';
+            (def.stages || []).forEach(function (s) { addStageRow(s); });
+        }
+
+        // --- Surface switching (form <-> text), per the design spec: re-renders from
+        // whichever was last saved, no live two-way sync while typing. -----------------
+
+        function switchSurface(target) {
+            if (target === currentSurface) return;
+            if (target === 'text') {
+                var def = formToDefinition();
+                var fmt = document.getElementById('textFormat').value;
+                document.getElementById('defTextarea').value = fmt === 'yaml'
+                    ? jsonToSimpleYaml(def)
+                    : JSON.stringify(def, null, 2);
+            } else {
+                var parsed = readTextSurfaceOrNull();
+                if (parsed) definitionToForm(parsed);
+            }
+            currentSurface = target;
+            document.getElementById('tabForm').classList.toggle('active', target === 'form');
+            document.getElementById('tabText').classList.toggle('active', target === 'text');
+            document.getElementById('viewForm').classList.toggle('active', target === 'form');
+            document.getElementById('viewText').classList.toggle('active', target === 'text');
+            document.getElementById('textValidateMsg').textContent = '';
+        }
+
+        // A minimal JSON-compatible YAML rendering (block style, only what this
+        // editor itself produces: objects, arrays, strings and numbers), not a
+        // general-purpose YAML writer. The parse side always goes through the
+        // server's own yaml.safe_load, so this only has to be good enough to
+        // round-trip what this page generates.
+        function jsonToSimpleYaml(obj, indent) {
+            indent = indent || 0;
+            var pad = '  '.repeat(indent);
+            if (Array.isArray(obj)) {
+                if (!obj.length) return pad + '[]\n';
+                return obj.map(function (item) {
+                    if (item && typeof item === 'object') {
+                        var inner = jsonToSimpleYaml(item, indent + 1).replace(/^ {2}/, '');
+                        return pad + '- ' + inner.trimStart();
+                    }
+                    return pad + '- ' + JSON.stringify(item) + '\n';
+                }).join('');
+            }
+            if (obj && typeof obj === 'object') {
+                return Object.keys(obj).map(function (k) {
+                    var v = obj[k];
+                    if (v && typeof v === 'object') {
+                        return pad + k + ':\n' + jsonToSimpleYaml(v, indent + 1);
+                    }
+                    return pad + k + ': ' + JSON.stringify(v) + '\n';
+                }).join('');
+            }
+            return pad + JSON.stringify(obj) + '\n';
+        }
+
+        function readTextSurfaceOrNull() {
+            var text = document.getElementById('defTextarea').value;
+            var fmt = document.getElementById('textFormat').value;
+            if (fmt === 'json') {
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    document.getElementById('textValidateMsg').textContent = 'Invalid JSON: ' + e.message;
+                    document.getElementById('textValidateMsg').className = 'validate-msg err';
+                    return null;
+                }
+            }
+            return null; // YAML needs the server round trip, see validateTextSurface()
+        }
+
+        async function validateTextSurface() {
+            var msgEl = document.getElementById('textValidateMsg');
+            var fmt = document.getElementById('textFormat').value;
+            var text = document.getElementById('defTextarea').value;
+            var definition;
+            if (fmt === 'yaml') {
+                try {
+                    var res = await fetch('/api/playbooks/parse-yaml', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ yaml: text })
+                    });
+                    var data = await res.json();
+                    if (!res.ok) {
+                        msgEl.textContent = data.detail || 'Invalid YAML.';
+                        msgEl.className = 'validate-msg err';
+                        return null;
+                    }
+                    definition = data.definition;
+                } catch (e) {
+                    msgEl.textContent = 'Request failed: ' + e;
+                    msgEl.className = 'validate-msg err';
+                    return null;
+                }
+            } else {
+                try {
+                    definition = JSON.parse(text);
+                } catch (e) {
+                    msgEl.textContent = 'Invalid JSON: ' + e.message;
+                    msgEl.className = 'validate-msg err';
+                    return null;
+                }
+            }
+            try {
+                var vres = await fetch('/api/playbooks/validate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(definition)
+                });
+                var vdata = await vres.json();
+                if (!vdata.valid) {
+                    msgEl.textContent = vdata.error;
+                    msgEl.className = 'validate-msg err';
+                    return null;
+                }
+                msgEl.textContent = 'Valid.';
+                msgEl.className = 'validate-msg ok';
+                return definition;
+            } catch (e) {
+                msgEl.textContent = 'Request failed: ' + e;
+                msgEl.className = 'validate-msg err';
+                return null;
+            }
+        }
+
+        // --- Editor open/close/save ---------------------------------------------------
+
+        function onScopeTypeChange() {
+            var type = document.getElementById('pbScopeType').value;
+            var row = document.getElementById('scopeValueRow');
+            var label = document.getElementById('scopeValueLabel');
+            if (type === 'all') {
+                row.classList.remove('shown');
+            } else {
+                row.classList.add('shown');
+                label.textContent = type === 'subnet' ? 'Subnet (CIDR)' : 'Host address';
+                document.getElementById('pbScopeValue').placeholder = type === 'subnet' ? '192.0.2.0/24' : '192.0.2.10';
+            }
+        }
+
+        function openEditor(playbook) {
+            editingId = playbook ? playbook.id : null;
+            document.getElementById('editorTitle').textContent = playbook ? 'Edit Playbook' : 'New Playbook';
+            document.getElementById('pbName').value = playbook ? playbook.name : '';
+            document.getElementById('pbScopeType').value = playbook ? playbook.target_scope_type : 'host';
+            document.getElementById('pbScopeValue').value = (playbook && playbook.target_scope_value) || '';
+            document.getElementById('pbEnabled').checked = playbook ? playbook.enabled : true;
+            onScopeTypeChange();
+
+            var def = (playbook && playbook.definition) || {
+                triggers: [{ type: 'tier_reached', min_tier: 1 }],
+                trigger_mode: 'any',
+                stages: [{ type: 'notify', delay_seconds: 0, channel: 'all' }],
+            };
+            definitionToForm(def);
+            currentSurface = 'form';
+            document.getElementById('tabForm').classList.add('active');
+            document.getElementById('tabText').classList.remove('active');
+            document.getElementById('viewForm').classList.add('active');
+            document.getElementById('viewText').classList.remove('active');
+            document.getElementById('saveMsg').textContent = '';
+            document.getElementById('textValidateMsg').textContent = '';
+
+            document.getElementById('editorPanel').classList.add('open');
+            document.getElementById('editorPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function closeEditor() {
+            document.getElementById('editorPanel').classList.remove('open');
+            editingId = null;
+        }
+
+        async function savePlaybook() {
+            var msgEl = document.getElementById('saveMsg');
+            var definition;
+            if (currentSurface === 'text') {
+                definition = await validateTextSurface();
+                if (!definition) return;
+            } else {
+                definition = formToDefinition();
+            }
+
+            var scopeType = document.getElementById('pbScopeType').value;
+            var payload = {
+                name: document.getElementById('pbName').value,
+                target_scope_type: scopeType,
+                target_scope_value: scopeType === 'all' ? null : document.getElementById('pbScopeValue').value,
+                enabled: document.getElementById('pbEnabled').checked,
+                definition: definition,
+            };
+
+            try {
+                var url = editingId ? ('/api/playbooks/' + editingId) : '/api/playbooks';
+                var method = editingId ? 'PUT' : 'POST';
+                var res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                var data = await res.json();
+                if (!res.ok) {
+                    msgEl.textContent = data.detail || 'Failed to save.';
+                    msgEl.className = 'validate-msg err';
+                    return;
+                }
+                closeEditor();
+                loadPlaybooks();
+            } catch (e) {
+                msgEl.textContent = 'Request failed: ' + e;
+                msgEl.className = 'validate-msg err';
+            }
+        }
+
+        // --- List, toggle, delete -------------------------------------------------------
+
+        async function loadPlaybooks() {
+            var tbody = document.getElementById('playbookTableBody');
+            try {
+                var res = await fetch('/api/playbooks');
+                if (res.status === 401) { window.location.href = '/static/login.html'; return; }
+                var data = await res.json();
+                if (!data.playbooks.length) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No playbooks configured yet.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.playbooks.map(function (p) {
+                    var scope = p.target_scope_type === 'all' ? 'Every protected host'
+                        : (p.target_scope_type === 'subnet' ? 'Subnet ' : 'Host ') + FlodSafe.escapeHtml(p.target_scope_value || '');
+                    var statusBadge = p.enabled ? '<span class="badge badge-normal">Enabled</span>' : '<span class="badge badge-neutral">Disabled</span>';
+                    return '<tr>' +
+                        '<td style="font-weight: 600;">' + FlodSafe.escapeHtml(p.name) + '</td>' +
+                        '<td>' + scope + '</td>' +
+                        '<td>' + statusBadge + '</td>' +
+                        '<td class="action-cell">' +
+                        '<button class="btn" onclick="editPlaybookById(' + p.id + ')">Edit</button>' +
+                        '<button class="btn" onclick="togglePlaybook(' + p.id + ', ' + (!p.enabled) + ')">' + (p.enabled ? 'Disable' : 'Enable') + '</button>' +
+                        '<button class="btn btn-danger" onclick="deletePlaybook(' + p.id + ', \'' + FlodSafe.jsAttr(p.name) + '\')">Delete</button>' +
+                        '</td></tr>';
+                }).join('');
+                window._loadedPlaybooks = data.playbooks;
+            } catch (err) {
+                console.error('Failed to load playbooks:', err);
+            }
+        }
+
+        function editPlaybookById(id) {
+            var playbook = (window._loadedPlaybooks || []).find(function (p) { return p.id === id; });
+            if (playbook) openEditor(playbook);
+        }
+
+        async function togglePlaybook(id, enabled) {
+            try {
+                await fetch('/api/playbooks/' + id + '/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: enabled })
+                });
+                loadPlaybooks();
+            } catch (err) {
+                console.error('Failed to toggle playbook:', err);
+            }
+        }
+
+        async function deletePlaybook(id, name) {
+            if (!confirm('Delete playbook "' + name + '"? This also removes its run history. This cannot be undone.')) return;
+            try {
+                await fetch('/api/playbooks/' + id, { method: 'DELETE' });
+                loadPlaybooks();
+            } catch (err) {
+                console.error('Failed to delete playbook:', err);
+            }
+        }
+
+        // --- Run history -----------------------------------------------------------------
+
+        function statusBadgeForRun(status) {
+            if (status === 'running') return '<span class="badge badge-flash">Running</span>';
+            if (status === 'completed') return '<span class="badge badge-normal">Completed</span>';
+            return '<span class="badge badge-neutral">' + FlodSafe.escapeHtml(status) + '</span>';
+        }
+
+        async function loadRuns() {
+            var tbody = document.getElementById('runTableBody');
+            try {
+                var res = await fetch('/api/playbooks/runs');
+                if (res.status === 401) { window.location.href = '/static/login.html'; return; }
+                var data = await res.json();
+                if (!data.runs.length) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="table-empty">No playbook runs yet.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.runs.map(function (r) {
+                    var started = new Date(r.started_at * 1000).toLocaleString();
+                    return '<tr>' +
+                        '<td>' + FlodSafe.escapeHtml(r.playbook_name) + '</td>' +
+                        '<td style="font-family: var(--font-mono);">' + FlodSafe.escapeHtml(r.target_host) + '</td>' +
+                        '<td style="font-family: var(--font-mono);">' + FlodSafe.escapeHtml(r.target_source || '—') + '</td>' +
+                        '<td>' + statusBadgeForRun(r.status) + '</td>' +
+                        '<td>' + FlodSafe.escapeHtml(started) + '</td>' +
+                        '<td class="action-cell"><button class="btn" onclick="toggleEvents(' + r.id + ', this)">View</button></td>' +
+                        '</tr><tr class="events-row" id="events-row-' + r.id + '" style="display:none;"><td colspan="6"><ul class="events-list" id="events-' + r.id + '"></ul></td></tr>';
+                }).join('');
+            } catch (err) {
+                console.error('Failed to load run history:', err);
+            }
+        }
+
+        async function toggleEvents(runId, btn) {
+            var row = document.getElementById('events-row-' + runId);
+            var isHidden = row.style.display === 'none';
+            row.style.display = isHidden ? '' : 'none';
+            if (!isHidden) return;
+            var list = document.getElementById('events-' + runId);
+            list.innerHTML = '<li>Loading...</li>';
+            try {
+                var res = await fetch('/api/playbooks/runs/' + runId + '/events');
+                var data = await res.json();
+                if (!data.events.length) {
+                    list.innerHTML = '<li>No stages have fired yet.</li>';
+                    return;
+                }
+                list.innerHTML = data.events.map(function (e) {
+                    var when = new Date(e.fired_at * 1000).toLocaleTimeString();
+                    return '<li>' + when + ' &middot; <strong>' + FlodSafe.escapeHtml(e.stage_type) + '</strong> &middot; ' + FlodSafe.escapeHtml(e.detail || '') + '</li>';
+                }).join('');
+            } catch (err) {
+                list.innerHTML = '<li>Failed to load events.</li>';
+            }
+        }
+
+        // --- Generated reports -------------------------------------------------------------
+
+        function formatBytes(n) {
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            return (n / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        async function loadReports() {
+            var tbody = document.getElementById('reportTableBody');
+            try {
+                var res = await fetch('/api/playbooks/reports');
+                if (res.status === 401) { window.location.href = '/static/login.html'; return; }
+                var data = await res.json();
+                if (!data.reports.length) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No playbook-generated reports yet.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.reports.map(function (r) {
+                    var when = new Date(r.modified_at * 1000).toLocaleString();
+                    var href = '/api/playbooks/reports/' + encodeURIComponent(r.filename);
+                    return '<tr>' +
+                        '<td style="font-family: var(--font-mono);">' + FlodSafe.escapeHtml(r.filename) + '</td>' +
+                        '<td>' + formatBytes(r.size_bytes) + '</td>' +
+                        '<td>' + FlodSafe.escapeHtml(when) + '</td>' +
+                        '<td class="action-cell"><a class="btn" href="' + href + '">Download</a></td>' +
+                        '</tr>';
+                }).join('');
+            } catch (err) {
+                console.error('Failed to load reports:', err);
+            }
+        }
+
+        loadPlaybooks();
+        loadRuns();
+        loadReports();
+        setInterval(loadPlaybooks, 15000);
+        setInterval(loadRuns, 15000);
+    </script>
+</body>
+</html>

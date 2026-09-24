@@ -117,6 +117,20 @@ def build_context(hours: float) -> dict:
     )
     top_victims_rows = cur.fetchall()
 
+    # V10: per-source detail for this incident specifically, first/last
+    # seen and peak rate within the window, distinct from "Loudest
+    # sources" above (record count only, no time bounds). Ranked by peak
+    # rate rather than record count, since a source that only sent a
+    # handful of records at an extreme rate is more relevant to an
+    # operator than one that sent many records at a low rate.
+    cur.execute(
+        "SELECT src_ip, COUNT(*) AS n, MIN(timestamp), MAX(timestamp), MAX(rate) "
+        "FROM logs WHERE timestamp >= ? AND classification != 'Released' "
+        "GROUP BY src_ip ORDER BY MAX(rate) DESC LIMIT ?",
+        (since, MAX_LIST_ROWS),
+    )
+    source_detail_rows = cur.fetchall()
+
     cur.execute(
         "SELECT CAST(timestamp / ? AS INTEGER) AS bucket, classification, COUNT(*), MAX(rate), AVG(entropy) "
         "FROM logs WHERE timestamp >= ? AND classification != 'Released' "
@@ -248,6 +262,45 @@ def build_context(hours: float) -> dict:
         "w": f"{min(100.0, b['remaining_seconds'] / max_block_hold * 100):.2f}%",
     } for b in blocked_ips[:MAX_LIST_ROWS]]
 
+    # V10: per-source detail table. "currently" describes enforcement
+    # state at generation time, not during the window: a source blocked
+    # an hour ago and already released again reads as "none" here, same
+    # as a source never actioned at all, since neither is still being
+    # held right now.
+    blocked_ip_set = {b["ip"] for b in blocked_ips}
+    ratelimited_ip_set = {r["ip"] for r in ratelimited_ips}
+    source_detail = []
+    for ip, n, first_seen, last_seen, peak_rate in source_detail_rows:
+        if ip in blocked_ip_set:
+            status = "Blocked"
+        elif ip in ratelimited_ip_set:
+            status = "Rate limited"
+        else:
+            status = "None"
+        source_detail.append({
+            "ip": ip,
+            "n": _fmt_int(n),
+            "first_seen": _fmt_time(first_seen),
+            "last_seen": _fmt_time(last_seen),
+            "peak_rate": f"{peak_rate:.1f}" if peak_rate is not None else "n/a",
+            "status": status,
+            "unattributed": ip in ("0.0.0.0", "::", "Unknown"),
+        })
+
+    # V10: the playbook timeline, distinct from the window-by-window
+    # classification chart above. Empty when no playbook fired in this
+    # window, which is the common case today since no playbook has been
+    # authored on most deployments yet; an empty timeline is not an
+    # error, the section just says so.
+    timeline = [{
+        "when": _fmt_time(fired_at),
+        "stage_type": stage_type,
+        "target_host": target_host,
+        "target_source": target_source or "n/a",
+        "playbook_name": playbook_name,
+        "detail": detail or "",
+    } for fired_at, stage_type, target_source, detail, target_host, playbook_name in db.get_playbook_events_between(since, time.time())]
+
     peak_rate_overall = max((c["peak_rate"] for c in cols), default=0.0)
     peak_multiple = (peak_rate_overall / rate_threshold_val) if rate_threshold_val > 0 else 0.0
 
@@ -295,6 +348,8 @@ def build_context(hours: float) -> dict:
         "classes_mix": classes_mix,
         "victims": victims,
         "sources": sources,
+        "source_detail": source_detail,
+        "timeline": timeline,
         "unattributed_source": unattributed_source,
         "blocks": blocks,
         "blocked_ips_total": len(blocked_ips),

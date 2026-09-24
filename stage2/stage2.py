@@ -27,6 +27,7 @@ import reports
 import users
 import alerts
 import auto_label_review
+import playbooks_api
 from ipc_receiver import run_ipc_receiver
 import enforcement
 from enforcement import run_ipset_monitor
@@ -67,6 +68,7 @@ app.include_router(reports.router)
 app.include_router(users.router)
 app.include_router(alerts.router)
 app.include_router(auto_label_review.router)
+app.include_router(playbooks_api.router)
 
 # Main Application Launch Hook
 

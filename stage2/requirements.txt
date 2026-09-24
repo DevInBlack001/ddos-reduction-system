@@ -21,3 +21,4 @@ weasyprint==69.0
 python-multipart==0.0.32
 bcrypt==5.0.0
 requests==2.34.2
+PyYAML==6.0.3

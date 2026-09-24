@@ -107,6 +107,20 @@ _TEMPLATE_SOURCE = r"""
   .baseline-note { font-size: 8pt; line-height: 1.5; color: #9aa0ab; }
   .split-track { display: flex; height: 5pt; gap: 1px; }
   .empty-note { padding: 18pt; text-align: center; color: #6f7581; font-size: 9pt; }
+  /* V10: per-source detail table and the playbook timeline. */
+  .detail-table { display: grid; grid-template-columns: 78pt 1fr 42pt 42pt 46pt 56pt; gap: 4pt 8pt; font-size: 7.8pt; }
+  .detail-head { font-family: mono, monospace; font-size: 6.8pt; letter-spacing: 0.05em; color: #6f7581; text-transform: uppercase; padding-bottom: 3pt; border-bottom: 1px solid #33373f; }
+  .detail-row-ip { font-family: mono, monospace; }
+  .detail-row-status { text-align: right; }
+  .status-blocked { color: #c8493c; }
+  .status-ratelimited { color: #d99a4a; }
+  .status-none { color: #6f7581; }
+  .timeline-row { display: flex; gap: 10pt; padding: 5pt 0; border-bottom: 1px solid #2b2f37; font-size: 8pt; }
+  .timeline-row:last-child { border-bottom: none; }
+  .timeline-time { font-family: mono, monospace; color: #6f7581; flex: 0 0 34pt; }
+  .timeline-stage { flex: 0 0 56pt; font-weight: 600; text-transform: capitalize; }
+  .timeline-body { flex: 1; color: #9aa0ab; min-width: 0; }
+  .timeline-body .mono { color: #adb2bd; }
 </style>
 </head>
 <body>
@@ -299,6 +313,54 @@ _TEMPLATE_SOURCE = r"""
       <p class="desc">No addresses are currently blocked.</p>
       {% endfor %}
     </div>
+  </div>
+
+  <div class="block">
+    <h2>Per-source detail</h2>
+    <p class="desc">Every source in this window, not only the aggregate counts above: first and last seen, the
+      peak rate it reached, and whether it is currently held by enforcement. "Currently" describes enforcement
+      state at the moment this report was generated, not during the window itself; a source blocked earlier and
+      already released again reads as None here, the same as a source never actioned at all.</p>
+    {% if ctx.source_detail %}
+    <div class="detail-table">
+      <div class="detail-head">Source</div>
+      <div class="detail-head">&nbsp;</div>
+      <div class="detail-head">First seen</div>
+      <div class="detail-head">Last seen</div>
+      <div class="detail-head">Peak pps</div>
+      <div class="detail-head detail-row-status">Status</div>
+      {% for s in ctx.source_detail %}
+      <div class="detail-row-ip" style="{% if s.unattributed %}color:#d4664f;{% endif %}">{{ s.ip }}</div>
+      <div class="mono muted">{{ s.n }} record{{ "s" if s.n != "1" else "" }}</div>
+      <div class="mono">{{ s.first_seen }}</div>
+      <div class="mono">{{ s.last_seen }}</div>
+      <div class="mono">{{ s.peak_rate }}</div>
+      <div class="detail-row-status {% if s.status == 'Blocked' %}status-blocked{% elif s.status == 'Rate limited' %}status-ratelimited{% else %}status-none{% endif %}">{{ s.status }}</div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="desc">No source addresses recorded in this window.</p>
+    {% endif %}
+  </div>
+
+  <div class="block">
+    <h2>Playbook timeline</h2>
+    <p class="desc">Which playbook stage fired when and against which source or host, distinct from the
+      window-by-window classification chart above.</p>
+    {% if ctx.timeline %}
+    {% for e in ctx.timeline %}
+    <div class="timeline-row">
+      <div class="timeline-time">{{ e.when }}</div>
+      <div class="timeline-stage">{{ e.stage_type }}</div>
+      <div class="timeline-body">
+        <strong>{{ e.playbook_name }}</strong> against <span class="mono">{{ e.target_host }}</span>{% if e.target_source != "n/a" %}, source <span class="mono">{{ e.target_source }}</span>{% endif %}.
+        {% if e.detail %}{{ e.detail }}{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="desc">No playbook stage fired in this window.</p>
+    {% endif %}
   </div>
 
   <div class="block">
