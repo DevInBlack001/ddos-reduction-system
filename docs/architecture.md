@@ -116,8 +116,9 @@ Both have been exercised on the same scenarios: ordinary traffic, a flash
 crowd, a flood, and the mixed cases. Measured on 2026-08-22 with independently
 learned baselines, their entropy figures agree to within about 1% and their
 ingress packet counts to within 6% over the comparable steady phase. One rate
-figure, on the busiest and most variable host, differs by more than that, which
-is tracked in [known-gaps.md](known-gaps.md).
+figure, on the busiest and most variable host, differed by more than that on
+that single run, most likely traffic variation between the two runs rather
+than a measurement gap between the backends.
 
 ### Map Sizing
 

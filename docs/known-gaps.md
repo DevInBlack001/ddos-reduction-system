@@ -24,22 +24,6 @@ produces. Nothing in the current feature set measures accumulation over
 more than one window or the completion state of a flow. It needs the V13
 features, not a configuration change.
 
-**One rate figure is unexplained but not concerning.** Measured on
-2026-08-22 comparing the two capture backends: the two quiet hosts agreed
-within 7%; the busiest differed by 18%. With packet counts agreeing within
-6% at the capture layer and entropy within 1%, that reads as traffic
-variation on the most variable host across runs 14 minutes apart, not a
-measurement difference. Pinning it needs a generator producing a
-repeatable load, run once per backend.
-
-Two traps when repeating this. The capture counters are not directly
-comparable: libpcap's `raw_captured` is cumulative per interface, while
-the kernel's `ingress` is per drain interval, so the first must be read as
-a final value and the second as a sum. And the comparison must be
-restricted to equivalent phases. Totalling a whole run makes the backends
-look 49% apart, which is entirely the flood phase differing in peak and
-duration between two runs of a generator that does not repeat exactly.
-
 **The training set and the deployed sigma floors are captured under
 different tuning.** The canonical training set has `sigma_h` near 0.05 to
 0.08 and `sigma_r` pinned at 50.0 in 57% of rows. A gateway running
