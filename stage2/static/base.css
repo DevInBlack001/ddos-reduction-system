@@ -1,6 +1,12 @@
 /* =============================================================================
    FLOD System Design System (base.css)
-   Professional SOC dashboard theme, light + dark mode via [data-theme]
+   Three selectable design families (V10): Operations Console, Security
+   Terminal, and Modern SaaS Security, each with a light and dark variant.
+   Selected via [data-design] on <html> (theme.js), combined with the
+   existing light/dark [data-theme] toggle. This block is Operations
+   Console, light variant, and doubles as the page default before
+   [data-design] is set (theme.js applies it after this file's initial
+   paint; see theme.js's own note on that gap).
    ============================================================================= */
 
 :root {
@@ -49,13 +55,14 @@
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
-/* V10, "Operations console" direction: dark graphite, cyan primary, amber
-   and red reserved strictly for the warning/critical states so an alert
-   colour never doubles as ordinary UI chrome. Applied here to the dark
-   theme's tokens only; the light theme above is unchanged, and which
-   theme is the page default is a separate decision, not made by this
-   pass. See docs/roadmap.md's V10 entry. */
-:root[data-theme="dark"] {
+/* Operations Console, dark variant: graphite, cyan primary, amber and red
+   reserved strictly for the warning/critical states so an alert colour
+   never doubles as ordinary UI chrome. Matches any dark theme with no
+   [data-design], or explicitly [data-design="operations"] below, which
+   is redundant with this selector but kept for clarity next to the other
+   two families' own explicit blocks. */
+:root[data-theme="dark"],
+:root[data-design="operations"][data-theme="dark"] {
     --bg-page: #0f1419;
     --bg-surface: #1a2129;
     --bg-surface-alt: #212a33;
@@ -89,6 +96,195 @@
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
     --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Security Terminal, light variant. There is no historical precedent for
+   a "light terminal", so this reads as a printed manifest instead: warm
+   paper background, dark ink text, the same monochrome-amber accent
+   family darkened for contrast on a light background. Sharp corners and
+   near-zero motion carry over from the dark variant, since those are the
+   family's defining trait, not a light/dark difference. */
+:root[data-design="terminal"] {
+    --bg-page: #f5f3ea;
+    --bg-surface: #ffffff;
+    --bg-surface-alt: #ece8da;
+    --bg-hover: #e3ded0;
+    --bg-code: #ece8da;
+
+    --border-color: #cfc9b8;
+    --border-strong: #b3ac97;
+
+    --accent: #a66a00;
+    --accent-hover: #8a5800;
+    --accent-soft: rgba(166, 106, 0, 0.12);
+
+    --text-primary: #1a1a16;
+    --text-secondary: #4a4a3f;
+    --text-tertiary: #736f5e;
+    --text-on-accent: #fffdf7;
+
+    --status-success: #1f7a3d;
+    --status-success-bg: rgba(31, 122, 61, 0.1);
+    --status-warning: #a66a00;
+    --status-warning-bg: rgba(166, 106, 0, 0.12);
+    --status-danger: #b83232;
+    --status-danger-bg: rgba(184, 50, 50, 0.12);
+    --status-info: #a66a00;
+    --status-info-bg: rgba(166, 106, 0, 0.12);
+    --status-victim: #6b4fa0;
+    --status-victim-bg: rgba(107, 79, 160, 0.12);
+    --status-anomaly: #6b4fa0;
+    --status-anomaly-bg: rgba(107, 79, 160, 0.12);
+
+    --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.1);
+
+    --radius-sm: 0px;
+    --radius: 2px;
+    --transition-speed: 0.05s;
+
+    --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Security Terminal, dark variant: near-black, monochrome amber phosphor,
+   monospace everywhere including labels, minimal motion, sharp corners.
+   Highest information density and lowest visual noise of the three
+   families, the tradeoff being the least approachable to a first-time
+   visitor. */
+:root[data-design="terminal"][data-theme="dark"] {
+    --bg-page: #0a0a0a;
+    --bg-surface: #141414;
+    --bg-surface-alt: #1a1a1a;
+    --bg-hover: #202020;
+    --bg-code: #000000;
+
+    --border-color: #2a2a2a;
+    --border-strong: #3d3d3d;
+
+    --accent: #ffb000;
+    --accent-hover: #ffc640;
+    --accent-soft: rgba(255, 176, 0, 0.14);
+
+    --text-primary: #d8d8d0;
+    --text-secondary: #9a9a90;
+    --text-tertiary: #6b6b62;
+    --text-on-accent: #0a0a0a;
+
+    --status-success: #33ff77;
+    --status-success-bg: rgba(51, 255, 119, 0.1);
+    --status-warning: #ffb000;
+    --status-warning-bg: rgba(255, 176, 0, 0.14);
+    --status-danger: #ff3b3b;
+    --status-danger-bg: rgba(255, 59, 59, 0.14);
+    --status-info: #ffb000;
+    --status-info-bg: rgba(255, 176, 0, 0.14);
+    --status-victim: #b088ff;
+    --status-victim-bg: rgba(176, 136, 255, 0.14);
+    --status-anomaly: #b088ff;
+    --status-anomaly-bg: rgba(176, 136, 255, 0.14);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.5);
+
+    --radius-sm: 0px;
+    --radius: 2px;
+    --transition-speed: 0.05s;
+
+    --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Modern SaaS Security, light variant: indigo/violet primary, generous
+   whitespace, soft shadows and larger radii. Most approachable to a
+   first-time visitor of the three, at the cost of the lowest information
+   density, a real tradeoff for a console meant to be scanned quickly
+   during an incident. */
+:root[data-design="saas"] {
+    --bg-page: #ffffff;
+    --bg-surface: #f7f7fa;
+    --bg-surface-alt: #efeff5;
+    --bg-hover: #e8e8f2;
+    --bg-code: #f2f2f8;
+
+    --border-color: #e2e2ec;
+    --border-strong: #cccce0;
+
+    --accent: #6d5ef8;
+    --accent-hover: #5a4ae0;
+    --accent-soft: rgba(109, 94, 248, 0.1);
+
+    --text-primary: #1a1a2e;
+    --text-secondary: #55556e;
+    --text-tertiary: #8888a0;
+    --text-on-accent: #ffffff;
+
+    --status-success: #30a46c;
+    --status-success-bg: rgba(48, 164, 108, 0.1);
+    --status-warning: #f5a623;
+    --status-warning-bg: rgba(245, 166, 35, 0.12);
+    --status-danger: #e5484d;
+    --status-danger-bg: rgba(229, 72, 77, 0.12);
+    --status-info: #6d5ef8;
+    --status-info-bg: rgba(109, 94, 248, 0.1);
+    --status-victim: #ab4aba;
+    --status-victim-bg: rgba(171, 74, 186, 0.1);
+    --status-anomaly: #ab4aba;
+    --status-anomaly-bg: rgba(171, 74, 186, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(26, 26, 46, 0.08);
+    --shadow-md: 0 4px 16px rgba(26, 26, 46, 0.1);
+
+    --radius-sm: 8px;
+    --radius: 12px;
+    --transition-speed: 0.25s;
+
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Modern SaaS Security, dark variant. */
+:root[data-design="saas"][data-theme="dark"] {
+    --bg-page: #0d0d12;
+    --bg-surface: #17171f;
+    --bg-surface-alt: #1e1e29;
+    --bg-hover: #262633;
+    --bg-code: #131319;
+
+    --border-color: #2b2b3a;
+    --border-strong: #3d3d50;
+
+    --accent: #8f7ffa;
+    --accent-hover: #a996fc;
+    --accent-soft: rgba(143, 127, 250, 0.16);
+
+    --text-primary: #e8e8f0;
+    --text-secondary: #a3a3b8;
+    --text-tertiary: #6f6f85;
+    --text-on-accent: #0d0d12;
+
+    --status-success: #4cc38a;
+    --status-success-bg: rgba(76, 195, 138, 0.14);
+    --status-warning: #f7b955;
+    --status-warning-bg: rgba(247, 185, 85, 0.14);
+    --status-danger: #f16a70;
+    --status-danger-bg: rgba(241, 106, 112, 0.16);
+    --status-info: #8f7ffa;
+    --status-info-bg: rgba(143, 127, 250, 0.16);
+    --status-victim: #c76ad6;
+    --status-victim-bg: rgba(199, 106, 214, 0.16);
+    --status-anomaly: #c76ad6;
+    --status-anomaly-bg: rgba(199, 106, 214, 0.16);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+    --radius-sm: 8px;
+    --radius: 12px;
+    --transition-speed: 0.25s;
+
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -324,6 +520,16 @@ body {
 .content-area {
     padding: 24px;
     flex-grow: 1;
+    animation: content-fade-in var(--transition-speed) ease-out;
+}
+
+/* V10 animation pass: classification/tier transitions, new incident/alert,
+   live chart/metric updates, and panel/page navigation. Every keyframe
+   below is disabled under prefers-reduced-motion, further down this
+   file, rather than each rule repeating that guard individually. */
+@keyframes content-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* Panels & Modules */
@@ -385,6 +591,21 @@ body {
     font-weight: 600;
     color: var(--text-primary);
     font-family: var(--font-mono);
+    transition: color var(--transition-speed) ease-out;
+}
+
+/* Applied briefly by JS (e.g. FlodTheme.pulse(el)) when a live-polled
+   number actually changes, not on every poll regardless of the value,
+   so it reads as "this changed" rather than a constant tic every
+   interval. Not wired into any page's polling loop yet; the class and
+   keyframe are the reusable primitive. */
+.stat-value.stat-pulse {
+    animation: stat-pulse 0.5s ease-out;
+}
+
+@keyframes stat-pulse {
+    0% { color: var(--accent); transform: scale(1.08); }
+    100% { color: var(--text-primary); transform: scale(1); }
 }
 
 .stat-meta {
@@ -523,6 +744,13 @@ tr:hover td {
     font-weight: 600;
     border-radius: 999px;
     border: 1px solid transparent;
+    /* A classification badge changing which of the four badge-* classes
+       it carries (Normal -> Flash Crowd -> DDoS, an enforcement tier
+       escalating) transitions colour smoothly instead of snapping,
+       automatically, with no JS beyond the class swap the page already
+       does. */
+    transition: background-color var(--transition-speed) ease-out,
+                color var(--transition-speed) ease-out;
 }
 
 .badge-normal {
@@ -543,6 +771,19 @@ tr:hover td {
 .badge-anomalous {
     color: var(--status-anomaly);
     background-color: var(--status-anomaly-bg);
+}
+
+/* Applied briefly by JS alongside the class swap above, for the moment a
+   badge's classification actually changes (not on every poll): a short
+   scale pop on top of the colour transition, the highest-signal moment
+   on the dashboard per the V10 design decision. */
+.badge.badge-pulse {
+    animation: badge-pulse 0.4s ease-out;
+}
+
+@keyframes badge-pulse {
+    0% { transform: scale(1.18); }
+    100% { transform: scale(1); }
 }
 
 /* A count badge on a nav item, e.g. auto-labeled rows awaiting review.
@@ -590,6 +831,21 @@ tr:hover td {
 @keyframes slideIn {
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
+}
+
+/* Every animation added in the V10 pass (content-fade-in, stat-pulse,
+   badge-pulse) plus the pre-existing toast slideIn, turned off in one
+   place rather than guarded individually at each rule. Colour and layout
+   transitions (badge, nav-item, stat-value) are left alone: they still
+   happen, just instantly, which is what prefers-reduced-motion asks for,
+   distinct from the state change itself never happening. */
+@media (prefers-reduced-motion: reduce) {
+    .content-area,
+    .stat-value.stat-pulse,
+    .badge.badge-pulse,
+    .toast {
+        animation: none;
+    }
 }
 
 /*
