@@ -209,12 +209,17 @@
     // markup. Remove once a real settings surface for this exists.
     function initDesignSwitcher() {
         var anchor = document.getElementById('themeToggle');
-        if (!anchor) return;
+        if (!anchor || !anchor.parentNode) return;
         var sel = document.createElement('select');
         sel.id = 'designSwitcher';
         sel.title = 'Design family (debug)';
-        sel.style.cssText = 'position:fixed;top:20px;right:70px;z-index:1000;' +
-            'background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);' +
+        // Inserted into the same flex row as the theme toggle and log out
+        // button, right before the toggle, instead of a fixed pixel
+        // position: a hardcoded position:fixed guess drifted under those
+        // real controls on pages where the status pills next to it are a
+        // different width, overlapping the toggle and even the log out
+        // button. Living in the row's own flow can't drift like that.
+        sel.style.cssText = 'background:var(--bg-surface-alt);color:var(--text-primary);border:none;' +
             'border-radius:var(--radius-sm);padding:6px 10px;font-family:var(--font-sans);font-size:0.78rem;';
         DESIGNS.forEach(function (name) {
             var opt = document.createElement('option');
@@ -228,7 +233,7 @@
         });
         sel.value = currentDesign();
         sel.addEventListener('change', function () { setDesign(sel.value); });
-        document.body.appendChild(sel);
+        anchor.parentNode.insertBefore(sel, anchor);
     }
 
     document.addEventListener('DOMContentLoaded', function () {

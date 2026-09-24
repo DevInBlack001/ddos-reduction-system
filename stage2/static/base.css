@@ -7,17 +7,30 @@
    Console, light variant, and doubles as the page default before
    [data-design] is set (theme.js applies it after this file's initial
    paint; see theme.js's own note on that gap).
+
+   Borderless by design, in all six family/theme combinations: every
+   --border-color and --border-strong token is transparent (kept as a
+   token, not removed from the rules that reference it, so box sizing
+   under box-sizing: border-box doesn't shift). Panel and control chrome
+   (--bg-surface, --bg-surface-alt, --bg-hover) is transparent the same
+   way; --bg-page (the page's own base fill) and --bg-code (anywhere
+   text needs a legible background, e.g. .code-chip and .legend) are the
+   two deliberate exceptions, per the project owner's own instruction
+   that text and diagrams keep their backgrounds. Colored status
+   backgrounds (--status-*-bg) are untouched for the same reason: they
+   carry meaning through color on the text/badge sitting in them, not
+   decorative chrome.
    ============================================================================= */
 
 :root {
     --bg-page: #f4f6f9;
-    --bg-surface: #ffffff;
-    --bg-surface-alt: #f0f2f6;
-    --bg-hover: #eef1f6;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #f0f2f6;
 
-    --border-color: #dde2ea;
-    --border-strong: #c6cedb;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
@@ -64,13 +77,13 @@
 :root[data-theme="dark"],
 :root[data-design="operations"][data-theme="dark"] {
     --bg-page: #0f1419;
-    --bg-surface: #1a2129;
-    --bg-surface-alt: #212a33;
-    --bg-hover: #26303a;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #0d1319;
 
-    --border-color: #2a3540;
-    --border-strong: #3a4753;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #4fd1e8;
     --accent-hover: #6fdbee;
@@ -106,13 +119,13 @@
    family's defining trait, not a light/dark difference. */
 :root[data-design="terminal"] {
     --bg-page: #f5f3ea;
-    --bg-surface: #ffffff;
-    --bg-surface-alt: #ece8da;
-    --bg-hover: #e3ded0;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #ece8da;
 
-    --border-color: #cfc9b8;
-    --border-strong: #b3ac97;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #a66a00;
     --accent-hover: #8a5800;
@@ -154,13 +167,13 @@
    visitor. */
 :root[data-design="terminal"][data-theme="dark"] {
     --bg-page: #0a0a0a;
-    --bg-surface: #141414;
-    --bg-surface-alt: #1a1a1a;
-    --bg-hover: #202020;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #000000;
 
-    --border-color: #2a2a2a;
-    --border-strong: #3d3d3d;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #ffb000;
     --accent-hover: #ffc640;
@@ -202,13 +215,13 @@
    during an incident. */
 :root[data-design="saas"] {
     --bg-page: #ffffff;
-    --bg-surface: #f7f7fa;
-    --bg-surface-alt: #efeff5;
-    --bg-hover: #e8e8f2;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #f2f2f8;
 
-    --border-color: #e2e2ec;
-    --border-strong: #cccce0;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #6d5ef8;
     --accent-hover: #5a4ae0;
@@ -246,13 +259,13 @@
 /* Modern SaaS Security, dark variant. */
 :root[data-design="saas"][data-theme="dark"] {
     --bg-page: #0d0d12;
-    --bg-surface: #17171f;
-    --bg-surface-alt: #1e1e29;
-    --bg-hover: #262633;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #131319;
 
-    --border-color: #2b2b3a;
-    --border-strong: #3d3d50;
+    --border-color: transparent;
+    --border-strong: transparent;
 
     --accent: #8f7ffa;
     --accent-hover: #a996fc;
@@ -290,13 +303,13 @@
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]):not([data-theme="dark"]) {
         --bg-page: #0f1419;
-        --bg-surface: #1a2129;
-        --bg-surface-alt: #212a33;
-        --bg-hover: #26303a;
+        --bg-surface: transparent;
+        --bg-surface-alt: transparent;
+        --bg-hover: transparent;
         --bg-code: #0d1319;
 
-        --border-color: #2a3540;
-        --border-strong: #3a4753;
+        --border-color: transparent;
+        --border-strong: transparent;
 
         --accent: #4fd1e8;
         --accent-hover: #6fdbee;
@@ -926,8 +939,11 @@ tr:hover td {
     display: flex;
     flex-wrap: wrap;
     gap: 4px 20px;
-    background: var(--bg-surface-alt);
-    border-bottom: 1px solid var(--border-color);
+    /* Text labelling the diagram below it, not decorative panel chrome:
+       kept opaque on purpose so the legend stays legible over whatever
+       the diagram draws underneath, unlike the general surface/border
+       tokens this rule used to inherit, which are transparent now. */
+    background: var(--bg-code);
     padding: 8px 14px;
     font-size: 0.75rem;
 }
