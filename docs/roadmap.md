@@ -194,9 +194,11 @@ been the most expensive part of this project to get right (the eBPF
 milestone's own "compiled, passed its own tests, and did nothing" episode,
 recorded elsewhere in this project's notes, is the cautionary example),
 which is why the firewall backend work below sits behind the playbook work
-despite being smaller in surface area. V15 is the one exception to that
-ordering: it sits last not because it is the hardest, but because it is the
-only one with no path to validation right now.
+despite being smaller in surface area. V15 and V16 are exceptions to that
+ordering, both appended after the fact rather than slotted in by
+difficulty: V15 sits last because it is the only one with no path to
+validation right now, and V16 because it was decided after V9 through V15
+were already numbered.
 
 **V9, operator defined playbooks, granular incident reporting, and a redesigned
 web interface.** The
@@ -451,6 +453,48 @@ enough to build and test the feedback loop itself, with real hardware kept
 as a later validation step once the pipeline works. Ranked last because it
 is the only planned milestone with no path to validation right now, not
 because of scope or difficulty.
+
+**V16, attacker-resistant source counting.** `SOURCES`, the per host,
+per source packet count both entropy and `dominant_ip_ratio` are computed
+from, is an exact hash map with a fixed capacity. It is not value keyed
+the way V7's `PORT_HIST`, `TTL_HIST`, and `FINGERPRINT_HIST` are, because
+source address space, unlike a 16 bit port or an 8 bit TTL, is too wide to
+enumerate as a fixed table. Once the map is full, `bump()`'s `insert()`
+call for a new key fails and is silently discarded
+(`stage1-ebpf/src/main.rs`), so packets from any source past the 65,536th
+distinct one that window are invisible to both entropy and dominance for
+the rest of it. `--max-sources` moves where that line falls; it does not
+change what happens at it.
+
+Measured on 2026-08-22 at a peak of 17,962 packets per second sustained
+across the flood phase, from roughly 2,200 distinct addresses, `SOURCES`
+reached 2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192,
+error counter at zero throughout. A randomized source flood forging a
+source per packet at the same rate would fill `SOURCES` in under four
+seconds and a million in under a minute: the map holds under a real
+flood's address count, and degrades once an attacker targets the key
+itself, which is the case this milestone closes.
+
+Replace the exact `HashMap` with a Count-Min Sketch: a fixed size counter
+array a packet always increments, however many distinct sources have been
+seen. No packet goes uncounted, at floods far past what any fixed capacity
+could hold. Hash collisions add noise to the frequency estimate instead of
+a hard capacity wall, and that noise is bounded by the sketch's width and
+settles at a known error rate for a given traffic volume, in contrast to
+the current structure, whose degradation has no bound once a flood passes
+the cap. A small, fixed size heavy hitter structure (Misra-Gries or
+Space-Saving) alongside it gives `dominant_ip_ratio` the same protection,
+since it reads from the same counts.
+
+Touches both capture backends, since the pcap backend keeps its own
+equivalent per-source count structure in user space, and needs the same
+measurement discipline V7's histograms got before being trusted: a real
+flood, not just passing tests, before its entropy figures are believed.
+Appended after V15 rather than placed by difficulty among V9 through V14,
+the same way V13 and V15 were: a later addition to an already ordered set,
+not a reordering of it. If it were ranked by difficulty alone it would sit
+near V13, touching the same two backends and needing the same care, ahead
+of the federation and multi-uplink work it currently follows in number.
 
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own

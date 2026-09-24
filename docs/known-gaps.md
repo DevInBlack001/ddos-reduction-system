@@ -24,43 +24,6 @@ produces. Nothing in the current feature set measures accumulation over
 more than one window or the completion state of a flow. It needs the V13
 features, not a configuration change.
 
-**The source histogram is attacker fillable.** Its key includes the source
-address and it holds a bounded number of entries. A randomized source
-flood fills it, after which entropy is computed from a truncated
-histogram. Memory stays bounded, which is the part that matters, but the
-measurement degrades under exactly the attack class above.
-
-`--max-sources` raises the bound without rebuilding the object, which buys
-accuracy under a wider flood. It does not close the exposure: measured on
-2026-08-22 at a peak of 17,962 packets per second sustained across the
-flood phase, from roughly 2,200 distinct addresses, `SOURCES` reached
-2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192, error
-counter at zero throughout; `FLOWS` is the tighter of the two at 27%
-occupancy. A randomized source flood forging a source per packet at the
-same rate would fill `SOURCES` in under four seconds and a million in
-under a minute: the map holds under a real flood's address count, and
-degrades once an attacker targets the key itself. `dominant_ip_ratio`
-shares the exposure, since it reads from the same per-source counts.
-
-The map is exact: once full, `bump()`'s `insert()` call for a new key
-simply fails and is discarded (`stage1-ebpf/src/main.rs`), so packets from
-any source past the 65,536th distinct one are invisible to both entropy
-and dominance for the rest of the window. `--max-sources` moves that
-line, not what happens at it.
-
-Proposed fix, not yet built: replace the exact per-source `HashMap` with a
-Count-Min Sketch, a fixed-size counter array a packet always increments
-regardless of how many distinct sources have been seen, so no packet goes
-uncounted no matter how wide the flood spreads its addresses. The
-tradeoff is hash-collision noise in the frequency estimate rather than a
-capacity wall; that noise is bounded by the sketch's width and settles at
-a known error rate for a given traffic volume, unlike the current
-structure's failure mode, which degrades without bound as the flood grows
-past the cap. A small fixed-size heavy-hitter structure (Misra-Gries or
-Space-Saving) alongside it would give `dominant_ip_ratio` the same
-protection. Needs the same measurement discipline V7's histograms got: a
-real flood before trusting the entropy figures it produces.
-
 **One rate figure is unexplained but not concerning.** Measured on
 2026-08-22 comparing the two capture backends: the two quiet hosts agreed
 within 7%; the busiest differed by 18%. With packet counts agreeing within
