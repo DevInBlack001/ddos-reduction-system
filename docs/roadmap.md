@@ -198,7 +198,9 @@ despite being smaller in surface area. V15 and V16 are exceptions to that
 ordering, both appended after the fact rather than slotted in by
 difficulty: V15 sits last because it is the only one with no path to
 validation right now, and V16 because it was decided after V9 through V15
-were already numbered.
+were already numbered, even though in practice it is small, self
+contained in `stage1/src/analysis.rs`, and worth doing ahead of V9 rather
+than in number order.
 
 **V9, operator defined playbooks, granular incident reporting, and a redesigned
 web interface.** The
@@ -454,47 +456,56 @@ as a later validation step once the pipeline works. Ranked last because it
 is the only planned milestone with no path to validation right now, not
 because of scope or difficulty.
 
-**V16, attacker-resistant source counting.** `SOURCES`, the per host,
-per source packet count both entropy and `dominant_ip_ratio` are computed
-from, is an exact hash map with a fixed capacity. It is not value keyed
-the way V7's `PORT_HIST`, `TTL_HIST`, and `FINGERPRINT_HIST` are, because
-source address space, unlike a 16 bit port or an 8 bit TTL, is too wide to
-enumerate as a fixed table. Once the map is full, `bump()`'s `insert()`
-call for a new key fails and is silently discarded
-(`stage1-ebpf/src/main.rs`), so packets from any source past the 65,536th
-distinct one that window are invisible to both entropy and dominance for
-the rest of it. `--max-sources` moves where that line falls; it does not
-change what happens at it.
+**V16, relative sigma floors.** The rate and entropy sigma floors are
+global while the baselines they bound are per victim, so one set of
+protected hosts carrying different volumes cannot be fitted by a single
+value. Measured across three hosts spanning 3.7 times in mean rate, the
+per host rate floors spanned 4.4 times; expressed as a fraction of each
+host's own mean they spanned only 1.2 times, sitting between 0.22 and
+0.26.
 
-Measured on 2026-08-22 at a peak of 17,962 packets per second sustained
-across the flood phase, from roughly 2,200 distinct addresses, `SOURCES`
-reached 2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192,
-error counter at zero throughout. A randomized source flood forging a
-source per packet at the same rate would fill `SOURCES` in under four
-seconds and a million in under a minute: the map holds under a real
-flood's address count, and degrades once an attacker targets the key
-itself, which is the case this milestone closes.
+The consequence is uneven sensitivity. A global floor sized for the
+busiest host leaves the quietest needing several times its own normal
+volume before anything trips, while sizing it for the quietest flags the
+busiest continuously. A flagged window then freezes the baseline, since
+the `window_is_clean()` exception covers an entropy only flag and a busy
+host trips on rate, so the standard deviation cannot grow to reflect the
+variation that caused it: the same failure the entropy floor once had, on
+the other axis. It is worse when a host that is not a protected service
+ends up in the target set; a gateway carrying seven times the volume of
+the services behind it pushed the floor span to 8.9 times and flagged a
+third of its own windows, and excluding it took every remaining host to
+zero flagged windows.
 
-Replace the exact `HashMap` with a Count-Min Sketch: a fixed size counter
-array a packet always increments, however many distinct sources have been
-seen. No packet goes uncounted, at floods far past what any fixed capacity
-could hold. Hash collisions add noise to the frequency estimate instead of
-a hard capacity wall, and that noise is bounded by the sketch's width and
-settles at a known error rate for a given traffic volume, in contrast to
-the current structure, whose degradation has no bound once a flood passes
-the cap. A small, fixed size heavy hitter structure (Misra-Gries or
-Space-Saving) alongside it gives `dominant_ip_ratio` the same protection,
-since it reads from the same counts.
+The fix mirrors what the rate sigma ceiling already does one line below
+in the same expression: scale against the target's own mean, keeping the
+absolute floor as a backstop for a target still near zero during warm-up.
 
-Touches both capture backends, since the pcap backend keeps its own
-equivalent per-source count structure in user space, and needs the same
-measurement discipline V7's histograms got before being trusted: a real
-flood, not just passing tests, before its entropy figures are believed.
+```
+floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
+```
+
+Explicit per target overrides were considered and deferred. Targets are
+created on first sight, so a table calibrated today has no entry for a
+host that appears tomorrow, and a global fallback is needed regardless. A
+ratio already yields a different floor per target, derived from that
+target's own traffic, and follows it as the traffic changes; an override
+belongs on top of that later if some host proves the ratio wrong for it
+specifically.
+
+One invariant needs asserting at startup as part of this work: the floor
+must stay below the ceiling. A floor ratio near 0.30 exceeds the default
+ceiling ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that
+silently in the ceiling's favour, producing a smaller sigma than either
+setting intends. Currently masked because `rate_sigma_ceiling_floor` holds
+the ceiling at a flat value at ordinary volumes.
+
 Appended after V15 rather than placed by difficulty among V9 through V14,
 the same way V13 and V15 were: a later addition to an already ordered set,
-not a reordering of it. If it were ranked by difficulty alone it would sit
-near V13, touching the same two backends and needing the same care, ahead
-of the federation and multi-uplink work it currently follows in number.
+not a reordering of it. Smaller and lower risk than any of them,
+contained to `stage1/src/analysis.rs`, `AnalysisConfig`, and a CLI flag,
+with no wire format or kernel change, so its actual build order can run
+ahead of its number.
 
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own
@@ -510,53 +521,6 @@ depend on either. V10's firewall backend abstraction is the natural
 starting point, and a libpcap capture already exists as the portable
 option. Platforms that are Linux based would be closer to a packaging job.
 Which platforms, and whether the effort is worth it, is undecided.
-
-## Relative Sigma Floors
-
-The sigma floors are global while the baselines they bound are per victim, so
-a set of protected hosts carrying different volumes cannot be fitted by one
-value. Measured across three hosts spanning 3.7 times in mean rate, the per
-host rate floors spanned 4.4 times. Expressed as a fraction of each host's own
-mean they spanned 1.2 times, sitting between 0.22 and 0.26.
-
-The consequence is uneven sensitivity. One global floor sized for the busiest
-host leaves the quietest needing several times its own normal volume before
-anything trips, while sizing it for the quietest flags the busiest
-continuously. A flagged window then freezes the baseline, because the
-`window_is_clean()` exception covers an entropy only flag and a busy host
-trips on rate, so the standard deviation cannot grow to reflect the variation
-that caused it. That is the same failure the entropy floor once had, on the
-other axis.
-
-The effect is much worse when a host that is not a protected service ends up
-in the target set. A gateway carrying its own management traffic measured
-seven times the volume of the services behind it, pushing the floor span to
-8.9 times and flagging a third of its own windows as attacks. Excluding it
-took every remaining host to zero flagged windows. A relative floor reduces
-the sensitivity spread, but it does not make it correct to protect
-infrastructure alongside the services it fronts.
-
-The intended fix mirrors what the rate sigma *ceiling* already does, one line
-below in the same expression: scale against the target's own mean, keeping
-the absolute flag as a backstop for a target still near zero during warm-up.
-
-```
-floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
-```
-
-Explicit per target overrides were considered and deferred. Targets are
-created on first sight, so a table calibrated today has no entry for a host
-that appears tomorrow and a global fallback is needed regardless. A ratio
-already yields a different floor per target, derived from that target's own
-traffic, and follows it as the traffic changes. An override belongs on top of
-that later if some host proves the ratio wrong for it specifically.
-
-One invariant needs asserting at startup as part of this work: the floor must
-stay below the ceiling. A floor ratio near 0.30 exceeds the default ceiling
-ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that silently in the
-ceiling's favour, producing a smaller sigma than either setting intends. It is
-currently masked because `rate_sigma_ceiling_floor` holds the ceiling at a
-flat value at ordinary volumes.
 
 ## Known Gaps
 

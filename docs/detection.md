@@ -299,8 +299,8 @@ That warning marks a real limit rather than a tuning inconvenience. The
 baselines are per victim but the floors are global, so a set of protected
 hosts carrying very different volumes cannot be fitted by one number. The
 rate sigma *ceiling* already avoids this by scaling against each target's own
-mean; the floor does not. See
-[roadmap.md](roadmap.md#relative-sigma-floors).
+mean; the floor does not. See V16 in
+[roadmap.md](roadmap.md#planned).
 
 ```bash
 sudo python3 scripts/calibrate.py --auto-debug              # measure, report
