@@ -117,7 +117,7 @@ crowd, a flood, and the mixed cases. Measured on 2026-08-22 with independently
 learned baselines, their entropy figures agree to within about 1% and their
 ingress packet counts to within 6% over the comparable steady phase. One rate
 figure, on the busiest and most variable host, differs by more than that, which
-is tracked in [roadmap.md](roadmap.md#known-gaps).
+is tracked in [known-gaps.md](known-gaps.md).
 
 ### Map Sizing
 

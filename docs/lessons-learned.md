@@ -3,7 +3,7 @@
 A record of real bugs found during development, kept because most of them
 generalize past this specific project. Grouped by shape, not by date. Every
 entry here ends in a fix or a rule adopted afterward. What is still open is
-in [Roadmap](roadmap.md#known-gaps).
+in [Known Gaps](known-gaps.md).
 
 ## A fix that compiled, passed its own tests, and did nothing
 
@@ -261,7 +261,9 @@ interface's address and route down with it, and a restart only reset the retry
 cycle. The capture backend was innocent, and the two runs differed only in when
 someone restarted NetworkManager. A fix that has to be repeated is a symptom, so
 find what the restart resets, and read the raw counters on both sides of the
-component under suspicion before blaming it.
+component under suspicion before blaming it. Fixed by changing the profile to
+`ipv4.method manual` with IPv6 off, which removed the retry cycle entirely: the
+next session had no NetworkManager event on that interface.
 
 ## A pass that did not check its own inputs
 
@@ -298,3 +300,76 @@ halves: the job locks only to read and to swap in the result, and scores in one 
 per model (2 seconds against about 18 minutes), and the loop tries the lock without
 waiting and queues rows in a bounded buffer. A loop that serves a live stream should
 never block on something a slower job can hold.
+
+## A log field stamped from the wrong window
+
+`log_incident` read the most recent window across all protected hosts rather
+than the one for the host actually being logged, so an action taken against
+one host could be stamped with a different host's entropy measurement, and a
+window with no measurement recorded as zero rather than null, indistinguishable
+from a real zero reading. Fixed to record the value for the host itself, and
+null when there isn't one. Existing rows were not rewritten, since the correct
+value for them isn't recoverable: zero entropy on a row from before this fix
+means unknown.
+
+## A model that had never seen a legitimate crowd
+
+Normal traffic shaped as one source far above the rest (a `hot` distribution)
+drew DDoS verdicts on both capture backends and rate limits on more than 100
+legitimate addresses. The RandomForest made the call correctly by its own
+training: nothing in the training data was a concentrated but legitimate
+crowd, so the shape read as an attack because none of its examples said
+otherwise. `scripts/label_from_benchmark.py` labels captured windows straight
+from the benchmark's own phase ground truth rather than a human guess, and
+adding 176 such rows cut the `hot` variant from 65 verdicts and 620 rate
+limits to 2 and 29 in the next clean run, confirmed again on a second
+backend.
+
+## Enforcement acted on a stale flow snapshot
+
+During an attack-only phase, both capture backends rate limited the previous
+phase's Flash Crowd sources along with that phase's own attack sources.
+Enforcement read every flow in the sensor's 10 second snapshot, whatever host
+it targeted and however old it was. It now keeps only flows to the window's
+own host and ignores a snapshot older than 30 seconds.
+
+## A generator paced too evenly to teach anything
+
+`sigma_r`, the standard deviation Stage 1 learns for a target's rate, comes
+from window to window variation in a smoothed rate. A load generator that
+paces every request or packet on a fixed interval, rather than the
+independent, uncoordinated timing real clients or a real botnet have,
+produces almost no such variation, so `sigma_r` sat at its configured floor
+for an entire capture no matter how much traffic was flowing, teaching a
+model "this traffic is mechanically regular" instead of the class it was
+meant to represent. Fixed on the generator side: randomised inter-request
+wait time, an active source count that varies across a session, and short
+randomised bursts in place of one continuous flood. Confirmed on a real
+recapture: `sigma_r` varied across every label.
+
+## A capture path that only fed two of three classes
+
+`ipc_receiver.py` only ever consulted the Isolation Forest, and therefore
+only ever wrote to the review queue, when the RandomForest had already
+called a window Normal or Flash Crowd; a window it called DDoS never reached
+that check, so DDoS could never grow through automatic labeling. It
+compounded at training time too: `balance_classes()` upsamples every class
+to match whichever is currently largest, so as Normal and Flash Crowd kept
+growing from real auto-labeling runs, DDoS's fixed pool would have been
+duplicated further each retrain just to keep pace, balanced in row count,
+increasingly stale in diversity. Fixed with a third capture path,
+`ddos_capture.csv`, that writes a window whenever the RandomForest
+confidently calls it DDoS, re-scored by the same dual-model agreement,
+confidence threshold, and freshness check as the other two, so DDoS gets the
+same automated, gated path into training the other two classes already had.
+
+## Comparing runs that weren't running the same thing
+
+Three benchmark reruns recalibrated the sensor's floors during their own
+first phase, restarted the sensor several times, and had NetworkManager
+restarted every two minutes on the gateway underneath them. Escalation moved
+from 0% to 2% to 36 to 73% across the reruns, and those changes to the thing
+being measured are enough to explain all of it on their own, without needing
+to doubt the detection logic itself. A benchmark run has to hold the sensor
+still: set the floors, restart once, warm up, then run, and don't touch it
+again until the run ends.

@@ -194,7 +194,9 @@ been the most expensive part of this project to get right (the eBPF
 milestone's own "compiled, passed its own tests, and did nothing" episode,
 recorded elsewhere in this project's notes, is the cautionary example),
 which is why the firewall backend work below sits behind the playbook work
-despite being smaller in surface area.
+despite being smaller in surface area. V15 is the one exception to that
+ordering: it sits last not because it is the hardest, but because it is the
+only one with no path to validation right now.
 
 **V9, operator defined playbooks, granular incident reporting, and a redesigned
 web interface.** The
@@ -418,6 +420,38 @@ prove that the kernel output matches the user space model before anything
 else. Treat the prototype as exploration. It becomes a committed milestone
 once it earns that.
 
+**V15, out-of-band, mirror-port deployment mode.** Not started, and blocked
+on hardware: suitable switch or router mirror/SPAN capability is not
+available yet to validate against, since the whole point is behaviour a
+virtual switch or Linux bridge can only approximate. FLOD today sits on the
+forwarding path, an ingress and an egress interface belonging to the same
+box that enforces. This is a second deployment mode alongside that one, not
+a replacement for it: a switch or router mirrors (SPANs) a copy of its
+traffic to FLOD, which runs the existing detection pipeline unchanged,
+entropy, the baselines, the models, and instead of enforcing locally with
+iptables and ipset, sends a mitigation policy back to the forwarding device
+to apply as an ACL or rate limit. Detection stays out of the forwarding
+path entirely; a mirror port copies traffic rather than delaying it, so
+nothing here adds a hop to normal forwarding.
+
+The tradeoff is that mitigation becomes a feedback loop rather than a local
+decision, so the time from detection to enforcement is a new quantity worth
+measuring on its own: mirror delivery, feature extraction, classification,
+policy generation, and rule application, each as its own figure, plus how
+much traffic reaches the protected network during that window. V10's
+firewall backend abstraction is related but not sufficient by itself: V10
+chooses which local mechanism enforces on the same box, where this needs a
+policy sent to and applied on a separate device entirely, authenticated,
+with the same conservative handling of an uncertain classification this
+project already applies locally, rule expiration and safe removal, and a
+cap on how quickly new rules can be created. Early development does not
+need real switching hardware: a virtual switch, a Linux bridge, or a mock
+enforcement adapter behind an abstract ACL and rate-limit interface is
+enough to build and test the feedback loop itself, with real hardware kept
+as a later validation step once the pipeline works. Ranked last because it
+is the only planned milestone with no path to validation right now, not
+because of scope or difficulty.
+
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own
 gateway on Linux, with Stage 1 on the packet path and Stage 2 enforcing
@@ -482,239 +516,8 @@ flat value at ordinary volumes.
 
 ## Known Gaps
 
-Not roadmap items, but currently true and worth stating plainly.
-
-**Randomized source spoofing is not detected.** Covered in
-[detection.md](detection.md). It needs the V7 features, not a configuration
-change.
-
-**Distributed, low rate connection and flow state pressure is not detected.**
-A low rate accumulation of long lived or half open connections, or an
-equivalent build up of low rate UDP pseudo flows, spread across many real,
-non spoofed sources reads as normal rate and high entropy today, the same
-numbers a legitimate high traffic period produces. Nothing in the current
-feature set measures accumulation over more than one window or the
-completion state of a flow. It needs the V13 features, not a configuration
-change.
-
-**The source histogram is attacker fillable.** Its key includes the source
-address and it holds a bounded number of entries. A randomized source flood
-fills it, after which entropy is computed from a truncated histogram. Memory
-stays bounded, which is the part that matters, but the measurement degrades
-under exactly the attack class above.
-
-`--max-sources` raises the bound without rebuilding the object, which buys
-accuracy under a wider flood. It does not close the exposure: at the rate
-measured above, a flood forging a source per packet fills 65,536 entries in
-under four seconds and a million in under a minute. Whether V7's features are
-derived from this structure or from something not attacker keyed is a decision
-for the start of that milestone.
-
-**Rows written before this release carry the wrong entropy.** `log_incident`
-used to read the most recent window across all protected hosts, so an action
-taken for one host could be stamped with another's measurement, and an
-unrecorded value was stored as zero rather than null. Both are fixed, but
-existing rows were not rewritten, because the correct value for them is not
-recoverable. Zero entropy on a row older than this release means unknown.
-
-**The kernel maps hold under a flood.** Measured on 2026-08-22 at a peak of
-17,962 packets per second sustained across the flood phase: `SOURCES` reached
-2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192, with the error
-counter at zero across all 116 drain intervals and the drain count steady
-throughout.
-
-That flood came from roughly 2,200 distinct addresses, which is the shape being
-claimed here. `FLOWS` is the tighter of the two at 27% occupancy, so a flood
-from four times as many sources would fill it. A randomized source flood at the
-same packet rate would fill `SOURCES` in under four seconds, which is the
-attacker fillable case described below rather than a contradiction of this
-result.
-
-Both backends have also been exercised across the same scenario set: ordinary
-traffic, a flash crowd, a flood, and the mixed cases. Both handled all of them.
-
-**Entropy is preserved across the two backends.** Measured on 2026-08-22, over
-200 warm-up windows per protected host on each backend, with no persisted
-baseline available so each learned its own: the mean entropy differed by 1.1%,
-0.9%, and 0.2% across the three hosts. Warm-up windows report the raw rate and
-entropy before any boundary is computed, so the figures are unaffected by the
-two runs carrying different tuning.
-
-**The two see the same packets.** Over the steady phase of the same runs,
-before the load generator ramped, ingress counts agreed within 4 to 6%. Both
-runs carried the same sequence of ordinary traffic, a ramp, and a flood, and
-their profiles track each other throughout.
-
-**One rate figure is unexplained but not concerning.** The two quiet hosts
-agreed within 7%; the busiest differed by 18%. With packet counts agreeing
-within 6% at the capture layer and entropy within 1%, that reads as traffic
-variation on the most variable host across runs 14 minutes apart, not a
-measurement difference. Pinning it needs a generator producing a repeatable
-load, run once per backend.
-
-Two traps when repeating this. The capture counters are not directly
-comparable: libpcap's `raw_captured` is cumulative per interface, while the
-kernel's `ingress` is per drain interval, so the first must be read as a final
-value and the second as a sum. And the comparison must be restricted to
-equivalent phases. Totalling a whole run makes the backends look 49% apart,
-which is entirely the flood phase differing in peak and duration between two
-runs of a generator that does not repeat exactly.
-
-**The backend comparison has run twice (2026-09-19).** Detection is preserved
-across the backends and the resource figures differ a great deal. In the
-simulated lab environment, one run per backend, the second and cleaner session
-had the kernel backend's Stage 1 at 4.3% CPU, 6.5 context switches a second and
-8 MB, against 12.9%, 3,759 and 271 MB for libpcap, and the first session agreed.
-At the unpaced floods (about 82,000 to 108,000 packets a second) the CPU order
-flipped (75% to 82% for the kernel backend against 48% to 53%). Handoff from the
-sensor to Stage 2 was longer on the kernel backend in both sessions (median 43 ms
-against 12 ms in the second), and inference took about 30 ms on both. A clean pair
-of runs on 2026-09-20 (libpcap from the third session, the kernel backend rerun
-alone) repeated it: Stage 1 at 0.8% to 5.9% CPU, 4 to 6 context switches a second and
-7 MB on the kernel backend against 3% to 40%, 285 to 4,844 and 271 MB on libpcap
-outside the unpaced floods, the CPU order reversed at the floods (72% to 79% against
-44% to 50%), and handoff longer on the kernel backend (13 to 65 ms against 2.6 to
-34). See [Backend Benchmark](benchmark-backends.md) for the figures and their
-limits: one run each, and libpcap's rare multi-second handoff stalls.
-
-For V14 the runs answer the first risk it lists. Of the window close to rule
-applied path (median 45 to 72 ms), the enforcement call is 0.05 to 0.1 ms and
-inference is about 30 ms, so the classifier is the largest piece V14 could
-remove, and the handoff is the next. They also show a limit that V14 would not
-remove by itself: Stage 2 handles windows one after another, and when it falls
-behind the socket fills, Stage 1 logs the write failing, and handoff reaches
-tens of seconds. One cause is fixed: `auto_label.py` held a capture file lock
-through a whole scoring pass and Stage 2 waited on it in its receive loop (scoring
-now takes 2.0 seconds for 50,000 rows and the loop never waits on the lock). A
-stall of 25 seconds in the libpcap run and one of 15 seconds in the third session's
-kernel run have no auto-label run behind them. In both, Stage 2 was handling one
-window with no CPU use, outside every enforcement call, during an aggregate
-fallback over thousands of flows, while legitimate Flash Crowd traffic was being
-called DDoS. The cause was never identified. The clean kernel run on 2026-09-20 had
-no slow window and a largest handoff maximum of 429 ms, and the retrained models no
-longer make those calls, so the issue is closed as not reproducing. Stage 2 lists the
-time in inference, the database write, the flow snapshot and enforcement in the slow
-window warning, so a recurrence would be placed at once. The auto-label job's own
-stall is gone (five runs in the third session, none with a handoff maximum above
-485 ms).
-
-**Flash Crowd was misread, and the retrained model fixes it on live traffic.**
-With Normal traffic, the `hot` variant (one source far above the rest) drew DDoS
-verdicts on both backends in both earlier sessions (26 and 65 in the second) and
-rate limits on more than 100 legitimate addresses. The RandomForest made those
-calls and the safety overrides changed none of them, because the training data had
-no concentrated legitimate crowd. `scripts/label_from_benchmark.py` labels captured
-windows from the phase ground truth. With 176 such rows added and the tree depth
-chosen by confidence (depth 6), the third session's clean libpcap run drew 2 DDoS
-verdicts and 29 rate limits on the `hot` variant (65 and 620 before) and 2 and 34 on
-the even variant (24 and 522 before). The kernel run of that session was spoiled by
-a stray generator, and a clean kernel rerun on 2026-09-20 confirmed it there too: the
-`hot` variant drew 2 verdicts and 6 rate limits (26 and 725 before) and the even
-variant none.
-
-**Enforcement could rate limit the previous phase's sources.** In an attack-only
-phase of the first session both backends rate limited the 97 Flash Crowd
-addresses from the phase before, along with the 35 attack sources. Enforcement
-read every flow in the sensor's 10 second snapshot, whatever host it targeted and
-however old it was. It now keeps only flows to the window's host and ignores a
-snapshot older than 30 seconds.
-
-**Scripted traffic generators can make the rate look artificially steady,
-fixed by jittering generator timing.** `sigma_r`, the standard deviation
-Stage 1 learns for a target's rate, comes from window to window variation
-in a smoothed EWMA rate. A load testing tool or flood tool that paces every
-request or packet on a fixed, regular interval, rather than the
-independent, uncoordinated timing real clients or a real botnet have,
-produces almost no such variation, so `sigma_r` reads at or near its
-configured floor for the entire capture regardless of how much traffic is
-actually flowing. A training set built this way teaches a model "this
-traffic is mechanically regular" rather than the intended class signature,
-which will not transfer to traffic with natural jitter. Fixed on the
-generator side: randomised inter request wait time, varying the active
-source or user count over the session rather than holding it flat, and
-avoiding an unpaced flood mode in favour of short, randomised bursts.
-Confirmed on a real recapture, real `sigma_r` variation across every label
-rather than a value pinned at the floor. See [training.md](training.md).
-
-**Confidence gated automatic labeling used to only grow Normal and
-Flash Crowd, never DDoS.** `ipc_receiver.py` only ever consulted the
-Isolation Forest, and therefore only ever wrote to
-`anomalous_capture.csv`, when the RandomForest already called a window
-Normal or Flash Crowd (`pred_class in (0, 1)`); a window it called
-DDoS never reached that check. `pretraining_capture.csv`, the other
-file `auto_label.py` processes, only captures before any RandomForest
-exists on a deployment, a one time condition already closed on this
-one. Confirmed 2026-09-18 against a real run before the fix: 338 rows
-auto-labeled from `anomalous_capture_vm.csv`, 477 Normal and 1,584
-Flash Crowd cumulative in the staging file, zero DDoS, exactly as the
-mechanism predicted.
-
-It compounded at training time too, not just at capture time.
-`train.py`'s `balance_classes()` upsamples every class with
-replacement to match whichever class is currently largest, so as
-Normal and Flash Crowd kept growing from real auto-labeling runs,
-DDoS's non-growing pool would have been duplicated further each
-retrain just to keep pace, balanced in row count, increasingly stale
-in diversity.
-
-Fixed the same day: a third capture path,
-`config.DDOS_CAPTURE_CSV_PATH`, writes a window whenever the
-RandomForest confidently calls it DDoS, same 13 base columns as the
-other two capture files, no Isolation Forest verdict to carry along
-since DDoS never reaches that check. `auto_label.py` re-scores it the
-same way as the other two: same dual-model agreement, same confidence
-threshold, same freshness check, nothing about the safety gate
-weakened. DDoS now has a real, automated path into the training
-training set, gated exactly as carefully as Normal and Flash Crowd already
-were. See [training.md](training.md#confidence-gated-automatic-labeling).
-
-**The training set and the deployed sigma floors are captured under
-different tuning.** The canonical training set has `sigma_h` near 0.05 to 0.08 and
-`sigma_r` pinned at 50.0 in 57% of rows. A gateway running recalibrated
-floors writes `sigma_h` 0.4944, later 0.2263 and about 0.08, and a different
-`sigma_r` range. The Random Forest ignores both columns, the Isolation Forest
-does not: measured 2026-09-18, it flags 100% of the gateway's Normal and
-Flash Crowd rows as outliers, and 27.3% and 0.0% with only those two
-columns swapped into the training set's range. This accounts for most of the
-Isolation Forest labeling nearly every live window `Anomalous`. Fixing it
-takes a recapture of all three labels under the floors that will be deployed,
-or training the Isolation Forest on rows from the deployed regime. Until
-then, do not merge gateway captures into the older training set. See
-[training.md](training.md#capture-under-the-tuning-you-deploy).
-
-**The confidence gate depends on tree depth.** The depth sweep picks depth 3
-(tied with 4 and 5 at 0.997). At depth 3 the Random Forest's probability on
-live DDoS windows tops out near 0.86, so a 0.90 gate accepts 2.7% to 26% of
-them depending on which rows a run sees, and 71% of the rejected rows sit
-between 0.85 and 0.90. At depth 4 the same rows clear 0.90 93% of the time
-with the same accuracy. The gate at depth 3 is close to arbitrary, and at
-depth 4 it passes nearly everything the two models agree on. The independent
-check is the second model. Open: choose a depth rule, or a threshold, that
-makes the gate mean something. See
-[training.md](training.md#confidence-and-tree-depth).
-
-**Benchmark sessions must not change the sensor.** Three reruns on 2026-09-18
-recalibrated the floors during their own first phase, restarted `ddos-stage1`
-several times, and had NetworkManager restarted every two minutes on the
-gateway. Escalation went from 0 to 2% to 36 to 73%, and those changes are
-enough to explain it, so the runs cannot be compared. Set the floors, restart
-once, warm up, then run. The repeated NetworkManager restarts were most likely
-a workaround for the egress profile fault described below, found on 2026-09-19,
-and not capture stalls.
-
-**The gateway's egress interface goes down for minutes at a time.** `ens256`
-belongs to a NetworkManager profile set to DHCP with a static address added.
-No DHCP server answers, so each activation fails after 45 seconds, the
-interface loses its address and the route to the targets, and after three
-attempts NetworkManager waits five minutes. The gateway cannot forward while
-that lasts, egress reads zero, and the dashboard shows all incoming traffic as
-not reaching the target. A NetworkManager restart gives about two minutes of
-forwarding. It happens on both backends. It hit the kernel backend's first 30
-minutes in the 2026-09-19 comparison, so that run's warm-up, calibration,
-`normal` and `flash_crowd` phases are not comparable with the libpcap run's. The profile was
-changed to `ipv4.method manual` with IPv6 off on 2026-09-19 (13:52 UTC), which
-removed the cycle: the second session had no NetworkManager event on that
-interface.
+Moved to a dedicated file: [known-gaps.md](known-gaps.md). Gaps that have
+since closed live in [Lessons Learned](lessons-learned.md).
 
 ## Benchmark: FLOD vs. Fixed Threshold
 

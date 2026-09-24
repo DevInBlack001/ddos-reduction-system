@@ -370,8 +370,8 @@ the other two files, no Isolation Forest context column since DDoS
 never reaches that check. `auto_label.py` processes it exactly like
 the other two, same dual-model agreement, same confidence threshold,
 same freshness check, before any of it reaches `training.csv`. See
-[roadmap.md](roadmap.md#known-gaps) for the full history of the gap
-this closed.
+[lessons-learned.md](lessons-learned.md#a-capture-path-that-only-fed-two-of-three-classes)
+for the full history of the gap this closed.
 
 ### Reviewing From the Dashboard
 
