@@ -267,7 +267,10 @@ count, or several protected hosts under attack at once, and a playbook may
 combine more than one. Stages are linear, no branching, since nothing asked
 of this milestone needs it and a conditional stage graph is a materially
 bigger and harder to secure thing to build than the sequence anyone has
-actually described wanting.
+actually described wanting. See [docs/playbooks.md](playbooks.md) for
+the trigger/stage reference, ready-to-use example definitions, and the
+API surface: the playbook engine backend and both editing surfaces
+(form builder, JSON/YAML text editor) are built as of this branch.
 
 Incident reporting gains two things alongside this: a timeline of which
 stage fired when and against which source or host, distinct from the

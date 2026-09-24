@@ -109,6 +109,12 @@ the current one.
 The progression is deliberate: blocking is only used where attribution is
 confident.
 
+All four tiers run exactly as described above regardless of whether any
+playbook is configured. See [Playbooks](playbooks.md) for the optional
+second layer on top: triggered, timed sequences (escalate a target over
+time, fire a scripted alert, generate a report) that add to this
+behaviour and never replace or gate it.
+
 **Block hysteresis.** Tiers 1 and 2 additionally require consecutive attack
 windows before firing, so one noisy window cannot trigger a block. Tiers 3 and
 4 are immediate and ungated, since throttling is already reversible.

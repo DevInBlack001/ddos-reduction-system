@@ -159,6 +159,7 @@ scripts/test.sh
 | [Explainer](docs/explainer.md) | Every term and every wire format field, explained for a non-technical reader |
 | [IPC](docs/ipc.md) | The feature vector wire format |
 | [Enforcement](docs/enforcement.md) | Classification, the four mitigation tiers, NAT handling |
+| [Playbooks](docs/playbooks.md) | Operator-defined trigger/stage sequences layered on top of the four tiers |
 | [Training](docs/training.md) | Capturing labelled data and training the model |
 | [Testing](docs/testing.md) | Running both test suites |
 | [Security](docs/security.md) | The hardening pass and the threat model |
