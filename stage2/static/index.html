@@ -255,7 +255,7 @@
                             </thead>
                             <tbody id="globalTargetsTableBody">
                                 <tr>
-                                    <td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td>
+                                    <td colspan="6" class="table-empty">No monitored targets yet.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -286,7 +286,7 @@
                             </thead>
                             <tbody id="ddosSourcesTableBody">
                                 <tr>
-                                    <td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td>
+                                    <td colspan="4" class="table-empty">No attack sources identified.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -805,7 +805,7 @@
 
             let html = '';
             if (shown.length === 0) {
-                html = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td></tr>`;
+                html = `<tr><td colspan="4" class="table-empty">No attack sources identified.</td></tr>`;
             } else {
                 shown.forEach(s => {
                     // Rate is absent for an address an operator actioned by
@@ -897,7 +897,7 @@
 
                 let tableHtml = '';
                 if (activeTargets.length === 0) {
-                    tableHtml = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td></tr>`;
+                    tableHtml = `<tr><td colspan="6" class="table-empty">No monitored targets yet.</td></tr>`;
                 } else {
                     activeTargets.forEach(ip => {
                         const metric = data.last_metrics_by_target[ip];

@@ -717,6 +717,19 @@ body {
     color: var(--text-on-accent);
 }
 
+/* No page had this until now: a disabled .btn looked fully clickable,
+   the disabled attribute worked functionally but gave no visual signal
+   at all. One page was working around it with its own inline opacity. */
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.btn:disabled:hover {
+    background-color: var(--bg-surface);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
 .btn-danger {
     background-color: var(--status-danger-bg);
     border-color: var(--status-danger);
@@ -726,6 +739,14 @@ body {
 .btn-danger:hover {
     background-color: var(--status-danger);
     color: #ffffff;
+}
+
+/* A secondary action next to a primary .btn (Send Test Alert beside
+   Save, Discard Changes beside the real submit), transparent instead of
+   the surface fill so it reads as lower emphasis without a second colour.
+   Was a one-off inline style repeated on two pages. */
+.btn-ghost {
+    background: transparent;
 }
 
 /* Tables */
@@ -753,6 +774,17 @@ td {
 
 tr:hover td {
     background-color: var(--bg-hover);
+}
+
+/* A single-cell "Loading...", "No X found", or "Could not reach the
+   gateway" row, spanning every column via colspan. Was inline on 23
+   occurrences across 7 pages, in two slightly different variants
+   (with and without extra padding) that read identically; both are this
+   one class now. */
+.table-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-tertiary);
 }
 
 .badge {
@@ -882,6 +914,55 @@ tr:hover td {
 .chart-container {
     height: 320px;
     position: relative;
+}
+
+/* Shared by network.html and traffic.html's canvas-drawn graphs, which
+   duplicated this CSS near byte-for-byte before consolidation. A page
+   sets its own min-height on .graph-wrap (force-directed layout and a
+   flow diagram want different breathing room) and, if it needs cursor
+   feedback for dragging, its own canvas id rule; everything else here
+   is identical between the two. */
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    background: var(--bg-surface-alt);
+    border-bottom: 1px solid var(--border-color);
+    padding: 8px 14px;
+    font-size: 0.75rem;
+}
+.legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+/* Normal-flow bar above the canvas, not an overlay: an
+   absolutely-positioned legend on top of the drawing surface will
+   eventually collide with a node as layout changes. height (not
+   max-height) always fills the available space so a force-directed or
+   flow simulation has room even with few nodes; the canvas inside grows
+   past this and triggers the scrollbar only once content actually needs
+   more room. */
+.graph-wrap {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 220px);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+@media (max-width: 900px) {
+    .graph-wrap {
+        height: calc(100dvh - 250px);
+        min-height: 300px;
+    }
 }
 
 /* Toast container */

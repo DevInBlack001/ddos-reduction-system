@@ -84,7 +84,7 @@
                         </thead>
                         <tbody id="whitelistTableBody">
                             <tr>
-                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading whitelist entries...</td>
+                                <td colspan="2" class="table-empty">Loading whitelist entries...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -115,7 +115,7 @@
                         </thead>
                         <tbody id="sharedIpTableBody">
                             <tr>
-                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading shared addresses...</td>
+                                <td colspan="2" class="table-empty">Loading shared addresses...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -137,7 +137,7 @@
                         </thead>
                         <tbody id="blockedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active blocks...</td>
+                                <td colspan="3" class="table-empty">Loading active blocks...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -160,7 +160,7 @@
                         </thead>
                         <tbody id="ratelimitedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active rate limits...</td>
+                                <td colspan="3" class="table-empty">Loading active rate limits...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -226,7 +226,7 @@
                         </div>
                     </div>
                     <button type="submit" class="btn">Save Thresholds</button>
-                    <button type="button" class="btn" style="background: transparent;" onclick="loadThresholds()">Discard Changes</button>
+                    <button type="button" class="btn btn-ghost" onclick="loadThresholds()">Discard Changes</button>
                 </form>
             </div>
         </div>
@@ -247,7 +247,7 @@
                 const wlBody = document.getElementById('whitelistTableBody');
                 const whitelisted = data.whitelisted_ips || [];
                 if (whitelisted.length === 0) {
-                    wlBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No IP addresses whitelisted.</td></tr>`;
+                    wlBody.innerHTML = `<tr><td colspan="2" class="table-empty">No IP addresses whitelisted.</td></tr>`;
                 } else {
                     let wlHtml = '';
                     whitelisted.forEach(ip => {
@@ -263,7 +263,7 @@
                 const shBody = document.getElementById('sharedIpTableBody');
                 const sharedIps = data.shared_ips || [];
                 if (sharedIps.length === 0) {
-                    shBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No shared addresses marked.</td></tr>`;
+                    shBody.innerHTML = `<tr><td colspan="2" class="table-empty">No shared addresses marked.</td></tr>`;
                 } else {
                     let shHtml = '';
                     sharedIps.forEach(ip => {
@@ -279,7 +279,7 @@
                 const blBody = document.getElementById('blockedTableBody');
                 const blocked = data.blocked_ips_detail || []; // Should contain {ip, remaining_seconds}
                 if (blocked.length === 0) {
-                    blBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active blocks.</td></tr>`;
+                    blBody.innerHTML = `<tr><td colspan="3" class="table-empty">No active blocks.</td></tr>`;
                 } else {
                     let blHtml = '';
                     blocked.forEach(b => {
@@ -298,7 +298,7 @@
                 const rlBody = document.getElementById('ratelimitedTableBody');
                 const ratelimited = data.ratelimited_ips_detail || []; // {ip, remaining_seconds}
                 if (ratelimited.length === 0) {
-                    rlBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active rate limits.</td></tr>`;
+                    rlBody.innerHTML = `<tr><td colspan="3" class="table-empty">No active rate limits.</td></tr>`;
                 } else {
                     let rlHtml = '';
                     ratelimited.forEach(r => {

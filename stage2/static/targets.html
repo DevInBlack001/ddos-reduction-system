@@ -101,7 +101,7 @@
                         </thead>
                         <tbody id="targetTableBody">
                             <tr>
-                                <td colspan="4" style="text-align: center; color: var(--text-tertiary);">Loading targets...</td>
+                                <td colspan="4" class="table-empty">Loading targets...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -125,7 +125,7 @@
                 const targets = data.victim_targets || []; // Should contain {ip, description, active}
 
                 if (targets.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-tertiary);">No monitoring targets configured.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="4" class="table-empty">No monitoring targets configured.</td></tr>`;
                     return;
                 }
 

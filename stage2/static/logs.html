@@ -48,6 +48,11 @@
             padding: 6px 14px;
             font-size: 0.78rem;
         }
+        .btn-filter.active {
+            border-color: var(--accent);
+            background-color: var(--accent);
+            color: var(--text-on-accent);
+        }
     </style>
 </head>
 <body>
@@ -119,7 +124,7 @@
                     </thead>
                     <tbody id="logTableBody">
                         <tr>
-                            <td colspan="7" style="text-align: center; color: var(--text-tertiary);">Loading event history...</td>
+                            <td colspan="7" class="table-empty">Loading event history...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -160,22 +165,14 @@
                 document.getElementById('btnNextPage').disabled = currentOffset + currentLimit >= data.total_count;
 
                 // Update filter button highlighting
-                document.querySelectorAll('.btn-filter').forEach(b => {
-                    b.style.borderColor = 'var(--border-strong)';
-                    b.style.backgroundColor = 'var(--bg-surface)';
-                    b.style.color = 'var(--text-primary)';
-                });
                 const activeBtnId = currentFilter === 'ALL' ? 'btn-ALL' : (currentFilter === 'Flash Crowd' ? 'btn-Flash' : `btn-${currentFilter}`);
-                const activeBtn = document.getElementById(activeBtnId);
-                if (activeBtn) {
-                    activeBtn.style.borderColor = 'var(--accent)';
-                    activeBtn.style.backgroundColor = 'var(--accent)';
-                    activeBtn.style.color = 'var(--text-on-accent)';
-                }
+                document.querySelectorAll('.btn-filter').forEach(b => {
+                    b.classList.toggle('active', b.id === activeBtnId);
+                });
 
                 const tableBody = document.getElementById('logTableBody');
                 if (logs.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-tertiary);">No event records found for this selection.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="7" class="table-empty">No event records found for this selection.</td></tr>`;
                     return;
                 }
 

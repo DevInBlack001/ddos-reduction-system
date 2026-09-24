@@ -79,7 +79,7 @@
                         </tr>
                     </thead>
                     <tbody id="userTableBody">
-                        <tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading accounts...</td></tr>
+                        <tr><td colspan="2" class="table-empty">Loading accounts...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -151,7 +151,7 @@
                     `${users.length} account${users.length === 1 ? '' : 's'}`;
 
                 if (users.length === 0) {
-                    tableBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No accounts found.</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="2" class="table-empty">No accounts found.</td></tr>`;
                     return;
                 }
 

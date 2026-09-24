@@ -19,6 +19,11 @@
     <title>FLOD System - Network Map</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
+        /* .legend/.legend-row/.legend-dot/.graph-wrap: shared with
+           traffic.html, in base.css. Page-specific here: cursor feedback
+           for node dragging (traffic.html's canvas isn't draggable), and
+           480px breathing room for the force-directed layout, more than
+           traffic.html's flow diagram needs. */
         #graphCanvas {
             display: block;
             width: 100%;
@@ -26,41 +31,8 @@
         }
         #graphCanvas.dragging { cursor: grabbing; }
         .graph-wrap {
-            position: relative;
-            width: 100%;
-            /* height (not max-height): always fills the available space
-               so the simulation has room to spread nodes out even when
-               there aren't many of them yet. The canvas inside grows past
-               this and triggers the scrollbar only once node count
-               actually needs more room than that. */
-            height: calc(100vh - 220px);
             min-height: 480px;
-            overflow-y: auto;
-            overflow-x: hidden;
         }
-        @media (max-width: 900px) {
-            /* 480px is taller than most phone viewports once the top bar
-               and legend are accounted for. */
-            .graph-wrap {
-                height: calc(100dvh - 250px);
-                min-height: 300px;
-            }
-        }
-        /* Normal-flow bar above the canvas, not an overlay, see
-           traffic.html for why an absolutely-positioned legend on top of
-           the drawing surface is a bad idea (it will eventually sit on
-           top of a node). */
-        .legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px 20px;
-            background: var(--bg-surface-alt);
-            border-bottom: 1px solid var(--border-color);
-            padding: 8px 14px;
-            font-size: 0.75rem;
-        }
-        .legend-row { display: flex; align-items: center; gap: 8px; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     </style>
 </head>
 <body>

@@ -19,44 +19,18 @@
     <title>FLOD System - Traffic</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
+        /* .legend/.legend-row/.legend-dot/.graph-wrap: shared with
+           network.html, in base.css. Page-specific here: 420px breathing
+           room for the flow diagram, less than network.html's
+           force-directed layout needs; no drag cursor, this canvas isn't
+           draggable. */
         #trafficCanvas {
             display: block;
             width: 100%;
         }
         .graph-wrap {
-            position: relative;
-            width: 100%;
-            /* height (not max-height): always fills the available space,
-               even with few nodes, instead of shrinking down to whatever
-               the content needs, the canvas inside grows past this and
-               triggers the scrollbar only once there's actually enough
-               content to need more room. */
-            height: calc(100vh - 220px);
             min-height: 420px;
-            overflow-y: auto;
-            overflow-x: hidden;
         }
-        @media (max-width: 900px) {
-            .graph-wrap {
-                height: calc(100dvh - 250px);
-                min-height: 300px;
-            }
-        }
-        /* A normal-flow bar above the canvas, not an overlay, an
-           absolutely-positioned legend sitting on top of the drawing
-           surface will inevitably collide with a node sooner or later as
-           the host count/layout changes. */
-        .legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px 20px;
-            background: var(--bg-surface-alt);
-            border-bottom: 1px solid var(--border-color);
-            padding: 8px 14px;
-            font-size: 0.75rem;
-        }
-        .legend-row { display: flex; align-items: center; gap: 8px; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     </style>
 </head>
 <body>
