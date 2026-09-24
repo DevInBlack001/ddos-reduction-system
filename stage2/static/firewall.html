@@ -24,6 +24,7 @@
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 20px;
         }
+        .action-cell { text-align: right; }
     </style>
 </head>
 <body>
@@ -78,7 +79,7 @@
                         <thead>
                             <tr>
                                 <th>Whitelisted Address</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="whitelistTableBody">
@@ -109,7 +110,7 @@
                         <thead>
                             <tr>
                                 <th>Shared Address</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="sharedIpTableBody">
@@ -131,7 +132,7 @@
                             <tr>
                                 <th>Blocked Address</th>
                                 <th>Time Remaining</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="blockedTableBody">
@@ -154,7 +155,7 @@
                             <tr>
                                 <th>Rate-Limited Address</th>
                                 <th>Time Remaining</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="ratelimitedTableBody">
@@ -252,7 +253,7 @@
                     whitelisted.forEach(ip => {
                         wlHtml += `<tr>
                             <td style="font-weight: 600; font-family: var(--font-mono);">${FlodSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td class="action-cell"><button class="btn btn-danger" onclick="removeWhitelist('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     wlBody.innerHTML = wlHtml;
@@ -268,7 +269,7 @@
                     sharedIps.forEach(ip => {
                         shHtml += `<tr>
                             <td style="font-weight: 600; font-family: var(--font-mono); color: var(--status-warning);">${FlodSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeSharedIp('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td class="action-cell"><button class="btn btn-danger" onclick="removeSharedIp('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     shBody.innerHTML = shHtml;
@@ -285,7 +286,7 @@
                         blHtml += `<tr>
                             <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${FlodSafe.escapeHtml(b.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${b.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(b.ip)}')">Release</button></td>
+                            <td class="action-cell"><button class="btn" onclick="releaseBlock('${FlodSafe.jsAttr(b.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     blBody.innerHTML = blHtml;
@@ -304,7 +305,7 @@
                         rlHtml += `<tr>
                             <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${FlodSafe.escapeHtml(r.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${r.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(r.ip)}')">Release</button></td>
+                            <td class="action-cell"><button class="btn" onclick="releaseBlock('${FlodSafe.jsAttr(r.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     rlBody.innerHTML = rlHtml;

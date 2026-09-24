@@ -56,6 +56,10 @@
         .data-table td {
             padding: 12px 15px;
         }
+        .data-table th {
+            padding: 10px 15px;
+        }
+        .action-cell { text-align: right; }
         /* V5 egress panel */
         .egress-toggle {
             display: flex;
@@ -238,15 +242,15 @@
                         <span class="metric-badge">Live</span>
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
-                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                        <table class="data-table">
                             <thead>
                                 <tr style="border-bottom: 1px solid var(--border-strong);">
-                                    <th style="padding: 10px 15px;">Target IP</th>
-                                    <th style="padding: 10px 15px;">Rate (pps)</th>
-                                    <th style="padding: 10px 15px;">Entropy</th>
-                                    <th style="padding: 10px 15px;">Dominant Sender %</th>
-                                    <th style="padding: 10px 15px;">Status</th>
-                                    <th style="padding: 10px 15px;">Action</th>
+                                    <th>Target IP</th>
+                                    <th>Rate (pps)</th>
+                                    <th>Entropy</th>
+                                    <th>Dominant Sender %</th>
+                                    <th>Status</th>
+                                    <th class="action-cell">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="globalTargetsTableBody">
@@ -271,13 +275,13 @@
                         so it does not identify a sender as an attacker.
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
-                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                        <table class="data-table">
                             <thead>
                                 <tr style="border-bottom: 1px solid var(--border-strong);">
-                                    <th style="padding: 10px 15px;">Source IP</th>
-                                    <th style="padding: 10px 15px;">Target</th>
-                                    <th style="padding: 10px 15px;">Rate (pps)</th>
-                                    <th style="padding: 10px 15px;">Blocked At</th>
+                                    <th>Source IP</th>
+                                    <th>Target</th>
+                                    <th>Rate (pps)</th>
+                                    <th>Blocked At</th>
                                 </tr>
                             </thead>
                             <tbody id="ddosSourcesTableBody">
@@ -812,10 +816,10 @@
                         ? new Date(s.timestamp * 1000).toLocaleTimeString() : '--';
                     html += `
                         <tr>
-                            <td style="padding: 12px 15px; font-weight: 600; color: var(--status-danger);">${FlodSafe.escapeHtml(s.ip)}</td>
-                            <td style="padding: 12px 15px;">${FlodSafe.escapeHtml(s.victim_ip || 'Unknown')}</td>
-                            <td style="padding: 12px 15px;">${rate}</td>
-                            <td style="padding: 12px 15px; color: var(--text-secondary);">${FlodSafe.escapeHtml(when)}</td>
+                            <td style="font-weight: 600; color: var(--status-danger);">${FlodSafe.escapeHtml(s.ip)}</td>
+                            <td>${FlodSafe.escapeHtml(s.victim_ip || 'Unknown')}</td>
+                            <td>${rate}</td>
+                            <td style="color: var(--text-secondary);">${FlodSafe.escapeHtml(when)}</td>
                         </tr>
                     `;
                 });
@@ -906,13 +910,13 @@
                         const jsIp = FlodSafe.jsAttr(ip);
                         tableHtml += `
                             <tr>
-                                <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
-                                <td style="padding: 12px 15px;">${metric.ewma_rate.toFixed(1)}</td>
-                                <td style="padding: 12px 15px;">${metric.entropy.toFixed(4)}</td>
-                                <td style="padding: 12px 15px;">${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
-                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${FlodSafe.escapeHtml(metric.latest_classification)}</span></td>
-                                <td style="padding: 12px 15px;">
-                                    <button class="btn" onclick="switchToTargetIp('${jsIp}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
+                                <td style="color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
+                                <td>${metric.ewma_rate.toFixed(1)}</td>
+                                <td>${metric.entropy.toFixed(4)}</td>
+                                <td>${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
+                                <td><span class="${statusBadgeClass}">${FlodSafe.escapeHtml(metric.latest_classification)}</span></td>
+                                <td class="action-cell">
+                                    <button class="btn" onclick="switchToTargetIp('${jsIp}')">Inspect</button>
                                 </td>
                             </tr>
                         `;

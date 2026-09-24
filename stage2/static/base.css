@@ -620,6 +620,24 @@ body {
     margin-bottom: 16px;
 }
 
+/* A single labelled input, label above the control, distinct from
+   .form-group above which lays an input and its submit button out
+   side by side with no label at all. Was a one-off inline style on a
+   single page (ir.html's report time window picker); pulled out since
+   "one labelled control on its own" is a more general pattern than that
+   one page. */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 16px;
+}
+.field label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
 .form-input {
     flex-grow: 1;
     width: 100%;
@@ -773,6 +791,25 @@ tr:hover td {
     background-color: var(--status-anomaly-bg);
 }
 
+/* Non-classification badge variants: interface roles, generic accent and
+   neutral states. Several pages built these as one-off inline styles in
+   JS template strings instead of a shared class; consolidated here so a
+   colour only needs changing in one place. */
+.badge-accent {
+    color: var(--accent);
+    background-color: var(--accent-soft);
+}
+
+.badge-victim {
+    color: var(--status-victim);
+    background-color: var(--status-victim-bg);
+}
+
+.badge-neutral {
+    color: var(--text-tertiary);
+    background-color: var(--bg-surface-alt);
+}
+
 /* Applied briefly by JS alongside the class swap above, for the moment a
    badge's classification actually changes (not on every poll): a short
    scale pop on top of the colour transition, the highest-signal moment
@@ -797,6 +834,48 @@ tr:hover td {
     border-radius: 999px;
     color: var(--status-warning);
     background-color: var(--status-warning-bg);
+}
+
+/* A short inline reference to a file path, flag, or config key inside
+   body text, e.g. "edit --interface in the unit file". Was a one-off
+   inline style on a single page; pulled out since the pattern (point a
+   reader at a real path or flag inline) recurs anywhere the console
+   tells an operator what to go edit by hand. */
+.code-chip {
+    font-family: var(--font-mono);
+    background: var(--bg-code);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85em;
+}
+
+/* A short labelled list of facts inside an info panel, e.g. "Capture
+   mode: transparent bridge/tap", one or more per panel. .kv-list is the
+   <dl>, block level; each .kv-row is one dt/dd pair, laid out as its own
+   flex row so multiple rows stack instead of all their labels and
+   values running together on one line. */
+.kv-list {
+    margin: 0;
+}
+.kv-row {
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85rem;
+}
+.kv-row:last-child {
+    border-bottom: none;
+}
+.kv-row dt {
+    flex: 0 0 160px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.kv-row dd {
+    flex: 1;
+    color: var(--text-primary);
+    margin: 0;
 }
 
 /* Charts */
