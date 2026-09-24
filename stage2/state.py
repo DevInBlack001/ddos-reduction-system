@@ -72,6 +72,13 @@ last_classification_by_target = {}
 # cfg["block_duration_seconds"] (see alerts.py).
 last_block_alert = {}
 
+# V10: victim_ip -> highest of the four enforcement tiers (1-4) that fired
+# this window, 0 if none did. Set alongside each tier's own
+# _timed_enforcement() call in ipc_receiver.py; it only records which tier
+# already fired, it never changes any tier's own threshold or gating
+# logic. Read once per window by playbooks.py's tier_reached trigger.
+last_tier_reached = {}
+
 # ip -> {"victim_ip", "rate", "timestamp", "action"} for addresses a block
 # named as attackers, which is a stricter set than either ipset: the
 # rate-limit set also holds flash crowd precautions and the aggregate

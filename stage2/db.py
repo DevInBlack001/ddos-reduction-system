@@ -179,3 +179,123 @@ def purge_metrics_history():
         except Exception as e:
             _close()
             logging.error(f"[-] Failed to purge metrics history: {e}")
+
+
+# V10: playbooks. Reads use their own short-lived connect() (dashboard
+# routes), writes go through the shared writer lock like everything above,
+# since the live service's window-processing loop is the other writer.
+
+
+def get_enabled_playbooks_for_host(victim_ip):
+    """Playbooks whose target_scope matches this host: an exact host match,
+    or scope_type 'all'. 'subnet' scope is stored but not matched here yet,
+    left for the dashboard's editing surface to validate; evaluating a CIDR
+    membership check against every window is deferred until a playbook
+    actually uses that scope type."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, definition FROM playbooks WHERE enabled = 1 AND "
+            "(target_scope_type = 'all' OR "
+            " (target_scope_type = 'host' AND target_scope_value = ?))",
+            (victim_ip,)
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_active_playbook_run(playbook_id, target_host):
+    """The `running` row for this (playbook, host) pair, or None. Checked
+    before starting a new run so a still-firing trigger doesn't spawn
+    duplicate runs."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, current_stage_index, target_source, started_at FROM playbook_runs "
+            "WHERE playbook_id = ? AND target_host = ? AND status = 'running'",
+            (playbook_id, target_host)
+        ).fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def start_playbook_run(playbook_id, target_host, target_source, trigger_reason, now):
+    with _lock:
+        try:
+            conn = _open()
+            cur = conn.execute(
+                "INSERT INTO playbook_runs "
+                "(playbook_id, target_host, target_source, current_stage_index, status, "
+                " trigger_reason, started_at, updated_at) "
+                "VALUES (?, ?, ?, 0, 'running', ?, ?, ?)",
+                (playbook_id, target_host, target_source, trigger_reason, now, now)
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to start playbook run: {e}")
+            return None
+
+
+def get_running_playbook_runs():
+    """Every `running` row, for the once-per-window stage advancement pass
+    across all active runs, regardless of which host's window is currently
+    being processed."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, playbook_id, target_host, target_source, current_stage_index, "
+            "started_at, updated_at FROM playbook_runs WHERE status = 'running'"
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_playbook_definition(playbook_id):
+    conn = connect()
+    try:
+        row = conn.execute("SELECT definition FROM playbooks WHERE id = ?", (playbook_id,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def record_playbook_event(run_id, stage_index, stage_type, target_source, detail, now):
+    with _lock:
+        try:
+            conn = _open()
+            conn.execute(
+                "INSERT INTO playbook_events (run_id, stage_index, stage_type, fired_at, "
+                "target_source, detail) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, stage_index, stage_type, now, target_source, detail)
+            )
+            conn.commit()
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to record playbook event: {e}")
+
+
+def advance_playbook_run(run_id, next_stage_index, now):
+    """Advance to the next stage, or mark the run completed when
+    `next_stage_index` is None (the stage list is exhausted)."""
+    with _lock:
+        try:
+            conn = _open()
+            if next_stage_index is None:
+                conn.execute(
+                    "UPDATE playbook_runs SET status = 'completed', updated_at = ? WHERE id = ?",
+                    (now, run_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE playbook_runs SET current_stage_index = ?, updated_at = ? WHERE id = ?",
+                    (next_stage_index, now, run_id)
+                )
+            conn.commit()
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to advance playbook run: {e}")

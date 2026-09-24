@@ -95,8 +95,9 @@ PRETRAINING_CSV_PATH = os.environ.get("PRETRAINING_CSV_PATH", os.path.join(_STAT
 # never had any way into confidence gated automatic labeling, the training
 # set only ever grew Normal and Flash Crowd. auto_label.py re-scores
 # these the same way, same agreement, confidence, and freshness checks,
-# before any of it reaches training data. See docs/roadmap.md#known-gaps
-# for the full reasoning this closes.
+# before any of it reaches training data. See docs/lessons-learned.md
+# ("A capture path that only fed two of three classes") for the full
+# reasoning this closes.
 DDOS_CAPTURE_CSV_PATH = os.environ.get("DDOS_CAPTURE_CSV_PATH", os.path.join(_STATE_DIR, "ddos_capture.csv"))
 # Rows auto_label.py has confidently labeled, staged here rather than
 # written into training_data.csv directly: nothing enters the
@@ -112,6 +113,10 @@ SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(_STATE_DIR,
 # handoff, inference, enforcement, and window close to rule applied). 0
 # turns them off. A starting point, not a proven value.
 LATENCY_LOG_INTERVAL_SECS = float(os.environ.get("LATENCY_LOG_INTERVAL_SECS", "30"))
+# V10: where a playbook's report stage writes its PDF, since it fires mid
+# incident rather than waiting for an operator to pull one from the
+# Incident Response page. See docs/specs/2026-09-13-playbooks-design.md.
+PLAYBOOK_REPORTS_DIR = os.environ.get("PLAYBOOK_REPORTS_DIR", os.path.join(_STATE_DIR, "playbook_reports"))
 # Starting points, not proven values, same convention as every other
 # tuning default in this project.
 AUTO_LABEL_DELAY_HOURS = float(os.environ.get("AUTO_LABEL_DELAY_HOURS", "24"))

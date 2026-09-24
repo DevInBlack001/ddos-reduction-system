@@ -42,37 +42,46 @@
     --radius: 6px;
     --transition-speed: 0.15s;
 
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* V10: Inter is the chosen UI face; falls back to the system stack
+       until a <link> for it is added to the page templates, which is
+       page-redesign work not done in this pass. */
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
+/* V10, "Operations console" direction: dark graphite, cyan primary, amber
+   and red reserved strictly for the warning/critical states so an alert
+   colour never doubles as ordinary UI chrome. Applied here to the dark
+   theme's tokens only; the light theme above is unchanged, and which
+   theme is the page default is a separate decision, not made by this
+   pass. See docs/roadmap.md's V10 entry. */
 :root[data-theme="dark"] {
-    --bg-page: #10141d;
-    --bg-surface: #171d29;
-    --bg-surface-alt: #1c2330;
-    --bg-hover: #212a3a;
-    --bg-code: #0d1119;
+    --bg-page: #0f1419;
+    --bg-surface: #1a2129;
+    --bg-surface-alt: #212a33;
+    --bg-hover: #26303a;
+    --bg-code: #0d1319;
 
-    --border-color: #2a3242;
-    --border-strong: #3a4457;
+    --border-color: #2a3540;
+    --border-strong: #3a4753;
 
-    --accent: #3b82f6;
-    --accent-hover: #60a5fa;
-    --accent-soft: rgba(59, 130, 246, 0.16);
+    --accent: #4fd1e8;
+    --accent-hover: #6fdbee;
+    --accent-soft: rgba(79, 209, 232, 0.14);
 
-    --text-primary: #e6e9ef;
-    --text-secondary: #9aa4b8;
-    --text-tertiary: #6b7488;
-    --text-on-accent: #ffffff;
+    --text-primary: #e4e8ec;
+    --text-secondary: #8b96a3;
+    --text-tertiary: #5f6b78;
+    --text-on-accent: #0b1216;
 
-    --status-success: #4ade80;
-    --status-success-bg: rgba(74, 222, 128, 0.12);
-    --status-warning: #fbbf24;
-    --status-warning-bg: rgba(251, 191, 36, 0.12);
-    --status-danger: #f87171;
-    --status-danger-bg: rgba(248, 113, 113, 0.14);
-    --status-info: #60a5fa;
-    --status-info-bg: rgba(96, 165, 250, 0.14);
+    --status-success: #52d489;
+    --status-success-bg: rgba(82, 212, 137, 0.12);
+    --status-warning: #f0a94e;
+    --status-warning-bg: rgba(240, 169, 78, 0.12);
+    --status-danger: #f06a5a;
+    --status-danger-bg: rgba(240, 106, 90, 0.14);
+    --status-info: #4fd1e8;
+    --status-info-bg: rgba(79, 209, 232, 0.14);
     --status-victim: #a78bfa;
     --status-victim-bg: rgba(167, 139, 250, 0.16);
     --status-anomaly: #a78bfa;
@@ -84,32 +93,32 @@
 
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]):not([data-theme="dark"]) {
-        --bg-page: #10141d;
-        --bg-surface: #171d29;
-        --bg-surface-alt: #1c2330;
-        --bg-hover: #212a3a;
-        --bg-code: #0d1119;
+        --bg-page: #0f1419;
+        --bg-surface: #1a2129;
+        --bg-surface-alt: #212a33;
+        --bg-hover: #26303a;
+        --bg-code: #0d1319;
 
-        --border-color: #2a3242;
-        --border-strong: #3a4457;
+        --border-color: #2a3540;
+        --border-strong: #3a4753;
 
-        --accent: #3b82f6;
-        --accent-hover: #60a5fa;
-        --accent-soft: rgba(59, 130, 246, 0.16);
+        --accent: #4fd1e8;
+        --accent-hover: #6fdbee;
+        --accent-soft: rgba(79, 209, 232, 0.14);
 
-        --text-primary: #e6e9ef;
-        --text-secondary: #9aa4b8;
-        --text-tertiary: #6b7488;
-        --text-on-accent: #ffffff;
+        --text-primary: #e4e8ec;
+        --text-secondary: #8b96a3;
+        --text-tertiary: #5f6b78;
+        --text-on-accent: #0b1216;
 
-        --status-success: #4ade80;
-        --status-success-bg: rgba(74, 222, 128, 0.12);
-        --status-warning: #fbbf24;
-        --status-warning-bg: rgba(251, 191, 36, 0.12);
-        --status-danger: #f87171;
-        --status-danger-bg: rgba(248, 113, 113, 0.14);
-        --status-info: #60a5fa;
-        --status-info-bg: rgba(96, 165, 250, 0.14);
+        --status-success: #52d489;
+        --status-success-bg: rgba(82, 212, 137, 0.12);
+        --status-warning: #f0a94e;
+        --status-warning-bg: rgba(240, 169, 78, 0.12);
+        --status-danger: #f06a5a;
+        --status-danger-bg: rgba(240, 106, 90, 0.14);
+        --status-info: #4fd1e8;
+        --status-info-bg: rgba(79, 209, 232, 0.14);
         --status-victim: #a78bfa;
         --status-victim-bg: rgba(167, 139, 250, 0.16);
         --status-anomaly: #a78bfa;

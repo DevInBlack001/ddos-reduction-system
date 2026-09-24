@@ -24,6 +24,7 @@ import state
 import db
 import enforcement
 import alerts
+import playbooks
 from latency import LatencyStats
 
 
@@ -101,7 +102,8 @@ PRETRAINING_CSV_HEADER = [
 # gated automatic labeling has a real path to new DDoS examples too, not
 # only Normal and Flash Crowd. Same 13 base columns, no context columns:
 # there is no Isolation Forest verdict to carry along here, DDoS is never
-# checked against it. See docs/roadmap.md#known-gaps.
+# checked against it. See docs/lessons-learned.md
+# ("A capture path that only fed two of three classes").
 DDOS_CAPTURE_CSV_HEADER = [
     "entropy", "ewma_rate", "mean_h", "mean_r", "sigma_h", "sigma_r",
     "proto_ratio", "dominant_ip_ratio", "source_port_entropy", "ttl_variance",
@@ -687,6 +689,12 @@ def run_ipc_receiver():
                 else:
                     state.consecutive_ddos_windows[victim_ip_str] = 0
 
+                # V10: which of the four tiers below fires this window, 0 if
+                # none. Purely observational, set alongside each tier's own
+                # enforcement call further down; nothing here changes any
+                # tier's own threshold or gating logic.
+                state.last_tier_reached[victim_ip_str] = 0
+
                 # Trigger block / rate-limit
                 if pred_class == 2:
                     if ip_str not in ("Unknown", "0.0.0.0", "::"):
@@ -722,6 +730,7 @@ def run_ipc_receiver():
                             _timed_enforcement(timestamp, enforcement.block_ip, ip_str, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=dominant_rate, entropy=entropy)
                             _maybe_alert_block(ip_str, victim_ip_str, dominant_rate, cfg)
                             acted_on.add(ip_str)
+                            state.last_tier_reached[victim_ip_str] = max(state.last_tier_reached[victim_ip_str], 1)
 
                         # Tier 2, independent per-source-rate escalation.
                         # NOT gated behind dominant_ip_ratio: a source
@@ -743,6 +752,7 @@ def run_ipc_receiver():
                                     _timed_enforcement(timestamp, enforcement.block_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["block_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                     _maybe_alert_block(f_ip, victim_ip_str, agg_rate, cfg)
                                     acted_on.add(f_ip)
+                                    state.last_tier_reached[victim_ip_str] = max(state.last_tier_reached[victim_ip_str], 2)
 
                         if not block_ready and per_source_rate:
                             logging.info(
@@ -761,6 +771,7 @@ def run_ipc_receiver():
                             if agg_rate >= flow_threshold:
                                 _timed_enforcement(timestamp, enforcement.ratelimit_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=agg_rate, entropy=entropy)
                                 acted_on.add(f_ip)
+                                state.last_tier_reached[victim_ip_str] = max(state.last_tier_reached[victim_ip_str], 3)
 
                         # Tier 4, aggregate cap fallback. Class-2 verdict but
                         # nothing above matched any single source individually
@@ -782,6 +793,7 @@ def run_ipc_receiver():
                             )
                             for f_ip, f_rate in per_source_rate.items():
                                 _timed_enforcement(timestamp, enforcement.ratelimit_ip, f_ip, victim_ip=victim_ip_str, duration=cfg["ratelimit_duration_seconds"], src_rate=f_rate, entropy=entropy)
+                            state.last_tier_reached[victim_ip_str] = max(state.last_tier_reached[victim_ip_str], 4)
                         elif not per_source_rate and not acted_on:
                             logging.warning("[!] Class-2 verdict but no active flow data available to act on.")
                 elif pred_class == 1:
@@ -821,6 +833,41 @@ def run_ipc_receiver():
                     if dominant_ip_known:
                         db.log_incident(timestamp, ip_str, pred_name, victim_ip_str,
                                         dominant_rate, entropy)
+
+                # V10: playbook trigger check and stage advancement.
+                #
+                # The design spec calls for this immediately after
+                # apply_safety_overrides(), since a playbook's trigger check
+                # reads the tier the window was just classified into and
+                # must run after that decision is made. In this codebase the
+                # tier (1-4) is decided inside the enforcement block above,
+                # not at apply_safety_overrides() time, so this runs here
+                # instead, after state.last_tier_reached for this host is
+                # final for the window. Same intent, later call site.
+                #
+                # hosts_under_attack is read from last_classification_by_target,
+                # already updated for this host earlier in this same window
+                # (the DDoS/Resolved alert block above); a host's own entry
+                # reflects this window, every other tracked host reflects
+                # its own last processed window, not necessarily this same
+                # instant, which is the "once per window cycle" the design
+                # spec calls for in the absence of a synchronized multi-host
+                # batch boundary this project does not have.
+                try:
+                    hosts_under_attack = sum(
+                        1 for c in state.last_classification_by_target.values() if c == "DDoS"
+                    )
+                    playbooks.check_and_start_runs(
+                        victim_ip_str,
+                        state.last_tier_reached.get(victim_ip_str, 0),
+                        state.consecutive_ddos_windows.get(victim_ip_str, 0),
+                        hosts_under_attack,
+                        ip_str if dominant_ip_known else None,
+                        now=timestamp,
+                    )
+                    playbooks.advance_runs(now=timestamp)
+                except Exception as e:
+                    logging.error(f"[-] Playbook evaluation failed: {e}")
 
                 busy_secs = time.time() - received_at
                 latency_stats.record("busy", busy_secs * 1000.0)
