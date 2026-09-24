@@ -225,7 +225,7 @@ interval's p95 and the maximum is the largest seen.
   backend sees the filtered set, so the two throughput figures differ by design.
 - Downtime measures the sensor restart. Traffic that arrives while the sensor
   is stopped goes unobserved. The full comparison of this window matters most
-  for V14, where a fallback from a failed in-kernel program to the user space
+  for V16, where a fallback from a failed in-kernel program to the user space
   Random Forest is planned (see the [roadmap](roadmap.md)).
 
 ## Results

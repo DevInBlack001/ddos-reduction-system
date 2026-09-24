@@ -187,22 +187,67 @@ capture backends.
 
 ## Planned
 
-V9 through V14 below are ordered by difficulty, easiest first, so the
+V9 through V16 below are ordered by difficulty, easiest first, so the
 milestone number is a build-order estimate that carries no ranking of
-importance. Kernel level work has consistently
-been the most expensive part of this project to get right (the eBPF
-milestone's own "compiled, passed its own tests, and did nothing" episode,
-recorded elsewhere in this project's notes, is the cautionary example),
-which is why the firewall backend work below sits behind the playbook work
-despite being smaller in surface area. V15 and V16 are exceptions to that
-ordering, both appended after the fact rather than slotted in by
-difficulty: V15 sits last because it is the only one with no path to
-validation right now, and V16 because it was decided after V9 through V15
-were already numbered, even though in practice it is small, self
-contained in `stage1/src/analysis.rs`, and worth doing ahead of V9 rather
-than in number order.
+importance. Kernel level work has consistently been the most expensive
+part of this project to get right (the eBPF milestone's own "compiled,
+passed its own tests, and did nothing" episode, recorded elsewhere in
+this project's notes, is the cautionary example), which is why the
+firewall backend work below sits behind both the playbook work and the
+source counting work despite being smaller in surface area than the
+first. V17 is the one exception to this ordering: it sits last not
+because it is the hardest, but because it is the only one with no path
+to validation right now.
 
-**V9, operator defined playbooks, granular incident reporting, and a redesigned
+**V9, relative sigma floors.** The rate and entropy sigma floors are
+global while the baselines they bound are per victim, so one set of
+protected hosts carrying different volumes cannot be fitted by a single
+value. Measured across three hosts spanning 3.7 times in mean rate, the
+per host rate floors spanned 4.4 times; expressed as a fraction of each
+host's own mean they spanned only 1.2 times, sitting between 0.22 and
+0.26.
+
+The consequence is uneven sensitivity. A global floor sized for the
+busiest host leaves the quietest needing several times its own normal
+volume before anything trips, while sizing it for the quietest flags the
+busiest continuously. A flagged window then freezes the baseline, since
+the `window_is_clean()` exception covers an entropy only flag and a busy
+host trips on rate, so the standard deviation cannot grow to reflect the
+variation that caused it: the same failure the entropy floor once had, on
+the other axis. It is worse when a host that is not a protected service
+ends up in the target set; a gateway carrying seven times the volume of
+the services behind it pushed the floor span to 8.9 times and flagged a
+third of its own windows, and excluding it took every remaining host to
+zero flagged windows.
+
+The fix mirrors what the rate sigma ceiling already does one line below
+in the same expression: scale against the target's own mean, keeping the
+absolute floor as a backstop for a target still near zero during warm-up.
+
+```
+floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
+```
+
+Explicit per target overrides were considered and deferred. Targets are
+created on first sight, so a table calibrated today has no entry for a
+host that appears tomorrow, and a global fallback is needed regardless. A
+ratio already yields a different floor per target, derived from that
+target's own traffic, and follows it as the traffic changes; an override
+belongs on top of that later if some host proves the ratio wrong for it
+specifically.
+
+One invariant needs asserting at startup as part of this work: the floor
+must stay below the ceiling. A floor ratio near 0.30 exceeds the default
+ceiling ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that
+silently in the ceiling's favour, producing a smaller sigma than either
+setting intends. Currently masked because `rate_sigma_ceiling_floor` holds
+the ceiling at a flat value at ordinary volumes.
+
+Ranked first because it is the smallest and lowest risk milestone on this
+list: contained to `stage1/src/analysis.rs`, `AnalysisConfig`, and a CLI
+flag, with no wire format or kernel change.
+
+**V10, operator defined playbooks, granular incident reporting, and a redesigned
 web interface.** The
 four existing enforcement tiers keep running automatically on every window
 exactly as they do today; a playbook is a separate layer on top that starts
@@ -249,7 +294,7 @@ functional and plain: static styling, no motion, and nothing that gives a first
 time visitor a reason to keep looking, which limits how many people will try the
 project however well the detection works. The redesign covers the layout,
 typography and color, the charts, and motion where it helps someone read the
-state of the gateway, across every page under `stage2/static/`. It sits in V9
+state of the gateway, across every page under `stage2/static/`. It sits in V10
 because the playbook builder and the redesigned reports are new pages, and
 building them on the old styling would mean designing them twice. Not designed
 yet, and it should be checked in a browser as it is built.
@@ -257,9 +302,51 @@ yet, and it should be checked in a browser as it is built.
 Large in surface area (a new schema, a new dashboard builder, a stateful
 per host execution engine, and a redesign of every page) but entirely
 application level, no verifier to satisfy and no kernel programming risk, which
-is why it ranks below V8 on raw scope but above V10 on difficulty.
+is why it ranks below V8 on raw scope but above V11 on difficulty.
 
-**V10, firewall backend abstraction.** Enforcement currently assumes
+**V11, attacker-resistant source counting.** `SOURCES`, the per host,
+per source packet count both entropy and `dominant_ip_ratio` are computed
+from, is an exact hash map with a fixed capacity. It is not value keyed
+the way V7's `PORT_HIST`, `TTL_HIST`, and `FINGERPRINT_HIST` are, because
+source address space, unlike a 16 bit port or an 8 bit TTL, is too wide to
+enumerate as a fixed table. Once the map is full, `bump()`'s `insert()`
+call for a new key fails and is silently discarded
+(`stage1-ebpf/src/main.rs`), so packets from any source past the 65,536th
+distinct one that window are invisible to both entropy and dominance for
+the rest of it. `--max-sources` moves where that line falls; it does not
+change what happens at it.
+
+Measured on 2026-08-22 at a peak of 17,962 packets per second sustained
+across the flood phase, from roughly 2,200 distinct addresses, `SOURCES`
+reached 2,190 of its 65,536 entries and `FLOWS` reached 2,212 of 8,192,
+error counter at zero throughout. A randomized source flood forging a
+source per packet at the same rate would fill `SOURCES` in under four
+seconds and a million in under a minute: the map holds under a real
+flood's address count, and degrades once an attacker targets the key
+itself, which is the case this milestone closes.
+
+Replace the exact `HashMap` with a Count-Min Sketch: a fixed size counter
+array a packet always increments, however many distinct sources have been
+seen. No packet goes uncounted, at floods far past what any fixed capacity
+could hold. Hash collisions add noise to the frequency estimate instead of
+a hard capacity wall, and that noise is bounded by the sketch's width and
+settles at a known error rate for a given traffic volume, in contrast to
+the current structure, whose degradation has no bound once a flood passes
+the cap. A small, fixed size heavy hitter structure (Misra-Gries or
+Space-Saving) alongside it gives `dominant_ip_ratio` the same protection,
+since it reads from the same counts.
+
+Touches both capture backends, since the pcap backend keeps its own
+equivalent per-source count structure in user space, and needs the same
+measurement discipline V7's histograms got before being trusted: a real
+flood, not just passing tests, before its entropy figures are believed.
+Ranked ahead of the firewall backend work below because the kernel change
+here is mandatory and bounded, a map type swap with no new attach hook,
+where V12's kernel path is conditional (XDP only where driver mode is
+already active) and carries attach time verifier and driver risk this one
+does not.
+
+**V12, firewall backend abstraction.** Enforcement currently assumes
 `iptables` and two `ipset`s unconditionally. Not every deployment runs
 `iptables` as its live ruleset, some run `nftables` instead, sometimes with
 `iptables` only present as a compatibility shim over it, and detecting
@@ -281,13 +368,14 @@ on hardware without it, or when the pcap capture backend is active instead,
 XDP is not a candidate at all and the choice is strictly `nftables` versus
 `iptables`.
 
-Ranked below V9 despite a smaller surface area because kernel level work
-of any kind, XDP based blocking included, has been the consistently most
-expensive category of work in this project to get right the first time,
-where the application level playbook work above carries no equivalent
-verifier or driver risk.
+Ranked below V10 and V11 despite a smaller surface area because kernel
+level work of any kind, XDP based blocking included, has been the
+consistently most expensive category of work in this project to get
+right the first time, and here it is unconditional: every deployment
+needs an attach time decision among three candidates, where V11's kernel
+change is a bounded map swap with no attach hook at all.
 
-**V11, multi interface aggregation.** Traffic statistics aggregated across
+**V13, multi interface aggregation.** Traffic statistics aggregated across
 several parallel ingress uplinks.
 
 The code itself is likely not the hard part, it would reuse the per CPU
@@ -299,7 +387,7 @@ that changes. Ranked by readiness rather than by code difficulty for that
 reason; revisit this position if a multi uplink topology becomes available
 sooner than the milestones ranked above it are ready to build.
 
-**V12, federated peer signalling.** Cooperating gateways exchange authenticated
+**V14, federated peer signalling.** Cooperating gateways exchange authenticated
 advisory reports, so the peer that owns an address, the only party able to see
 individual hosts behind its own NAT, investigates and acts locally instead of
 the receiving gateway blackholing a shared address.
@@ -307,11 +395,11 @@ the receiving gateway blackholing a shared address.
 Conceptually aligned with IETF DOTS. Requires mutual authentication and a
 static peer registry, and applies only within a federation of cooperating
 gateways, not to arbitrary sources. The highest complexity and the highest
-stakes of the five: a new wire protocol and a cross organization trust
+stakes on this list: a new wire protocol and a cross organization trust
 boundary, where a design mistake means one gateway trusting another's report
 it should not have.
 
-**V13, connection and flow state pressure detection.** The window level rate
+**V15, connection and flow state pressure detection.** The window level rate
 and entropy features, V7's port, TTL, and fingerprint histograms included,
 all describe volume. None of them describe state: how many flows are open,
 how long they stay open, or what fraction of a window's flows ever complete
@@ -357,26 +445,26 @@ with the existing RandomForest pipeline, and scored against the existing
 Isolation Forest without retraining it first, since the point of an
 unsupervised second model is to see whether it already reads the new class
 as unlike its training data before it is ever shown one. Benchmarked
-against the current, pre V13 model with `benchmark_fixed_threshold.py`'s
+against the current, pre V15 model with `benchmark_fixed_threshold.py`'s
 own LOSO methodology on the new classes specifically, not folded into the
 aggregate accuracy figure where a small new class could hide inside a large
 one.
 
-Connection and flow state pressure becomes a new playbook trigger once V9
+Connection and flow state pressure becomes a new playbook trigger once V10
 exists, and the mitigation response, rate limiting new connections versus
 limiting concurrent connections per source versus the existing tiers, is a
 playbook's job to sequence rather than a new enforcement tier grafted onto
 the existing four. No new mitigation subsystem is built here for that
 reason.
 
-Appended after the five above rather than interleaved among them: it
-changes both capture backends and the wire format a second time since V7,
-real kernel and verifier risk on top of an already ordered set of
-milestones, and is a new addition to the roadmap rather than a reordering
-of what it already said.
+Ranked this late because it changes both capture backends and the wire
+format a second time since V7, real kernel and verifier risk on top of
+everything else already ahead of it, and because the classes it adds are
+narrower than volumetric detection, worth less until the broader gaps
+above it are closed.
 
-**V14, kernel space inference and enforcement.** Since V6 the kernel counts
-packets and user space decides. V14 moves the decision and the drop into the
+**V16, kernel space inference and enforcement.** Since V6 the kernel counts
+packets and user space decides. V16 moves the decision and the drop into the
 kernel together: the trained Random Forest is compiled into an eBPF program,
 so a verdict and the drop it triggers both happen at XDP, before the kernel
 builds a socket buffer for the packet. The goal is fast inference and fast
@@ -392,12 +480,12 @@ number worth setting a target for. The live benchmark already measures the
 same quantities for a capture mode change: downtime while the sensor
 restarts, and rollback time back to the previous mode.
 
-Placement. V14 comes after V13 for two reasons. It reuses what V10 builds:
+Placement. V16 comes after V15 for two reasons. It reuses what V12 builds:
 the XDP blocking path, verifier experience, map based policy lookup, and
 swapping a program in place. And it compiles against a fixed feature set, and
-V13 is the last milestone on the roadmap that changes the features. The
+V15 is the last milestone on the roadmap that changes the features. The
 fixed feature set stops being a blocker once the program is regenerated every
-time the model retrains, potentially daily. A feature change from V13 then
+time the model retrains, potentially daily. A feature change from V15 then
 becomes one more reason to recompile. The compile step joins the retrain
 cycle V8 built, so it cannot drift into a separate file that goes stale:
 
@@ -406,7 +494,7 @@ cycle V8 built, so it cannot drift into a separate file that goes stale:
 3. Check the program against the user space model on identical inputs, and
    proceed only when the answers match. This check is a requirement for the
    design and is not built yet.
-4. Swap the program into XDP through the V10 path.
+4. Swap the program into XDP through the V12 path.
 
 Risks to check early. First, where the time goes. FLOD classifies once per
 window and classifies no individual packet. If the slow part is collecting
@@ -419,12 +507,12 @@ design needs an answer for how those features are produced inside the
 kernel. Third, program size: a forest of trees per window has to fit the
 verifier's instruction and stack limits.
 
-Suggested order of work: prototype on its own branch after V10 lands, and
+Suggested order of work: prototype on its own branch after V12 lands, and
 prove that the kernel output matches the user space model before anything
 else. Treat the prototype as exploration. It becomes a committed milestone
 once it earns that.
 
-**V15, out-of-band, mirror-port deployment mode.** Not started, and blocked
+**V17, out-of-band, mirror-port deployment mode.** Not started, and blocked
 on hardware: suitable switch or router mirror/SPAN capability is not
 available yet to validate against, since the whole point is behaviour a
 virtual switch or Linux bridge can only approximate. FLOD today sits on the
@@ -442,8 +530,8 @@ The tradeoff is that mitigation becomes a feedback loop rather than a local
 decision, so the time from detection to enforcement is a new quantity worth
 measuring on its own: mirror delivery, feature extraction, classification,
 policy generation, and rule application, each as its own figure, plus how
-much traffic reaches the protected network during that window. V10's
-firewall backend abstraction is related but not sufficient by itself: V10
+much traffic reaches the protected network during that window. V12's
+firewall backend abstraction is related but not sufficient by itself: V12
 chooses which local mechanism enforces on the same box, where this needs a
 policy sent to and applied on a separate device entirely, authenticated,
 with the same conservative handling of an uncertain classification this
@@ -456,57 +544,6 @@ as a later validation step once the pipeline works. Ranked last because it
 is the only planned milestone with no path to validation right now, not
 because of scope or difficulty.
 
-**V16, relative sigma floors.** The rate and entropy sigma floors are
-global while the baselines they bound are per victim, so one set of
-protected hosts carrying different volumes cannot be fitted by a single
-value. Measured across three hosts spanning 3.7 times in mean rate, the
-per host rate floors spanned 4.4 times; expressed as a fraction of each
-host's own mean they spanned only 1.2 times, sitting between 0.22 and
-0.26.
-
-The consequence is uneven sensitivity. A global floor sized for the
-busiest host leaves the quietest needing several times its own normal
-volume before anything trips, while sizing it for the quietest flags the
-busiest continuously. A flagged window then freezes the baseline, since
-the `window_is_clean()` exception covers an entropy only flag and a busy
-host trips on rate, so the standard deviation cannot grow to reflect the
-variation that caused it: the same failure the entropy floor once had, on
-the other axis. It is worse when a host that is not a protected service
-ends up in the target set; a gateway carrying seven times the volume of
-the services behind it pushed the floor span to 8.9 times and flagged a
-third of its own windows, and excluding it took every remaining host to
-zero flagged windows.
-
-The fix mirrors what the rate sigma ceiling already does one line below
-in the same expression: scale against the target's own mean, keeping the
-absolute floor as a backstop for a target still near zero during warm-up.
-
-```
-floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
-```
-
-Explicit per target overrides were considered and deferred. Targets are
-created on first sight, so a table calibrated today has no entry for a
-host that appears tomorrow, and a global fallback is needed regardless. A
-ratio already yields a different floor per target, derived from that
-target's own traffic, and follows it as the traffic changes; an override
-belongs on top of that later if some host proves the ratio wrong for it
-specifically.
-
-One invariant needs asserting at startup as part of this work: the floor
-must stay below the ceiling. A floor ratio near 0.30 exceeds the default
-ceiling ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that
-silently in the ceiling's favour, producing a smaller sigma than either
-setting intends. Currently masked because `rate_sigma_ceiling_floor` holds
-the ceiling at a flat value at ordinary volumes.
-
-Appended after V15 rather than placed by difficulty among V9 through V14,
-the same way V13 and V15 were: a later addition to an already ordered set,
-not a reordering of it. Smaller and lower risk than any of them,
-contained to `stage1/src/analysis.rs`, `AnalysisConfig`, and a CLI flag,
-with no wire format or kernel change, so its actual build order can run
-ahead of its number.
-
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own
 gateway on Linux, with Stage 1 on the packet path and Stage 2 enforcing
@@ -517,7 +554,7 @@ those two are FreeBSD based and use pf, so neither the XDP and TC capture
 nor the ipset enforcement would carry over. A port would need a capture
 backend and an enforcement backend for each platform, with detection
 (entropy, the baselines, the models) staying as it is, since it does not
-depend on either. V10's firewall backend abstraction is the natural
+depend on either. V12's firewall backend abstraction is the natural
 starting point, and a libpcap capture already exists as the portable
 option. Platforms that are Linux based would be closer to a packaging job.
 Which platforms, and whether the effort is worth it, is undecided.

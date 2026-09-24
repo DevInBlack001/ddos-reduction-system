@@ -21,7 +21,7 @@ connections, or an equivalent build up of low rate UDP pseudo flows,
 spread across many real, non spoofed sources reads as normal rate and
 high entropy today, the same numbers a legitimate high traffic period
 produces. Nothing in the current feature set measures accumulation over
-more than one window or the completion state of a flow. It needs the V13
+more than one window or the completion state of a flow. It needs the V15
 features, not a configuration change.
 
 **The training set and the deployed sigma floors are captured under

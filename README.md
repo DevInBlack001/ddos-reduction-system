@@ -193,7 +193,7 @@ been through the adversarial testing a production security product needs.
 Deploy it on a lab network or somewhere you can afford to have it be wrong.
 
 The dashboard is functional and plain. A visual redesign is planned as part of
-V9; see the [roadmap](docs/roadmap.md#planned).
+V10; see the [roadmap](docs/roadmap.md#planned).
 
 
 ## Licence
