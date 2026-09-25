@@ -6,7 +6,7 @@ every route module can import from here without risking a cycle.
 """
 
 import ipaddress
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, field_validator
@@ -183,3 +183,13 @@ class AlertsConfigPayload(BaseModel):
     smtp_username: Optional[str] = None
     smtp_app_password: Optional[str] = None
     email_recipients: Optional[List[str]] = None
+    telegram_enabled: Optional[bool] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    # A generic outgoing webhook, for any platform without its own named
+    # integration (Slack, ntfy, a custom receiver, ...): a URL plus
+    # optional extra headers for an API key or bearer token, rather than
+    # a dedicated panel per platform.
+    webhook_enabled: Optional[bool] = None
+    webhook_url: Optional[str] = None
+    webhook_headers: Optional[Dict[str, str]] = None

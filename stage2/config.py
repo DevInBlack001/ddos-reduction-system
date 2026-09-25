@@ -248,6 +248,12 @@ DEFAULT_ALERTS_CONFIG = {
     "smtp_username": "",
     "smtp_app_password": "",
     "email_recipients": [],
+    "telegram_enabled": False,
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "webhook_enabled": False,
+    "webhook_url": "",
+    "webhook_headers": {},
 }
 
 

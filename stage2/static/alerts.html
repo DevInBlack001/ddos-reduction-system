@@ -141,6 +141,72 @@
                     </div>
                     <div id="emailTestResult" class="channel-status" style="margin-top: 8px;"></div>
                 </div>
+
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Telegram</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="telegramEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-grid">
+                        <div class="threshold-field">
+                            <label for="telegramBotToken">Bot token</label>
+                            <input type="password" id="telegramBotToken" class="form-input" placeholder="123456789:ABC-DEF...">
+                            <span class="threshold-hint" id="telegramBotTokenHint">Leave blank to keep the current one.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="telegramChatId">Chat ID</label>
+                            <input type="text" id="telegramChatId" class="form-input" placeholder="-1001234567890">
+                        </div>
+                    </div>
+                    <div class="info-note" style="margin: 10px 0 0;">
+                        Create a bot with Telegram's <code>@BotFather</code>, add it to the target chat or
+                        channel, and use that chat's ID here. WhatsApp is not offered as a named integration:
+                        its official Business Platform needs Meta business verification and pre-approved
+                        message templates before it can send anything unprompted, which is outside what this
+                        dashboard can set up. The Custom Webhook panel below can reach a WhatsApp gateway
+                        you already have (e.g. Twilio's WhatsApp API), or any other platform.
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('telegram')">Send Test Alert</button>
+                    </div>
+                    <div id="telegramTestResult" class="channel-status" style="margin-top: 8px;"></div>
+                </div>
+
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Custom Webhook</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="webhookEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="webhookUrl">URL</label>
+                        <input type="password" id="webhookUrl" class="form-input" placeholder="https://your-endpoint.example.com/alert">
+                        <span class="threshold-hint" id="webhookUrlHint">Leave blank to keep the current one.</span>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="webhookHeaders">Extra headers (JSON object, optional)</label>
+                        <input type="text" id="webhookHeaders" class="form-input" placeholder='{"Authorization": "Bearer ..."}'>
+                        <span class="threshold-hint" id="webhookHeadersHint">For an API key or bearer token most receivers expect. Leave blank to keep the current ones, or to send none.</span>
+                    </div>
+                    <div class="info-note" style="margin: 10px 0 0;">
+                        Posts one fixed JSON body: <code>subject</code>, <code>message</code>, <code>text</code>
+                        (subject and message combined, for a Slack- or Teams-compatible incoming webhook), and
+                        <code>title</code> (alongside <code>message</code>, for ntfy). For any platform with its
+                        own gateway or bot API that accepts a webhook, this is how to reach it, FLOD does not
+                        integrate with any platform's own API directly beyond Discord, email, and Telegram above.
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('webhook')">Send Test Alert</button>
+                    </div>
+                    <div id="webhookTestResult" class="channel-status" style="margin-top: 8px;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -168,6 +234,24 @@
                 document.getElementById('smtpAppPasswordHint').innerText = cfg.smtp_app_password_set
                     ? 'A password is already saved, leave blank to keep it.'
                     : 'No password saved yet.';
+
+                document.getElementById('telegramEnabled').checked = !!cfg.telegram_enabled;
+                document.getElementById('telegramBotToken').value = '';
+                document.getElementById('telegramBotTokenHint').innerText = cfg.telegram_bot_token_set
+                    ? 'A bot token is already saved, leave blank to keep it.'
+                    : 'No bot token saved yet.';
+                document.getElementById('telegramChatId').value = cfg.telegram_chat_id || '';
+
+                document.getElementById('webhookEnabled').checked = !!cfg.webhook_enabled;
+                document.getElementById('webhookUrl').value = '';
+                document.getElementById('webhookUrlHint').innerText = cfg.webhook_url_set
+                    ? 'A URL is already saved, leave blank to keep it.'
+                    : 'No URL saved yet.';
+                document.getElementById('webhookHeaders').value = '';
+                const headerNames = cfg.webhook_header_names || [];
+                document.getElementById('webhookHeadersHint').innerText = headerNames.length
+                    ? `Headers already saved: ${headerNames.join(', ')}. Leave blank to keep them, or retype the full JSON object to replace them.`
+                    : 'For an API key or bearer token most receivers expect. Leave blank to keep the current ones, or to send none.';
             } catch (err) {
                 console.error("Failed to load alerts config:", err);
             }
@@ -182,14 +266,38 @@
                 smtp_username: document.getElementById('smtpUsername').value,
                 email_recipients: document.getElementById('emailRecipients').value
                     .split(',').map(s => s.trim()).filter(Boolean),
+                telegram_enabled: document.getElementById('telegramEnabled').checked,
+                telegram_chat_id: document.getElementById('telegramChatId').value,
+                webhook_enabled: document.getElementById('webhookEnabled').checked,
             };
-            const webhookUrl = document.getElementById('discordWebhookUrl').value;
-            if (webhookUrl) {
-                payload.discord_webhook_url = webhookUrl;
+            const webhookUrlField = document.getElementById('discordWebhookUrl').value;
+            if (webhookUrlField) {
+                payload.discord_webhook_url = webhookUrlField;
             }
             const appPassword = document.getElementById('smtpAppPassword').value;
             if (appPassword) {
                 payload.smtp_app_password = appPassword;
+            }
+            const telegramBotToken = document.getElementById('telegramBotToken').value;
+            if (telegramBotToken) {
+                payload.telegram_bot_token = telegramBotToken;
+            }
+            const webhookUrl = document.getElementById('webhookUrl').value;
+            if (webhookUrl) {
+                payload.webhook_url = webhookUrl;
+            }
+            const webhookHeadersRaw = document.getElementById('webhookHeaders').value.trim();
+            if (webhookHeadersRaw) {
+                try {
+                    const parsed = JSON.parse(webhookHeadersRaw);
+                    if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+                        throw new Error('not an object');
+                    }
+                    payload.webhook_headers = parsed;
+                } catch (err) {
+                    alert('Extra headers must be a JSON object, e.g. {"Authorization": "Bearer ..."}.');
+                    return;
+                }
             }
             const res = await fetch('/api/config/alerts', {
                 method: 'POST',
@@ -199,6 +307,9 @@
             if (res.ok) {
                 document.getElementById('smtpAppPassword').value = '';
                 document.getElementById('discordWebhookUrl').value = '';
+                document.getElementById('telegramBotToken').value = '';
+                document.getElementById('webhookUrl').value = '';
+                document.getElementById('webhookHeaders').value = '';
                 await loadAlertsConfig();
             } else {
                 const data = await res.json();

@@ -160,6 +160,7 @@ scripts/test.sh
 | [IPC](docs/ipc.md) | The feature vector wire format |
 | [Enforcement](docs/enforcement.md) | Classification, the four mitigation tiers, NAT handling |
 | [Playbooks](docs/playbooks.md) | Operator-defined trigger/stage sequences layered on top of the four tiers |
+| [Alerts](docs/alerts.md) | Discord, email, Telegram, and a generic webhook for anything else |
 | [Training](docs/training.md) | Capturing labelled data and training the model |
 | [Testing](docs/testing.md) | Running both test suites |
 | [Security](docs/security.md) | The hardening pass and the threat model |

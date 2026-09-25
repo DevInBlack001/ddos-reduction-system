@@ -1,5 +1,6 @@
 """
-alerts.py: Discord webhook + SMTP email alerting.
+alerts.py: Discord webhook, SMTP email, Telegram, and a generic outgoing
+webhook for any other platform.
 
 Real-time alerts (from ipc_receiver.py) are dispatched through a bounded
 background queue/worker thread so a slow or hanging SMTP connection can
@@ -7,6 +8,16 @@ never stall the IPC receive hot path, ipc_receiver.py only ever enqueues,
 never sends synchronously. The one exception is /api/alerts/test, which
 sends synchronously and reports per-channel success/failure, since the
 entire point of a "test" button is immediate feedback on misconfiguration.
+
+Telegram is a named integration (a bot token plus a chat ID, one HTTP
+call) because it needs nothing beyond creating a bot through Telegram's
+own BotFather. WhatsApp deliberately is not: its official Business
+Platform needs Meta business verification, a permanent access token, and
+operator-side approval of message templates before it can send anything
+unprompted, none of which this codebase can set up on an operator's
+behalf. The generic webhook below reaches WhatsApp, Slack, ntfy,
+PagerDuty-style receivers, or anything else that takes an HTTP POST,
+without this codebase taking on a named integration for each one.
 """
 
 import re
@@ -32,7 +43,9 @@ _WEBHOOK_PATH_RE = re.compile(r"/api/webhooks/\d+/[A-Za-z0-9_-]+")
 # Whether each channel's last attempt already reported a failure. A gateway
 # with no route out fails on every alert, and an identical error per attempt
 # buries everything else in the journal.
-_reported_down = {"discord": False, "email": False}
+_reported_down = {"discord": False, "email": False, "telegram": False, "webhook": False}
+
+_TELEGRAM_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 
 
 def _report_failure(channel: str, message: str):
@@ -60,12 +73,24 @@ def _redact_secrets(text: str, cfg: dict) -> str:
     not reformatted by smtplib.
     """
     text = _WEBHOOK_PATH_RE.sub("/api/webhooks/REDACTED", text)
+    text = _TELEGRAM_TOKEN_RE.sub("botREDACTED", text)
     password = cfg.get("smtp_app_password") or ""
     username = cfg.get("smtp_username") or ""
     if password:
         text = text.replace(password, "REDACTED")
     if username:
         text = text.replace(username, "REDACTED")
+    # The generic webhook's own URL (some services encode an API key or
+    # token in the query string, the same reason the Discord webhook path
+    # above is matched by pattern rather than left unredacted) and any
+    # header value an operator configured for it, typically an
+    # Authorization or API-key header.
+    webhook_url = cfg.get("webhook_url") or ""
+    if webhook_url:
+        text = text.replace(webhook_url, "REDACTED")
+    for header_value in (cfg.get("webhook_headers") or {}).values():
+        if header_value:
+            text = text.replace(header_value, "REDACTED")
     return text
 
 
@@ -111,7 +136,66 @@ def send_email_alert(subject: str, body: str):
         return False, err
 
 
-ALERT_CHANNELS = ("discord", "email", "all")
+def send_telegram_alert(message: str):
+    """Returns (success, error_message). One HTTP POST to a bot's own
+    sendMessage endpoint, no third-party account setup beyond creating a
+    bot through Telegram's BotFather and adding it to the target chat,
+    unlike WhatsApp's official Business API which needs Meta business
+    verification and pre-approved message templates before it can send
+    anything unprompted; that's why only Telegram gets a named
+    integration here, and WhatsApp (or anything else) goes through the
+    generic webhook below instead."""
+    cfg = config.get_alerts_config()
+    token = cfg["telegram_bot_token"]
+    chat_id = cfg["telegram_chat_id"]
+    if not cfg["telegram_enabled"] or not token or not chat_id:
+        return False, "Telegram alerts are not enabled/configured."
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        resp = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+        if resp.status_code >= 300:
+            body = _redact_secrets(resp.text[:200], cfg)
+            err = f"Telegram API returned HTTP {resp.status_code}"
+            _report_failure("telegram", f"{err}: {body}")
+            return False, err
+        _report_recovered("telegram")
+        return True, ""
+    except Exception as e:
+        err = _redact_secrets(str(e), cfg)
+        _report_failure("telegram", f"Failed to send Telegram alert: {err}")
+        return False, err
+
+
+def send_webhook_alert(subject: str, message: str):
+    """Returns (success, error_message). Posts one fixed JSON body to an
+    operator-supplied URL, for any platform without its own named
+    integration: subject/message for a custom receiver, text for a
+    Slack- or Teams-compatible incoming webhook, title alongside message
+    for ntfy. Extra headers (an Authorization or API-key header, most
+    commonly) are entirely operator-configured, since what a given
+    receiver needs for auth isn't something this codebase can know in
+    advance."""
+    cfg = config.get_alerts_config()
+    url = cfg["webhook_url"]
+    if not cfg["webhook_enabled"] or not url:
+        return False, "Webhook alerts are not enabled/configured."
+    body = {"subject": subject, "message": message, "text": f"{subject}: {message}", "title": subject}
+    try:
+        resp = requests.post(url, json=body, headers=cfg.get("webhook_headers") or {}, timeout=10)
+        if resp.status_code >= 300:
+            resp_body = _redact_secrets(resp.text[:200], cfg)
+            err = f"Webhook returned HTTP {resp.status_code}"
+            _report_failure("webhook", f"{err}: {resp_body}")
+            return False, err
+        _report_recovered("webhook")
+        return True, ""
+    except Exception as e:
+        err = _redact_secrets(str(e), cfg)
+        _report_failure("webhook", f"Failed to send webhook alert: {err}")
+        return False, err
+
+
+ALERT_CHANNELS = ("discord", "email", "telegram", "webhook", "all")
 
 
 def dispatch_alert(subject: str, message: str, channel: str = "all"):
@@ -120,11 +204,11 @@ def dispatch_alert(subject: str, message: str, channel: str = "all"):
     slow-draining queue during a severe incident shouldn't back-pressure
     the IPC receive loop.
 
-    `channel` restricts delivery to just "discord" or just "email";
-    anything else, including an unrecognised value, falls back to "all"
-    rather than silently dropping the alert, so a bad value here still
-    fails safe toward "definitely delivered" instead of "definitely
-    not"."""
+    `channel` restricts delivery to exactly one of "discord", "email",
+    "telegram", or "webhook"; anything else, including an unrecognised
+    value, falls back to "all" rather than silently dropping the alert,
+    so a bad value here still fails safe toward "definitely delivered"
+    instead of "definitely not"."""
     if channel not in ALERT_CHANNELS:
         channel = "all"
     try:
@@ -141,6 +225,10 @@ def _process_alert(subject: str, message: str, channel: str):
         send_discord_alert(f"**{subject}**\n{message}")
     if channel in ("email", "all"):
         send_email_alert(subject, message)
+    if channel in ("telegram", "all"):
+        send_telegram_alert(f"{subject}\n\n{message}")
+    if channel in ("webhook", "all"):
+        send_webhook_alert(subject, message)
 
 
 def run_alert_worker():
@@ -159,6 +247,12 @@ def _redact(cfg: dict) -> dict:
     safe["smtp_app_password_set"] = bool(safe.pop("smtp_app_password", ""))
     # The webhook URL is itself a credential, so it's redacted the same way.
     safe["discord_webhook_url_set"] = bool(safe.pop("discord_webhook_url", ""))
+    safe["telegram_bot_token_set"] = bool(safe.pop("telegram_bot_token", ""))
+    safe["webhook_url_set"] = bool(safe.pop("webhook_url", ""))
+    # Header values can carry an API key or bearer token; only the header
+    # names are safe to show back, the same reasoning as every other
+    # credential field here.
+    safe["webhook_header_names"] = sorted((safe.pop("webhook_headers", None) or {}).keys())
     return safe
 
 
@@ -179,16 +273,22 @@ def update_alerts_config(payload: AlertsConfigPayload):
 
 @router.post("/api/alerts/test")
 def send_test_alert(channel: str = "all"):
-    """`channel` is "discord", "email", or "all" (default, tests every
-    enabled channel). Scoped per-channel so each panel's own "Send Test
-    Alert" button doesn't also fire the other configured channel."""
-    if channel not in ("discord", "email", "all"):
-        raise HTTPException(status_code=400, detail="channel must be 'discord', 'email', or 'all'.")
+    """`channel` is "discord", "email", "telegram", "webhook", or "all"
+    (default, tests every enabled channel). Scoped per-channel so each
+    panel's own "Send Test Alert" button doesn't also fire the other
+    configured channels."""
+    if channel not in ("discord", "email", "telegram", "webhook", "all"):
+        raise HTTPException(
+            status_code=400,
+            detail="channel must be 'discord', 'email', 'telegram', 'webhook', or 'all'.",
+        )
 
     cfg = config.get_alerts_config()
     test_discord = channel in ("discord", "all") and cfg["discord_enabled"]
     test_email = channel in ("email", "all") and cfg["email_enabled"]
-    if not test_discord and not test_email:
+    test_telegram = channel in ("telegram", "all") and cfg["telegram_enabled"]
+    test_webhook = channel in ("webhook", "all") and cfg["webhook_enabled"]
+    if not any((test_discord, test_email, test_telegram, test_webhook)):
         raise HTTPException(status_code=400, detail="That channel is not enabled.")
 
     results = {}
@@ -203,4 +303,15 @@ def send_test_alert(channel: str = "all"):
             "This is a test message from the FLOD System dashboard. If you're reading this, email alerting is working."
         )
         results["email"] = "ok" if ok else f"failed: {err}"
+    if test_telegram:
+        ok, err = send_telegram_alert(
+            "FLOD System Test Alert\n\nThis is a test message, if you're reading this, Telegram alerting is working."
+        )
+        results["telegram"] = "ok" if ok else f"failed: {err}"
+    if test_webhook:
+        ok, err = send_webhook_alert(
+            "FLOD System Test Alert",
+            "This is a test message from the FLOD System dashboard. If you're reading this, the webhook is working."
+        )
+        results["webhook"] = "ok" if ok else f"failed: {err}"
     return results

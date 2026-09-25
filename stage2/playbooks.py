@@ -25,7 +25,7 @@ import enforcement
 TRIGGER_TYPES = {"tier_reached", "persistence", "scale"}
 STAGE_TYPES = {"escalate", "notify", "report"}
 TRIGGER_MODES = {"any", "all"}
-NOTIFY_CHANNELS = {"all", "discord", "email"}
+NOTIFY_CHANNELS = {"all", "discord", "email", "telegram", "webhook"}
 
 
 class DefinitionError(ValueError):

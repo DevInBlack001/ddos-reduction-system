@@ -84,12 +84,23 @@ class DefinitionValidationTests(unittest.TestCase):
             playbooks.validate_definition(definition)
 
     def test_a_notify_channel_outside_the_closed_list_is_rejected(self):
+        # "slack" specifically: Slack has no named integration, it goes
+        # through the generic "webhook" channel instead, so it stays
+        # outside the closed list on purpose, not an oversight.
         definition = {
             "triggers": [{"type": "tier_reached", "min_tier": 1}],
             "stages": [{"type": "notify", "channel": "slack"}],
         }
         with self.assertRaises(playbooks.DefinitionError):
             playbooks.validate_definition(definition)
+
+    def test_telegram_and_webhook_are_accepted_notify_channels(self):
+        for channel in ("telegram", "webhook"):
+            definition = {
+                "triggers": [{"type": "tier_reached", "min_tier": 1}],
+                "stages": [{"type": "notify", "channel": channel}],
+            }
+            self.assertEqual(playbooks.validate_definition(definition), definition)
 
     def test_a_notify_stage_with_no_channel_at_all_is_still_valid(self):
         # channel defaults to "all" at execution time, so omitting it

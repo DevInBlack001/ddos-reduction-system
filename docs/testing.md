@@ -56,7 +56,7 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-529 tests across storage, configuration, request models, the database schema,
+555 tests across storage, configuration, request models, the database schema,
 the audit writers, enforcement, authentication, the three capture CSV writers
 (Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
 the deterministic safety overrides, IPC peer verification, the latency summary
@@ -76,7 +76,9 @@ the playbook engine (`test_playbooks.py`: each trigger type, both
 history, and report listing including path-traversal and symlink-refusal
 cases), and the incident report's playbook timeline and per-source detail
 sections (`test_report_data.py`). See [Playbooks](playbooks.md) for what
-these exercise.
+these exercise. Alert channel filtering, each channel's success/failure
+paths, and credential redaction from both the config API and a raised
+exception (`test_alerts.py`). See [Alerts](alerts.md).
 
 The benchmark's shell scripts are covered only where they take input: the
 helper's validation, the tuning file rewrite and restore, the delete scope, and
