@@ -468,7 +468,7 @@ if [[ -t 0 ]] && ! $SKIP_TUNING_PROMPT; then
     info "Detection tuning is optional. The defaults are what the system was"
     info "tested against, and the sensor relearns your traffic baseline on its"
     info "own, so most installs should keep them."
-    info "They can be changed later by editing the service unit."
+    info "They can be changed later by editing /etc/ddos_stage1/deploy.env."
     echo ""
     echo -ne "${YELLOW}[INPUT]${NC} Set detection tuning values now? [y/N]: "
     read -r want_tuning
@@ -661,34 +661,56 @@ validate_service_inputs
 if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
     info "Installing systemd service units..."
 
-    # Build the ExecStart command line.
-    EXEC_START="\"$INSTALL_DIR/$BINARY_NAME\" --interface $INTERFACE"
-    if [[ -n "$EGRESS_INTERFACE" ]]; then
-        EXEC_START+=" --egress-interface $EGRESS_INTERFACE"
-    fi
+    # Deployment topology (which hosts are protected, what's excluded) and
+    # install-time tuning go into deploy.env below, not literally into
+    # ExecStart: a wrong value is then a one-line file edit, not a systemd
+    # unit hand-patch. --interface and --egress-interface stay in ExecStart
+    # because stage2/config.py's get_sniffer_interfaces() reads them
+    # directly from the unit file by design (see its own tests), and are a
+    # fixed hardware fact of this host rather than topology that changes.
+    DEPLOY_FLAGS=""
     if [[ -n "$VICTIM_IPS" ]]; then
-        EXEC_START+=" --victim-ips $VICTIM_IPS"
+        DEPLOY_FLAGS+=" --victim-ips $VICTIM_IPS"
     elif [[ -n "$VICTIM_SUBNET" ]]; then
-        EXEC_START+=" --victim-subnet $VICTIM_SUBNET"
+        DEPLOY_FLAGS+=" --victim-subnet $VICTIM_SUBNET"
     else
         warn "No --victim-ips or --victim-subnet specified. Service will run without a BPF filter (dev mode)."
-        EXEC_START+=" --no-filter"
+        DEPLOY_FLAGS+=" --no-filter"
     fi
     if [[ -n "$EXCLUDE_IPS" ]]; then
-        EXEC_START+=" --exclude-ips $EXCLUDE_IPS"
+        DEPLOY_FLAGS+=" --exclude-ips $EXCLUDE_IPS"
     fi
 
     if [[ "$CAPTURE_MODE" == "kernel" ]]; then
-        EXEC_START+=" --capture-mode kernel"
+        DEPLOY_FLAGS+=" --capture-mode kernel"
     fi
 
     # Only values the operator actually chose. Anything left unset stays out,
     # so the sensor's own default applies and a later release can improve it.
-    [[ -n "$TUNE_K" ]]                    && EXEC_START+=" --k $TUNE_K"
-    [[ -n "$TUNE_ENTROPY_SIGMA_FLOOR" ]]  && EXEC_START+=" --entropy-sigma-floor $TUNE_ENTROPY_SIGMA_FLOOR"
-    [[ -n "$TUNE_RATE_SIGMA_FLOOR" ]]     && EXEC_START+=" --rate-sigma-floor $TUNE_RATE_SIGMA_FLOOR"
-    [[ -n "$TUNE_ENTROPY_MIN_PACKETS" ]]  && EXEC_START+=" --entropy-min-packets $TUNE_ENTROPY_MIN_PACKETS"
+    [[ -n "$TUNE_K" ]]                    && DEPLOY_FLAGS+=" --k $TUNE_K"
+    [[ -n "$TUNE_ENTROPY_SIGMA_FLOOR" ]]  && DEPLOY_FLAGS+=" --entropy-sigma-floor $TUNE_ENTROPY_SIGMA_FLOOR"
+    [[ -n "$TUNE_RATE_SIGMA_FLOOR" ]]     && DEPLOY_FLAGS+=" --rate-sigma-floor $TUNE_RATE_SIGMA_FLOOR"
+    [[ -n "$TUNE_ENTROPY_MIN_PACKETS" ]]  && DEPLOY_FLAGS+=" --entropy-min-packets $TUNE_ENTROPY_MIN_PACKETS"
 
+    mkdir -p /etc/ddos_stage1
+    cat > /etc/ddos_stage1/deploy.env << EOF
+# Deployment topology and install-time tuning, written by install.sh on
+# $(date -u +"%Y-%m-%dT%H:%M:%SZ"). Edit this file directly to fix a wrong
+# value; it takes effect on the next "systemctl restart ddos-stage1", no
+# unit file edit or install.sh re-run needed. Re-running install.sh
+# overwrites it with whatever this run's flags or prompts specify.
+FLOD_DEPLOY_FLAGS=$DEPLOY_FLAGS
+EOF
+    chmod 0644 /etc/ddos_stage1/deploy.env
+
+    # Interface names only: a fixed hardware fact of this host, read directly
+    # from this literal ExecStart by stage2/config.py's get_sniffer_interfaces().
+    EXEC_START="\"$INSTALL_DIR/$BINARY_NAME\" --interface $INTERFACE"
+    if [[ -n "$EGRESS_INTERFACE" ]]; then
+        EXEC_START+=" --egress-interface $EGRESS_INTERFACE"
+    fi
+    # Deployment topology and install-time tuning, from deploy.env above.
+    EXEC_START+=" \$FLOD_DEPLOY_FLAGS"
     # Measured tuning from scripts/calibrate.py, expanded from the optional
     # environment file below. Last, because the sensor's parser takes the final
     # value given for a flag, so a calibration overrides what was chosen here
@@ -727,6 +749,9 @@ CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_NET_ADMIN CAP_PERFMON
 # Loading eBPF programs needs locked memory on kernels before 5.11.
 LimitMEMLOCK=infinity
 NoNewPrivileges=true
+# Deployment topology and install-time tuning, written by install.sh (see
+# above); edit directly and restart to change without a re-install.
+EnvironmentFile=-/etc/ddos_stage1/deploy.env
 # Optional, written by scripts/calibrate.py. Absent until a calibration runs,
 # and removing it returns the sensor to the values chosen at install time.
 EnvironmentFile=-/etc/ddos_stage1/tuning.env
