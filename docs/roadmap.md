@@ -185,9 +185,44 @@ Random Forest's tree depth by how often its answers clear the confidence
 threshold, and added the live benchmark that compares the kernel and libpcap
 capture backends.
 
+**V9, relative sigma floors.** Shipped as `1.7.0`. The rate sigma floor now
+scales against each target's own mean (`--rate-sigma-floor-ratio`, mirroring
+the existing ceiling ratio), backstopped by the absolute floor for a target
+still near zero during warm-up. A startup check now warns if the floor ratio
+is not below the ceiling ratio, the same invariant the entropy floor already
+enforces. Confirmed live against two hosts of different mean rates: the
+floor scaling correctly, the absolute floor backstopping the quieter host,
+and the startup warning firing and silencing correctly.
+
+**V10, operator defined playbooks, granular incident reporting, and a
+redesigned web interface.** Shipped as `1.8.0`. A playbook starts when a
+trigger fires (a tier being reached, a run of consecutive attack-classified
+windows, or several protected hosts under attack at once) and runs linear
+stages the four automatic enforcement tiers do not do on their own: escalate
+a target over time, fire an external alert as a scripted step, generate an
+incident report the moment it fires. Defined per deployment, not hardcoded,
+through a form builder or a JSON/YAML document that round trip to the same
+stored definition. See [docs/playbooks.md](playbooks.md) for the trigger and
+stage reference and the API surface.
+
+Incident reports gained a timeline of which stage fired against which source
+or host, a per-source breakdown within a single incident, and system
+performance for the incident's own time range: packets per second and drops,
+Stage 1 and Stage 2 CPU and memory, context switches, the latency breakdown,
+and time to first verdict and first block.
+
+The whole web interface was redesigned in the same milestone: three
+selectable design families, a new icon, motion where it helps read the
+gateway's state, across every page. Two new alert channels shipped
+alongside it, Telegram and a generic outgoing webhook, and a training-set
+class balance tool (`scripts/trim_ddos_class.py`) caps the DDoS class at the
+size of the smaller of Normal and Flash Crowd after an automatic-labeling
+merge, dropping whole capture sessions rather than individual rows so
+session-boundary detection stays intact.
+
 ## Planned
 
-V9 through V16 below are ordered by difficulty, easiest first, so the
+V11 through V16 below are ordered by difficulty, easiest first, so the
 milestone number is a build-order estimate that carries no ranking of
 importance. Kernel level work has consistently been the most expensive
 part of this project to get right (the eBPF milestone's own "compiled,
@@ -198,114 +233,6 @@ source counting work despite being smaller in surface area than the
 first. V17 is the one exception to this ordering: it sits last not
 because it is the hardest, but because it is the only one with no path
 to validation right now.
-
-**V9, relative sigma floors.** The rate and entropy sigma floors are
-global while the baselines they bound are per victim, so one set of
-protected hosts carrying different volumes cannot be fitted by a single
-value. Measured across three hosts spanning 3.7 times in mean rate, the
-per host rate floors spanned 4.4 times; expressed as a fraction of each
-host's own mean they spanned only 1.2 times, sitting between 0.22 and
-0.26.
-
-The consequence is uneven sensitivity. A global floor sized for the
-busiest host leaves the quietest needing several times its own normal
-volume before anything trips, while sizing it for the quietest flags the
-busiest continuously. A flagged window then freezes the baseline, since
-the `window_is_clean()` exception covers an entropy only flag and a busy
-host trips on rate, so the standard deviation cannot grow to reflect the
-variation that caused it: the same failure the entropy floor once had, on
-the other axis. It is worse when a host that is not a protected service
-ends up in the target set; a gateway carrying seven times the volume of
-the services behind it pushed the floor span to 8.9 times and flagged a
-third of its own windows, and excluding it took every remaining host to
-zero flagged windows.
-
-The fix mirrors what the rate sigma ceiling already does one line below
-in the same expression: scale against the target's own mean, keeping the
-absolute floor as a backstop for a target still near zero during warm-up.
-
-```
-floor_r = max(rate_sigma_floor_ratio * mean_r, rate_sigma_floor)
-```
-
-Explicit per target overrides were considered and deferred. Targets are
-created on first sight, so a table calibrated today has no entry for a
-host that appears tomorrow, and a global fallback is needed regardless. A
-ratio already yields a different floor per target, derived from that
-target's own traffic, and follows it as the traffic changes; an override
-belongs on top of that later if some host proves the ratio wrong for it
-specifically.
-
-One invariant needs asserting at startup as part of this work: the floor
-must stay below the ceiling. A floor ratio near 0.30 exceeds the default
-ceiling ratio of 0.20, and `raw.max(floor).min(ceiling)` resolves that
-silently in the ceiling's favour, producing a smaller sigma than either
-setting intends. Currently masked because `rate_sigma_ceiling_floor` holds
-the ceiling at a flat value at ordinary volumes.
-
-Ranked first because it is the smallest and lowest risk milestone on this
-list: contained to `stage1/src/analysis.rs`, `AnalysisConfig`, and a CLI
-flag, with no wire format or kernel change.
-
-**V10, operator defined playbooks, granular incident reporting, and a redesigned
-web interface.** The
-four existing enforcement tiers keep running automatically on every window
-exactly as they do today; a playbook is a separate layer on top that starts
-when a trigger condition fires and adds three kinds of stage the tiers do
-not do on their own: escalate a target over time without waiting for an
-operator, fire an external alert as a scripted step rather than a one shot
-notification, and generate an incident report the moment the playbook
-fires rather than waiting for one to be pulled later.
-
-A playbook belongs to an operator, not to this codebase: different
-deployments will want different sequences, so playbooks are defined, not
-hardcoded, editable either through a form builder or as a JSON or YAML
-document, both views round tripping to one stored definition rather than
-being two separate systems. A trigger can be any of a tier being reached, a
-run of consecutive attack classified windows past the existing hysteresis
-count, or several protected hosts under attack at once, and a playbook may
-combine more than one. Stages are linear, no branching, since nothing asked
-of this milestone needs it and a conditional stage graph is a materially
-bigger and harder to secure thing to build than the sequence anyone has
-actually described wanting. See [docs/playbooks.md](playbooks.md) for
-the trigger/stage reference, ready-to-use example definitions, and the
-API surface: the playbook engine backend and both editing surfaces
-(form builder, JSON/YAML text editor) are built as of this branch.
-
-Incident reporting gains two things alongside this: a timeline of which
-stage fired when and against which source or host, distinct from the
-existing window by window classification log, and a per source breakdown
-within a single incident rather than only the aggregate view the current
-PDF and CSV export give.
-
-The reports also gain system performance, for the incident's own time range and
-beside the detection figures. The live benchmark already measures what would go
-in: packets per second through the gateway and how many were dropped at
-capture, the interface and the firewall, Stage 1 and Stage 2 CPU and memory,
-context switches, the Stage 2 latency breakdown (handoff from the sensor,
-inference, the enforcement call, and window close to rule applied), the time
-from the start of an attack to the first DDoS verdict and the first block, and
-how consistently the verdict held. A reader can then tell whether the gateway
-was under strain while it mitigated. Today those figures exist only as
-benchmark output read from the journal and a sampler, so Stage 2 would first
-need to keep them itself: the latency summary it already logs every 30 seconds
-and periodic samples of its own and Stage 1's counters, stored with the same
-retention as the incident data.
-
-The whole web interface is redesigned in the same milestone. The console is
-functional and plain: static styling, no motion, and nothing that gives a first
-time visitor a reason to keep looking, which limits how many people will try the
-project however well the detection works. The redesign covers the layout,
-typography and color, the charts, and motion where it helps someone read the
-state of the gateway, across every page under `stage2/static/`. It sits in V10
-because the playbook builder and the redesigned reports are new pages, and
-building them on the old styling would mean designing them twice. Not designed
-yet, and it should be checked in a browser as it is built.
-
-Large in surface area (a new schema, a new dashboard builder, a stateful
-per host execution engine, and a redesign of every page) but entirely
-application level, no verifier to satisfy and no kernel programming risk, which
-is why it ranks below V8 on raw scope but above V11 on difficulty.
 
 **V11, attacker-resistant source counting.** `SOURCES`, the per host,
 per source packet count both entropy and `dominant_ip_ratio` are computed
@@ -453,11 +380,11 @@ own LOSO methodology on the new classes specifically, not folded into the
 aggregate accuracy figure where a small new class could hide inside a large
 one.
 
-Connection and flow state pressure becomes a new playbook trigger once V10
-exists, and the mitigation response, rate limiting new connections versus
-limiting concurrent connections per source versus the existing tiers, is a
-playbook's job to sequence rather than a new enforcement tier grafted onto
-the existing four. No new mitigation subsystem is built here for that
+Connection and flow state pressure becomes a new playbook trigger, using
+V10's engine, and the mitigation response, rate limiting new connections
+versus limiting concurrent connections per source versus the existing tiers,
+is a playbook's job to sequence rather than a new enforcement tier grafted
+onto the existing four. No new mitigation subsystem is built here for that
 reason.
 
 Ranked this late because it changes both capture backends and the wire

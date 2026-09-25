@@ -295,12 +295,10 @@ continuously, which also freezes its baseline. The first is recoverable and
 the second is not. The script warns when the per host values differ by more
 than a factor of four, because one global value then fits neither.
 
-That warning marks a real limit rather than a tuning inconvenience. The
-baselines are per victim but the floors are global, so a set of protected
-hosts carrying very different volumes cannot be fitted by one number. The
-rate sigma *ceiling* already avoids this by scaling against each target's own
-mean; the floor does not. See V9 in
-[roadmap.md](roadmap.md#planned).
+The rate sigma floor scales against each target's own mean the same way the
+ceiling does (`--rate-sigma-floor-ratio`), backstopped by the absolute floor
+for a target still near zero during warm-up. See V9 in
+[roadmap.md](roadmap.md#completed).
 
 ```bash
 sudo python3 scripts/calibrate.py --auto-debug              # measure, report
