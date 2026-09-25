@@ -13,6 +13,8 @@ exception, it sends synchronously and reports per-channel success or
 failure directly, since the entire point of a test button is immediate
 feedback on misconfiguration.
 
+![The dashboard's Alerts page, Discord and Email panels shown; the Telegram and Custom Webhook panels below them aren't pictured in this screenshot, taken before those channels were confirmed against real credentials](images/dashboard-alerts.png)
+
 ## When an alert fires
 
 On a victim's classification changing to or from DDoS, on every new

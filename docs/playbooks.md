@@ -184,6 +184,8 @@ which stage it's on, why it started) with each run's own event list
 expandable inline, and the reports a `report` stage has generated so
 far.
 
+![The dashboard's Playbooks page: configured playbooks with enable/disable and edit controls, and run history below showing each run's host, source, status, and start time](images/dashboard-playbooks.png)
+
 The incident report (`/ir.html`, and any report a `report` stage
 generates) gains two sections from this milestone: a **timeline** of
 which stage fired when and against which source or host, and a

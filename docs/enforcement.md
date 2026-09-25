@@ -122,12 +122,14 @@ windows before firing, so one noisy window cannot trigger a block. Tiers 3 and
 Both sets carry an expiry, so enforcement heals on its own if a decision was
 wrong.
 
+![The dashboard's Active Flows page: every live connection to a protected host, its own classification and mitigation status, and a manual Block or Whitelist action per source](images/dashboard-active-flows.png)
+
 ## Settings
 
 All of the below are editable live from the dashboard's Firewall page,
 which also shows active blocks and rate limits as they stand:
 
-![The dashboard's Firewall page mid-incident: active blocks and active rate limits, each with its own countdown to self-heal](images/dashboard-firewall.png)
+![The dashboard's Firewall page: whitelist, shared/NAT addresses, active blocks and active rate limits (each with its own countdown to self-heal when populated), and the editable enforcement thresholds below](images/dashboard-firewall.png)
 
 | Setting | Default | Meaning |
 |-|-|-|
