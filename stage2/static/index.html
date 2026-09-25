@@ -482,6 +482,16 @@
         const maxPoints = 30;
         const timeLabels = Array(maxPoints).fill('');
 
+        // How often fetchState() polls (setInterval below) and how long the
+        // rate/entropy charts take to animate into a new point, kept as one
+        // constant so they can't drift apart: the animation is set to run
+        // for the whole gap between polls (minus a small buffer) rather
+        // than easing to a stop partway through and sitting still, which is
+        // what made the line look like it was snapping to a new still image
+        // every couple of seconds instead of flowing continuously.
+        const POLL_INTERVAL_MS = 2000;
+        const CHART_ANIMATION_MS = POLL_INTERVAL_MS - 200;
+
         let currentTab = 'global';
         let selectedVictimIp = '';
 
@@ -524,6 +534,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: { duration: CHART_ANIMATION_MS, easing: 'linear' },
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -573,6 +584,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: { duration: CHART_ANIMATION_MS, easing: 'linear' },
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -1066,7 +1078,15 @@
             chart.data.datasets[1].data.push(boundary);
             chart.data.datasets[2].data.shift();
             chart.data.datasets[2].data.push(baseline);
-            chart.update('none');
+            // 'none' used to skip Chart.js's own animation entirely, so the
+            // line snapped straight to its new shape every 2 second poll
+            // instead of moving between the old and new values, reading as
+            // static stills rather than a live line. The default update
+            // mode animates it now, over POLL_INTERVAL_MS's own duration
+            // (see the chart constructors' animation.duration) so the
+            // motion keeps going for the whole gap between polls instead of
+            // easing to a stop partway through and sitting still.
+            chart.update();
         }
 
         async function initCharts() {
@@ -1083,7 +1103,7 @@
 
             // Matched to the sensor's heartbeat so a quiet target's panels
             // are never more than a couple of seconds behind.
-            setInterval(fetchState, 2000);
+            setInterval(fetchState, POLL_INTERVAL_MS);
         }
 
         document.getElementById('logoutBtn').addEventListener('click', async () => {
