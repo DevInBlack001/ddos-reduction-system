@@ -111,15 +111,36 @@ def send_email_alert(subject: str, body: str):
         return False, err
 
 
-def dispatch_alert(subject: str, message: str):
+ALERT_CHANNELS = ("discord", "email", "all")
+
+
+def dispatch_alert(subject: str, message: str, channel: str = "all"):
     """Non-blocking: enqueue for the background worker. Drops the alert
     (logged) rather than blocking the caller if the queue is full, a
     slow-draining queue during a severe incident shouldn't back-pressure
-    the IPC receive loop."""
+    the IPC receive loop.
+
+    `channel` restricts delivery to just "discord" or just "email";
+    anything else, including an unrecognised value, falls back to "all"
+    rather than silently dropping the alert, so a bad value here still
+    fails safe toward "definitely delivered" instead of "definitely
+    not"."""
+    if channel not in ALERT_CHANNELS:
+        channel = "all"
     try:
-        _alert_queue.put_nowait((subject, message))
+        _alert_queue.put_nowait((subject, message, channel))
     except queue.Full:
         logging.warning(f"[!] Alert queue full, dropping alert: {subject}")
+
+
+def _process_alert(subject: str, message: str, channel: str):
+    """The per-item work run_alert_worker()'s loop does, pulled out so it
+    can be exercised directly without going through the queue or the
+    infinite loop."""
+    if channel in ("discord", "all"):
+        send_discord_alert(f"**{subject}**\n{message}")
+    if channel in ("email", "all"):
+        send_email_alert(subject, message)
 
 
 def run_alert_worker():
@@ -127,9 +148,8 @@ def run_alert_worker():
     alongside the existing IPC/ipset threads)."""
     logging.info("[+] Starting alert dispatch worker thread...")
     while True:
-        subject, message = _alert_queue.get()
-        send_discord_alert(f"**{subject}**\n{message}")
-        send_email_alert(subject, message)
+        subject, message, channel = _alert_queue.get()
+        _process_alert(subject, message, channel)
 
 
 # Config + test routes

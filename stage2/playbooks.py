@@ -25,6 +25,7 @@ import enforcement
 TRIGGER_TYPES = {"tier_reached", "persistence", "scale"}
 STAGE_TYPES = {"escalate", "notify", "report"}
 TRIGGER_MODES = {"any", "all"}
+NOTIFY_CHANNELS = {"all", "discord", "email"}
 
 
 class DefinitionError(ValueError):
@@ -63,6 +64,8 @@ def validate_definition(definition):
         delay = s.get("delay_seconds", 0)
         if not isinstance(delay, (int, float)) or isinstance(delay, bool) or delay < 0:
             raise DefinitionError("stage delay_seconds must be a non-negative number")
+        if s["type"] == "notify" and "channel" in s and s["channel"] not in NOTIFY_CHANNELS:
+            raise DefinitionError(f"notify channel must be one of {sorted(NOTIFY_CHANNELS)}")
 
     return definition
 
@@ -196,14 +199,20 @@ def _execute_notify(stage, target_host, target_source):
     """Calls the existing alert functions as a scripted step. Additive to
     whatever baseline alerting already fires on a DDoS classification
     transition; a playbook's notify stage is a second, deliberately timed
-    notification, not a replacement for that one."""
+    notification, not a replacement for that one.
+
+    channel actually restricts delivery now (NOTIFY_CHANNELS, validated
+    at save time by validate_definition()); it used to be recorded in
+    the event detail string only, alerts.dispatch_alert() took no
+    channel argument at all and always fired every enabled channel
+    regardless of what an operator typed here."""
     channel = stage.get("channel", "all")
     subject = f"FLOD System: playbook escalation for {target_host}"
     message = f"Playbook stage fired against {target_host}"
     if target_source:
         message += f", source {target_source}"
     message += "."
-    alerts.dispatch_alert(subject, message)
+    alerts.dispatch_alert(subject, message, channel=channel)
     return f"notified ({channel})"
 
 

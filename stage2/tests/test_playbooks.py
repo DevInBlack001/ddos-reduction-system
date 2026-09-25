@@ -83,6 +83,32 @@ class DefinitionValidationTests(unittest.TestCase):
         with self.assertRaises(playbooks.DefinitionError):
             playbooks.validate_definition(definition)
 
+    def test_a_notify_channel_outside_the_closed_list_is_rejected(self):
+        definition = {
+            "triggers": [{"type": "tier_reached", "min_tier": 1}],
+            "stages": [{"type": "notify", "channel": "slack"}],
+        }
+        with self.assertRaises(playbooks.DefinitionError):
+            playbooks.validate_definition(definition)
+
+    def test_a_notify_stage_with_no_channel_at_all_is_still_valid(self):
+        # channel defaults to "all" at execution time, so omitting it
+        # entirely from a hand-written definition is not itself an error.
+        definition = {
+            "triggers": [{"type": "tier_reached", "min_tier": 1}],
+            "stages": [{"type": "notify"}],
+        }
+        self.assertEqual(playbooks.validate_definition(definition), definition)
+
+    def test_a_notify_channel_is_not_checked_on_a_non_notify_stage(self):
+        # An escalate/report stage has no channel field at all; a stray
+        # "channel" key on one is not this validator's problem to reject.
+        definition = {
+            "triggers": [{"type": "tier_reached", "min_tier": 1}],
+            "stages": [{"type": "escalate", "target_tier": 1, "channel": "whatever"}],
+        }
+        self.assertEqual(playbooks.validate_definition(definition), definition)
+
     def test_a_form_built_and_a_hand_written_definition_of_the_same_playbook_match(self):
         form_built = {
             "triggers": [{"type": "persistence", "consecutive_windows": 5}],
@@ -298,6 +324,20 @@ class StageExecutionTests(unittest.TestCase):
             playbooks.execute_stage({"type": "notify", "channel": "discord"}, "192.0.2.10", "198.51.100.5")
         dispatch.assert_called_once()
         self.assertIn("192.0.2.10", dispatch.call_args.args[1])
+
+    def test_notify_forwards_its_configured_channel_to_dispatch_alert(self):
+        # channel used to be recorded in the event detail string only;
+        # dispatch_alert() took no channel argument at all and always
+        # fired every enabled channel regardless of what was configured
+        # here.
+        with mock.patch("playbooks.alerts.dispatch_alert") as dispatch:
+            playbooks.execute_stage({"type": "notify", "channel": "email"}, "192.0.2.10", None)
+        self.assertEqual(dispatch.call_args.kwargs.get("channel"), "email")
+
+    def test_notify_with_no_channel_configured_forwards_all(self):
+        with mock.patch("playbooks.alerts.dispatch_alert") as dispatch:
+            playbooks.execute_stage({"type": "notify"}, "192.0.2.10", None)
+        self.assertEqual(dispatch.call_args.kwargs.get("channel"), "all")
 
     def test_report_writes_a_pdf_under_the_configured_directory(self):
         reports_dir = temp_path(".d")

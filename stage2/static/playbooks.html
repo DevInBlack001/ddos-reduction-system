@@ -265,6 +265,7 @@
     <script>
         var TRIGGER_TYPES = ['tier_reached', 'persistence', 'scale'];
         var STAGE_TYPES = ['escalate', 'notify', 'report'];
+        var NOTIFY_CHANNELS = ['all', 'discord', 'email'];
         var editingId = null;
         var currentSurface = 'form';
 
@@ -315,7 +316,7 @@
             if (s.type === 'escalate') {
                 extra = '<input type="number" class="form-input stage-field" data-field="target_tier" min="1" max="4" value="' + (s.target_tier || 1) + '" placeholder="Target tier (1-4)">';
             } else if (s.type === 'notify') {
-                extra = '<input type="text" class="form-input stage-field" data-field="channel" value="' + FlodSafe.escapeHtml(s.channel || 'all') + '" placeholder="Channel (all, discord, email)">';
+                extra = notifyChannelSelectHtml(s.channel || 'all');
             }
             return '<div class="row-item">' +
                 '<select class="form-input stage-type" onchange="onStageTypeChange(this)">' +
@@ -338,9 +339,22 @@
             if (type === 'escalate') {
                 extraHtml = '<input type="number" class="form-input stage-field" data-field="target_tier" min="1" max="4" value="1" placeholder="Target tier (1-4)">';
             } else if (type === 'notify') {
-                extraHtml = '<input type="text" class="form-input stage-field" data-field="channel" value="all" placeholder="Channel (all, discord, email)">';
+                extraHtml = notifyChannelSelectHtml('all');
             }
             row.querySelector('.stage-extra').innerHTML = extraHtml;
+        }
+
+        // Which channel(s) a notify stage actually restricts delivery to
+        // (alerts.py's ALERT_CHANNELS); a free-text input here used to let
+        // an operator type anything, including a typo that silently did
+        // nothing different from "all", since the value wasn't enforced
+        // server-side either at the time.
+        function notifyChannelSelectHtml(selected) {
+            return '<select class="form-input stage-field" data-field="channel">' +
+                NOTIFY_CHANNELS.map(function (ch) {
+                    return '<option value="' + ch + '"' + (ch === selected ? ' selected' : '') + '>' + ch + '</option>';
+                }).join('') +
+                '</select>';
         }
 
         function addStageRow(s) {

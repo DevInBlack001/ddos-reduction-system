@@ -76,7 +76,7 @@ operator-supplied logic:
 | Stage type | Fields | Action |
 |-|-|-|
 | `escalate` | `target_tier` (default 1) | Tier 1 or 2: blocks the run's attributed source. Tier 3 or 4: rate-limits it. Calls the exact same `enforcement.py` functions the tiers themselves call; this stage only changes *when* an existing action happens, never *what* the action is. |
-| `notify` | `channel` (default `all`) | Sends the existing Discord/SMTP alert as a scripted step, in addition to the baseline alert the system already fires on a DDoS verdict, not a replacement for it. |
+| `notify` | `channel` (default `all`; must be `all`, `discord`, or `email`) | Sends the existing Discord/SMTP alert as a scripted step, in addition to the baseline alert the system already fires on a DDoS verdict, not a replacement for it. `channel` actually restricts delivery to just Discord or just email; a value outside the closed set is rejected at save time (`playbooks.validate_definition()`). |
 | `report` | none | Generates the incident report immediately (reusing the existing 6 hour report window) and writes it under `config.PLAYBOOK_REPORTS_DIR`, instead of waiting for an operator to pull one by hand from Incident Response. |
 
 If a run's attributed source is unknown at escalate time (no single
