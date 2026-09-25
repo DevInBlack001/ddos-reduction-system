@@ -30,6 +30,7 @@
     --bg-code: #f0f2f6;
 
     --border-color: transparent;
+    --border-faint: #dde2ea;
     --border-strong: transparent;
 
     --accent: #2563eb;
@@ -83,6 +84,7 @@
     --bg-code: #0d1319;
 
     --border-color: transparent;
+    --border-faint: #2a3540;
     --border-strong: transparent;
 
     --accent: #4fd1e8;
@@ -125,6 +127,7 @@
     --bg-code: #ece8da;
 
     --border-color: transparent;
+    --border-faint: #cfc9b8;
     --border-strong: transparent;
 
     --accent: #a66a00;
@@ -173,6 +176,7 @@
     --bg-code: #000000;
 
     --border-color: transparent;
+    --border-faint: #2a2a2a;
     --border-strong: transparent;
 
     --accent: #ffb000;
@@ -221,6 +225,7 @@
     --bg-code: #f2f2f8;
 
     --border-color: transparent;
+    --border-faint: #e2e2ec;
     --border-strong: transparent;
 
     --accent: #6d5ef8;
@@ -265,6 +270,7 @@
     --bg-code: #131319;
 
     --border-color: transparent;
+    --border-faint: #2b2b3a;
     --border-strong: transparent;
 
     --accent: #8f7ffa;
@@ -309,6 +315,7 @@
         --bg-code: #0d1319;
 
         --border-color: transparent;
+        --border-faint: #2a3540;
         --border-strong: transparent;
 
         --accent: #4fd1e8;
@@ -556,6 +563,22 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+/* The one exception to the borderless pass: a panel that's one of
+   several sitting side by side in a page's own grid (Firewall's four,
+   Alerts' four, Users' two) needs some line between them, otherwise
+   there's nothing left saying "these are separate modules" instead of
+   one continuous block. --border-faint is each theme's own original
+   --border-color value from before that pass, restored here only,
+   narrow and selective rather than undoing the pass generally. A
+   single full-width panel (Event Log's, Active Flows', everywhere
+   else) is unaffected, this only fires when .hud-panel is a grid child
+   next to a sibling. */
+.firewall-grid > .hud-panel,
+.channel-grid > .hud-panel,
+.account-forms > .hud-panel {
+    border-color: var(--border-faint);
+}
+
 .hud-panel-header {
     border-bottom: 1px solid var(--border-color);
     padding-bottom: 12px;
@@ -783,6 +806,16 @@ td {
     border-bottom: 1px solid var(--border-color);
     font-size: 0.86rem;
     color: var(--text-primary);
+}
+
+/* The two widest, most repetitive tables (Event Log: 7 columns, every
+   row structurally identical; Active Flows: 8, including two action
+   buttons) lose row-tracking without some divider, the eye has nothing
+   guiding it from the source address on the left to the classification
+   badge on the right. Every other table stays fully borderless. */
+.log-table td,
+.flow-table td {
+    border-bottom-color: var(--border-faint);
 }
 
 tr:hover td {
