@@ -110,6 +110,7 @@
             <div class="review-actions">
                 <button type="button" class="btn" id="mergeBtn" onclick="mergeStaged()">Merge into training data</button>
                 <button type="button" class="btn btn-danger" id="discardBtn" onclick="discardStaged()">Discard</button>
+                <button type="button" class="btn btn-ghost" id="trimBtn" onclick="trimDdos()" title="Caps the training CSV's DDoS row count at the smaller of Normal/Flash Crowd, dropping whole DDoS sessions">Trim DDoS to cap</button>
                 <span id="actionResult" style="font-size: 0.82rem;"></span>
             </div>
 
@@ -208,6 +209,11 @@
         async function discardStaged() {
             if (!confirm('Discard every staged row without merging? This cannot be undone.')) return;
             await runAction('/api/auto-label/discard', 'discarded');
+        }
+
+        async function trimDdos() {
+            if (!confirm('Cap the training CSV\'s DDoS rows at the smaller of Normal/Flash Crowd, dropping whole DDoS sessions? This edits the training CSV directly and cannot be undone from here. Run this after a merge, before the next retrain.')) return;
+            await runAction('/api/auto-label/trim-ddos', 'dropped');
         }
 
         async function runAction(url, key) {
