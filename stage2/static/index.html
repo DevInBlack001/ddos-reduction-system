@@ -482,15 +482,17 @@
         const maxPoints = 30;
         const timeLabels = Array(maxPoints).fill('');
 
-        // How often fetchState() polls (setInterval below) and how long the
-        // rate/entropy charts take to animate into a new point, kept as one
-        // constant so they can't drift apart: the animation is set to run
-        // for the whole gap between polls (minus a small buffer) rather
-        // than easing to a stop partway through and sitting still, which is
-        // what made the line look like it was snapping to a new still image
-        // every couple of seconds instead of flowing continuously.
+        // How often fetchState() polls (setInterval below). The rate/entropy
+        // charts do not use Chart.js's own animation at all (see the
+        // chart-flow engine after the two chart constructors below): a
+        // fixed-duration tween restarts cold on every poll and just sits
+        // still once it finishes, which is what made the line look like a
+        // new still image snapping in every couple of seconds rather than
+        // continuous motion, and it has no good answer for a poll that
+        // arrives early or late. A real-time interpolation loop, always
+        // running regardless of when polls land, reads as flowing motion
+        // properly instead.
         const POLL_INTERVAL_MS = 2000;
-        const CHART_ANIMATION_MS = POLL_INTERVAL_MS - 200;
 
         let currentTab = 'global';
         let selectedVictimIp = '';
@@ -534,7 +536,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                animation: { duration: CHART_ANIMATION_MS, easing: 'linear' },
+                animation: false, // driven manually, see the chart-flow engine below
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -584,7 +586,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                animation: { duration: CHART_ANIMATION_MS, easing: 'linear' },
+                animation: false, // driven manually, see the chart-flow engine below
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -594,6 +596,65 @@
                 }
             }
         });
+
+        // Chart-flow engine: real-time interpolation for the rate/entropy
+        // charts, replacing Chart.js's own per-update animation entirely
+        // (both charts are created with animation: false above).
+        //
+        // Chart.js's built-in animation restarts cold on every .update()
+        // call with a fixed duration, then just sits still once it
+        // finishes: fine if polls landed on a metronome, but a poll that
+        // arrives a little early or late either cuts the motion short or
+        // leaves the line idle waiting. This engine instead keeps one
+        // requestAnimationFrame loop running continuously regardless of
+        // poll timing, and always interpolates from whatever is actually
+        // on screen right now (not the last committed target), so a poll
+        // landing mid-animation retargets smoothly instead of jumping.
+        //
+        // chartTargetData holds the real, current values per chart (what
+        // updateChart() shifts new poll data into); it is what's actually
+        // "true", independent of whatever the visible line is mid-tween
+        // toward. chartFlow holds the in-progress animation, if any.
+        const chartTargetData = {
+            rate: rateChart.data.datasets.map(ds => ds.data.slice()),
+            entropy: entropyChart.data.datasets.map(ds => ds.data.slice())
+        };
+        const chartFlow = { rate: null, entropy: null };
+
+        function lerp(a, b, t) { return a + (b - a) * t; }
+
+        function startChartFlow(key, chart, targets) {
+            chartTargetData[key] = targets;
+            chartFlow[key] = {
+                chart,
+                // Snapshot of what's actually rendered right now, not the
+                // previous target, so a poll arriving mid-animation
+                // retargets from the true current frame instead of
+                // snapping back to wherever the last animation left off.
+                from: chart.data.datasets.map(ds => ds.data.slice()),
+                to: targets,
+                t0: performance.now()
+            };
+        }
+
+        function chartFlowTick(now) {
+            for (const key of Object.keys(chartFlow)) {
+                const flow = chartFlow[key];
+                if (!flow) continue;
+                const t = Math.min(1, (now - flow.t0) / POLL_INTERVAL_MS);
+                for (let d = 0; d < flow.to.length; d++) {
+                    const fromArr = flow.from[d], toArr = flow.to[d];
+                    const out = flow.chart.data.datasets[d].data;
+                    for (let i = 0; i < toArr.length; i++) {
+                        out[i] = lerp(fromArr[i], toArr[i], t);
+                    }
+                }
+                flow.chart.update('none'); // 'none': we're driving the motion ourselves, frame by frame
+                if (t >= 1) chartFlow[key] = null;
+            }
+            requestAnimationFrame(chartFlowTick);
+        }
+        requestAnimationFrame(chartFlowTick);
 
         // Protocol Doughnut
         const protoChart = new Chart(document.getElementById('protoChart').getContext('2d'), {
@@ -735,6 +796,15 @@
                         }
                     });
                 }
+                // Cancel any in-progress flow and resync the flow engine's
+                // own copy of "current" to this freshly loaded history,
+                // otherwise the next live poll would interpolate from the
+                // previous target's stale values into the new target's,
+                // a visible cross-fade between two different hosts' data.
+                chartFlow.rate = null;
+                chartFlow.entropy = null;
+                chartTargetData.rate = rateChart.data.datasets.map(ds => ds.data.slice());
+                chartTargetData.entropy = entropyChart.data.datasets.map(ds => ds.data.slice());
                 rateChart.update();
                 entropyChart.update();
             } catch (err) {
@@ -1015,8 +1085,8 @@
 
                 // Shift Chart Data if victim is loaded
                 if (currentTab === 'target' && selectedVictimIp) {
-                    updateChart(rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r), data.mean_r);
-                    updateChart(entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h), data.mean_h);
+                    updateChart('rate', rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r), data.mean_r);
+                    updateChart('entropy', entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h), data.mean_h);
                 }
 
                 // Protocol doughnut
@@ -1071,22 +1141,16 @@
             }
         }
 
-        function updateChart(chart, val, boundary, baseline) {
-            chart.data.datasets[0].data.shift();
-            chart.data.datasets[0].data.push(val);
-            chart.data.datasets[1].data.shift();
-            chart.data.datasets[1].data.push(boundary);
-            chart.data.datasets[2].data.shift();
-            chart.data.datasets[2].data.push(baseline);
-            // 'none' used to skip Chart.js's own animation entirely, so the
-            // line snapped straight to its new shape every 2 second poll
-            // instead of moving between the old and new values, reading as
-            // static stills rather than a live line. The default update
-            // mode animates it now, over POLL_INTERVAL_MS's own duration
-            // (see the chart constructors' animation.duration) so the
-            // motion keeps going for the whole gap between polls instead of
-            // easing to a stop partway through and sitting still.
-            chart.update();
+        function updateChart(key, chart, val, boundary, baseline) {
+            // The real, current values (what the line is actually worth
+            // right now), independent of whatever's mid-tween on screen.
+            // Cloned so mutating it here can't alias a previous target
+            // still referenced by an in-progress chartFlow.
+            const targets = chartTargetData[key].map(arr => arr.slice());
+            targets[0].shift(); targets[0].push(val);
+            targets[1].shift(); targets[1].push(boundary);
+            targets[2].shift(); targets[2].push(baseline);
+            startChartFlow(key, chart, targets);
         }
 
         async function initCharts() {
