@@ -221,6 +221,8 @@ The kernel backend requires `--victim-ips` or `--victim-subnet`. Matching
 happens in the kernel against the trie, so there is no equivalent of running
 without a filter.
 
+![The dashboard's Targets page: adding a protected host by IPv4 address and a name, the dashboard's equivalent of --victim-ips](images/dashboard-targets.png)
+
 Attachment prefers driver mode and falls back to generic, logging which one it
 got. Generic mode is correct but costs more per packet, so a measurement taken
 in it is not a measurement of the driver path.
