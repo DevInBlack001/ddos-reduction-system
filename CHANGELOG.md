@@ -6,6 +6,23 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## 1.8.1, 2026-09-25
+
+### Fixed
+
+- `install.sh` no longer writes deployment topology (`--victim-subnet`/
+  `--victim-ips`/`--exclude-ips`/`--capture-mode` and install-time tuning)
+  literally into the generated unit file's `ExecStart`. It now writes
+  `/etc/ddos_stage1/deploy.env` (`FLOD_DEPLOY_FLAGS`), read through
+  `EnvironmentFile` the same way `scripts/calibrate.py`'s `tuning.env`
+  already is. A wrong value is now a one-line file edit, not a systemd
+  unit hand-patch. `--interface`/`--egress-interface` stay in `ExecStart`,
+  read directly by `stage2/config.py`'s `get_sniffer_interfaces()`.
+  Found after a stray `install.sh` invocation (a unit test's own
+  placeholder arguments, run for real against a live gateway) silently
+  pointed detection at a nonexistent subnet until a later restart
+  surfaced it.
+
 ## 1.8.0, 2026-09-25
 
 ### Added
