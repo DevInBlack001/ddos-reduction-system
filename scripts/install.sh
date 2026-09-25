@@ -21,6 +21,8 @@
 #
 # Options:
 #   --interface  <IFACE>     Default capture interface written into the service unit
+#   --egress-interface <IFACE> Egress interface, enables the drop ratio / mitigation
+#                            effectiveness measurement (optional, none by default)
 #   --victim-ips <IPs>       Default list of victim IPs (comma-separated, alias: --victim-ip)
 #   --victim-subnet <SUBNET> Default victim subnet CIDR (e.g. 10.0.0.0/24)
 #   --exclude-ips <IPs>      Addresses carved out of the above, comma-separated (alias: --exclude-ip)
@@ -70,6 +72,7 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 INTERFACE="br0"
+EGRESS_INTERFACE=""
 VICTIM_IP=""
 VICTIM_IPS=""
 VICTIM_SUBNET=""
@@ -118,6 +121,7 @@ STAGE2_STATE_DIR="/var/lib/flod"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --interface)               INTERFACE="$2"; shift 2 ;;
+        --egress-interface)        EGRESS_INTERFACE="$2"; shift 2 ;;
         --victim-ip|--victim-ips)  VICTIM_IPS="$2"; shift 2 ;;
         --victim-subnet)           VICTIM_SUBNET="$2"; shift 2 ;;
         --exclude-ip|--exclude-ips) EXCLUDE_IPS="$2"; shift 2 ;;
@@ -213,6 +217,16 @@ if [[ -t 0 ]]; then
     read -r input_iface
     if [[ -n "$input_iface" ]]; then
         INTERFACE="$input_iface"
+    fi
+
+    echo -ne "${YELLOW}[INPUT]${NC} Enter the egress interface, to enable the drop ratio / mitigation effectiveness measurement (blank for none) [default: ${EGRESS_INTERFACE:-none}]: "
+    read -r input_egress
+    if [[ -n "$input_egress" ]]; then
+        if [[ "$input_egress" == "none" ]]; then
+            EGRESS_INTERFACE=""
+        else
+            EGRESS_INTERFACE="$input_egress"
+        fi
     fi
 
     echo -ne "${YELLOW}[INPUT]${NC} Enter the victim IP(s) or subnet (e.g. 10.0.0.3 or 10.0.0.0/24) [default: ${CURRENT_TARGET:-none}]: "
@@ -649,6 +663,9 @@ if $INSTALL_SERVICE && command -v systemctl &>/dev/null; then
 
     # Build the ExecStart command line.
     EXEC_START="\"$INSTALL_DIR/$BINARY_NAME\" --interface $INTERFACE"
+    if [[ -n "$EGRESS_INTERFACE" ]]; then
+        EXEC_START+=" --egress-interface $EGRESS_INTERFACE"
+    fi
     if [[ -n "$VICTIM_IPS" ]]; then
         EXEC_START+=" --victim-ips $VICTIM_IPS"
     elif [[ -n "$VICTIM_SUBNET" ]]; then

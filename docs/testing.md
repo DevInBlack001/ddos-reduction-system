@@ -28,10 +28,11 @@ cd stage1
 cargo test
 ```
 
-75 tests across the online variance accumulator, the smoothed rate, entropy,
+78 tests across the online variance accumulator, the smoothed rate, entropy,
 IPC serialisation, baseline persistence, victim target and exclusion
 matching, the kernel backend's address
-handling, and the analysis loop.
+handling, the analysis loop, and the relative rate sigma floor
+(`--rate-sigma-floor-ratio`, V9).
 
 Building needs libpcap headers, `libpcap-dev` on Debian and Ubuntu or
 `libpcap-devel` on Fedora and RHEL. Running the tests does not need capture
@@ -55,7 +56,7 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-463 tests across storage, configuration, request models, the database schema,
+555 tests across storage, configuration, request models, the database schema,
 the audit writers, enforcement, authentication, the three capture CSV writers
 (Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
 the deterministic safety overrides, IPC peer verification, the latency summary
@@ -65,9 +66,19 @@ the benchmark helper's input checks and rollback
 (`test_benchmark_mode_switch.py`, which runs the shell scripts against stubbed
 `systemctl`, `journalctl` and `ipset`), the model loader's ownership checks
 (in `test_storage.py`), the capture lock handling and batch scoring in `auto_label.py`, the
-victim scoped flow loader, the tree depth rule, `scripts/label_from_benchmark.py`, and the installers' argument checks
+victim scoped flow loader, the tree depth rule, `scripts/label_from_benchmark.py`, the installers' argument checks
 (`test_install_scripts.py`, which runs `install.sh` and `update.sh` without root
-and so reaches only the argument checks that come before the root check).
+and so reaches only the argument checks that come before the root check),
+the playbook engine (`test_playbooks.py`: each trigger type, both
+`trigger_mode` settings, run lifecycle, and each stage type's action with
+`enforcement.py`/`alerts.py`/`report_pdf.py` calls mocked), its HTTP surface
+(`test_playbooks_api.py`: CRUD, scope and definition validation, run
+history, and report listing including path-traversal and symlink-refusal
+cases), and the incident report's playbook timeline and per-source detail
+sections (`test_report_data.py`). See [Playbooks](playbooks.md) for what
+these exercise. Alert channel filtering, each channel's success/failure
+paths, and credential redaction from both the config API and a raised
+exception (`test_alerts.py`). See [Alerts](alerts.md).
 
 The benchmark's shell scripts are covered only where they take input: the
 helper's validation, the tuning file rewrite and restore, the delete scope, and

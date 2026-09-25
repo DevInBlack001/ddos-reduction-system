@@ -8,8 +8,14 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Dashboard</title>
     <link rel="stylesheet" href="/static/base.css">
     <script src="/static/chart.js"></script>
@@ -50,6 +56,10 @@
         .data-table td {
             padding: 12px 15px;
         }
+        .data-table th {
+            padding: 10px 15px;
+        }
+        .action-cell { text-align: right; }
         /* V5 egress panel */
         .egress-toggle {
             display: flex;
@@ -137,7 +147,7 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -148,6 +158,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
@@ -232,20 +243,20 @@
                         <span class="metric-badge">Live</span>
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
-                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                        <table class="data-table">
                             <thead>
                                 <tr style="border-bottom: 1px solid var(--border-strong);">
-                                    <th style="padding: 10px 15px;">Target IP</th>
-                                    <th style="padding: 10px 15px;">Rate (pps)</th>
-                                    <th style="padding: 10px 15px;">Entropy</th>
-                                    <th style="padding: 10px 15px;">Dominant Sender %</th>
-                                    <th style="padding: 10px 15px;">Status</th>
-                                    <th style="padding: 10px 15px;">Action</th>
+                                    <th>Target IP</th>
+                                    <th>Rate (pps)</th>
+                                    <th>Entropy</th>
+                                    <th>Dominant Sender %</th>
+                                    <th>Status</th>
+                                    <th class="action-cell">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="globalTargetsTableBody">
                                 <tr>
-                                    <td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td>
+                                    <td colspan="6" class="table-empty">No monitored targets yet.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -259,24 +270,21 @@
                         <span class="metric-badge" id="ddosSourcePill">0 senders</span>
                     </div>
                     <div style="padding: 12px 15px 0; font-size: 0.8rem; color: var(--text-secondary);">
-                        Senders blocked outright for attacking a monitored target, and
-                        still blocked. Rate-limited hosts are not listed: that response
-                        is also used as a precaution and applied to whole groups at once,
-                        so it does not identify a sender as an attacker.
+                        Senders currently blocked for attacking a monitored target.
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
-                        <table class="data-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: left;">
+                        <table class="data-table">
                             <thead>
                                 <tr style="border-bottom: 1px solid var(--border-strong);">
-                                    <th style="padding: 10px 15px;">Source IP</th>
-                                    <th style="padding: 10px 15px;">Target</th>
-                                    <th style="padding: 10px 15px;">Rate (pps)</th>
-                                    <th style="padding: 10px 15px;">Blocked At</th>
+                                    <th>Source IP</th>
+                                    <th>Target</th>
+                                    <th>Rate (pps)</th>
+                                    <th>Blocked At</th>
                                 </tr>
                             </thead>
                             <tbody id="ddosSourcesTableBody">
                                 <tr>
-                                    <td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td>
+                                    <td colspan="4" class="table-empty">No attack sources identified.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -338,9 +346,8 @@
                         <div class="hud-panel-title">Evasion-Resistant Signals</div>
                     </div>
                     <p style="color: var(--text-tertiary); font-size: 0.8rem; margin: 0 0 16px;">
-                        Computed from source port, TTL, and TCP option ordering rather than
-                        source address, so a randomized-source flood cannot raise these the
-                        way it raises address entropy.
+                        Computed from source port, TTL, and TCP option ordering, unaffected
+                        by a forged source address.
                     </p>
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -471,6 +478,18 @@
         const maxPoints = 30;
         const timeLabels = Array(maxPoints).fill('');
 
+        // How often fetchState() polls (setInterval below). The rate/entropy
+        // charts do not use Chart.js's own animation at all (see the
+        // chart-flow engine after the two chart constructors below): a
+        // fixed-duration tween restarts cold on every poll and just sits
+        // still once it finishes, which is what made the line look like a
+        // new still image snapping in every couple of seconds rather than
+        // continuous motion, and it has no good answer for a poll that
+        // arrives early or late. A real-time interpolation loop, always
+        // running regardless of when polls land, reads as flowing motion
+        // properly instead.
+        const POLL_INTERVAL_MS = 2000;
+
         let currentTab = 'global';
         let selectedVictimIp = '';
 
@@ -513,6 +532,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: false, // driven manually, see the chart-flow engine below
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -562,6 +582,7 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: false, // driven manually, see the chart-flow engine below
                 plugins: {
                     legend: { position: 'top', align: 'end' }
                 },
@@ -571,6 +592,65 @@
                 }
             }
         });
+
+        // Chart-flow engine: real-time interpolation for the rate/entropy
+        // charts, replacing Chart.js's own per-update animation entirely
+        // (both charts are created with animation: false above).
+        //
+        // Chart.js's built-in animation restarts cold on every .update()
+        // call with a fixed duration, then just sits still once it
+        // finishes: fine if polls landed on a metronome, but a poll that
+        // arrives a little early or late either cuts the motion short or
+        // leaves the line idle waiting. This engine instead keeps one
+        // requestAnimationFrame loop running continuously regardless of
+        // poll timing, and always interpolates from whatever is actually
+        // on screen right now (not the last committed target), so a poll
+        // landing mid-animation retargets smoothly instead of jumping.
+        //
+        // chartTargetData holds the real, current values per chart (what
+        // updateChart() shifts new poll data into); it is what's actually
+        // "true", independent of whatever the visible line is mid-tween
+        // toward. chartFlow holds the in-progress animation, if any.
+        const chartTargetData = {
+            rate: rateChart.data.datasets.map(ds => ds.data.slice()),
+            entropy: entropyChart.data.datasets.map(ds => ds.data.slice())
+        };
+        const chartFlow = { rate: null, entropy: null };
+
+        function lerp(a, b, t) { return a + (b - a) * t; }
+
+        function startChartFlow(key, chart, targets) {
+            chartTargetData[key] = targets;
+            chartFlow[key] = {
+                chart,
+                // Snapshot of what's actually rendered right now, not the
+                // previous target, so a poll arriving mid-animation
+                // retargets from the true current frame instead of
+                // snapping back to wherever the last animation left off.
+                from: chart.data.datasets.map(ds => ds.data.slice()),
+                to: targets,
+                t0: performance.now()
+            };
+        }
+
+        function chartFlowTick(now) {
+            for (const key of Object.keys(chartFlow)) {
+                const flow = chartFlow[key];
+                if (!flow) continue;
+                const t = Math.min(1, (now - flow.t0) / POLL_INTERVAL_MS);
+                for (let d = 0; d < flow.to.length; d++) {
+                    const fromArr = flow.from[d], toArr = flow.to[d];
+                    const out = flow.chart.data.datasets[d].data;
+                    for (let i = 0; i < toArr.length; i++) {
+                        out[i] = lerp(fromArr[i], toArr[i], t);
+                    }
+                }
+                flow.chart.update('none'); // 'none': we're driving the motion ourselves, frame by frame
+                if (t >= 1) chartFlow[key] = null;
+            }
+            requestAnimationFrame(chartFlowTick);
+        }
+        requestAnimationFrame(chartFlowTick);
 
         // Protocol Doughnut
         const protoChart = new Chart(document.getElementById('protoChart').getContext('2d'), {
@@ -712,6 +792,15 @@
                         }
                     });
                 }
+                // Cancel any in-progress flow and resync the flow engine's
+                // own copy of "current" to this freshly loaded history,
+                // otherwise the next live poll would interpolate from the
+                // previous target's stale values into the new target's,
+                // a visible cross-fade between two different hosts' data.
+                chartFlow.rate = null;
+                chartFlow.entropy = null;
+                chartTargetData.rate = rateChart.data.datasets.map(ds => ds.data.slice());
+                chartTargetData.entropy = entropyChart.data.datasets.map(ds => ds.data.slice());
                 rateChart.update();
                 entropyChart.update();
             } catch (err) {
@@ -795,7 +884,7 @@
 
             let html = '';
             if (shown.length === 0) {
-                html = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No attack sources identified.</td></tr>`;
+                html = `<tr><td colspan="4" class="table-empty">No attack sources identified.</td></tr>`;
             } else {
                 shown.forEach(s => {
                     // Rate is absent for an address an operator actioned by
@@ -806,15 +895,30 @@
                         ? new Date(s.timestamp * 1000).toLocaleTimeString() : '--';
                     html += `
                         <tr>
-                            <td style="padding: 12px 15px; font-weight: 600; color: var(--status-danger);">${FlodSafe.escapeHtml(s.ip)}</td>
-                            <td style="padding: 12px 15px;">${FlodSafe.escapeHtml(s.victim_ip || 'Unknown')}</td>
-                            <td style="padding: 12px 15px;">${rate}</td>
-                            <td style="padding: 12px 15px; color: var(--text-secondary);">${FlodSafe.escapeHtml(when)}</td>
+                            <td style="font-weight: 600; color: var(--status-danger);">${FlodSafe.escapeHtml(s.ip)}</td>
+                            <td>${FlodSafe.escapeHtml(s.victim_ip || 'Unknown')}</td>
+                            <td>${rate}</td>
+                            <td style="color: var(--text-secondary);">${FlodSafe.escapeHtml(when)}</td>
                         </tr>
                     `;
                 });
             }
             document.getElementById('ddosSourcesTableBody').innerHTML = html;
+        }
+
+        // V10: last classification seen per target IP, and last displayed
+        // value per global stat tile, so the badge-pulse/stat-pulse
+        // animations (base.css) fire only on a real change between polls,
+        // not on every 2 second tick regardless of whether anything moved.
+        var _prevClassificationByTarget = {};
+        var _prevStatValue = {};
+
+        function statTextWithPulse(elementId, newText) {
+            var el = document.getElementById(elementId);
+            var changed = _prevStatValue[elementId] !== undefined && _prevStatValue[elementId] !== newText;
+            el.innerText = newText;
+            _prevStatValue[elementId] = newText;
+            if (changed) FlodTheme.pulse(el, 'stat-pulse');
         }
 
         async function fetchState() {
@@ -872,11 +976,11 @@
                     }
                 });
 
-                document.getElementById('globalStatPps').innerText = totalRate.toFixed(1);
-                document.getElementById('globalStatTargets').innerText = monitoredTargetsCount;
-                document.getElementById('globalStatAttacked').innerText = attackedTargetsCount;
-                document.getElementById('globalStatBlocked').innerText = data.blocked_count;
-                document.getElementById('globalStatRatelimited').innerText = data.ratelimited_count;
+                statTextWithPulse('globalStatPps', totalRate.toFixed(1));
+                statTextWithPulse('globalStatTargets', String(monitoredTargetsCount));
+                statTextWithPulse('globalStatAttacked', String(attackedTargetsCount));
+                statTextWithPulse('globalStatBlocked', String(data.blocked_count));
+                statTextWithPulse('globalStatRatelimited', String(data.ratelimited_count));
 
                 const attackedCard = document.getElementById('globalStatAttacked');
                 if (attackedTargetsCount > 0) {
@@ -887,7 +991,7 @@
 
                 let tableHtml = '';
                 if (activeTargets.length === 0) {
-                    tableHtml = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-tertiary);">No monitored targets yet.</td></tr>`;
+                    tableHtml = `<tr><td colspan="6" class="table-empty">No monitored targets yet.</td></tr>`;
                 } else {
                     activeTargets.forEach(ip => {
                         const metric = data.last_metrics_by_target[ip];
@@ -896,17 +1000,26 @@
                         else if (metric.latest_classification === 'Flash Crowd') statusBadgeClass = 'badge badge-flash';
                         else if (metric.latest_classification === 'Anomalous') statusBadgeClass = 'badge badge-anomalous';
 
+                        // Only the moment this target's classification
+                        // actually changes gets the pulse, not every
+                        // 2 second poll it happens to still read DDoS.
+                        if (_prevClassificationByTarget[ip] !== undefined
+                            && _prevClassificationByTarget[ip] !== metric.latest_classification) {
+                            statusBadgeClass += ' badge-pulse';
+                        }
+                        _prevClassificationByTarget[ip] = metric.latest_classification;
+
                         const safeIp = FlodSafe.escapeHtml(ip);
                         const jsIp = FlodSafe.jsAttr(ip);
                         tableHtml += `
                             <tr>
-                                <td style="padding: 12px 15px; color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
-                                <td style="padding: 12px 15px;">${metric.ewma_rate.toFixed(1)}</td>
-                                <td style="padding: 12px 15px;">${metric.entropy.toFixed(4)}</td>
-                                <td style="padding: 12px 15px;">${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
-                                <td style="padding: 12px 15px;"><span class="${statusBadgeClass}">${FlodSafe.escapeHtml(metric.latest_classification)}</span></td>
-                                <td style="padding: 12px 15px;">
-                                    <button class="btn" onclick="switchToTargetIp('${jsIp}')" style="padding: 3px 10px; font-size: 0.75rem;">Inspect</button>
+                                <td style="color: var(--accent); font-weight: 600; cursor: pointer;" onclick="switchToTargetIp('${jsIp}')">${safeIp}</td>
+                                <td>${metric.ewma_rate.toFixed(1)}</td>
+                                <td>${metric.entropy.toFixed(4)}</td>
+                                <td>${(metric.dominant_ip_ratio * 100).toFixed(1)}%</td>
+                                <td><span class="${statusBadgeClass}">${FlodSafe.escapeHtml(metric.latest_classification)}</span></td>
+                                <td class="action-cell">
+                                    <button class="btn" onclick="switchToTargetIp('${jsIp}')">Inspect</button>
                                 </td>
                             </tr>
                         `;
@@ -919,9 +1032,9 @@
                 // 3. Target View Updates
                 updateEgressPanel(data);
 
-                document.getElementById('statPps').innerText = data.ewma_rate.toFixed(1);
+                statTextWithPulse('statPps', data.ewma_rate.toFixed(1));
                 document.getElementById('statPpsBaseline').innerText = `Baseline: ${data.mean_r.toFixed(1)}`;
-                document.getElementById('statEntropy').innerText = data.entropy.toFixed(4);
+                statTextWithPulse('statEntropy', data.entropy.toFixed(4));
                 document.getElementById('statEntropyBaseline').innerText = `Baseline: ${data.mean_h.toFixed(4)}`;
                 document.getElementById('statK').innerText = `${data.k_multiplier.toFixed(1)}×`;
                 document.getElementById('statBlocked').innerText = data.blocked_count;
@@ -940,6 +1053,7 @@
                 }
 
                 const threatBadge = document.getElementById('threatStatus');
+                const prevThreatClass = _prevClassificationByTarget['__threatBadge'];
                 if (data.latest_classification === 'DDoS') {
                     threatBadge.className = 'badge badge-ddos';
                     threatBadge.innerText = 'DDoS Attack Detected';
@@ -953,14 +1067,22 @@
                     threatBadge.className = 'badge badge-normal';
                     threatBadge.innerText = 'Normal';
                 }
+                // A persistent node (unlike the global table's badges,
+                // rebuilt from scratch every poll), so this one goes
+                // through FlodTheme.pulse() directly instead of the
+                // class-string trick used there.
+                if (prevThreatClass !== undefined && prevThreatClass !== data.latest_classification) {
+                    FlodTheme.pulse(threatBadge, 'badge-pulse');
+                }
+                _prevClassificationByTarget['__threatBadge'] = data.latest_classification;
 
                 document.getElementById('engineStatusDot').className = 'status-dot';
                 document.getElementById('engineStatusText').innerText = 'Online';
 
                 // Shift Chart Data if victim is loaded
                 if (currentTab === 'target' && selectedVictimIp) {
-                    updateChart(rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r), data.mean_r);
-                    updateChart(entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h), data.mean_h);
+                    updateChart('rate', rateChart, data.ewma_rate, data.mean_r + (data.k_multiplier * data.sigma_r), data.mean_r);
+                    updateChart('entropy', entropyChart, data.entropy, data.mean_h - (data.k_multiplier * data.sigma_h), data.mean_h);
                 }
 
                 // Protocol doughnut
@@ -1015,14 +1137,16 @@
             }
         }
 
-        function updateChart(chart, val, boundary, baseline) {
-            chart.data.datasets[0].data.shift();
-            chart.data.datasets[0].data.push(val);
-            chart.data.datasets[1].data.shift();
-            chart.data.datasets[1].data.push(boundary);
-            chart.data.datasets[2].data.shift();
-            chart.data.datasets[2].data.push(baseline);
-            chart.update('none');
+        function updateChart(key, chart, val, boundary, baseline) {
+            // The real, current values (what the line is actually worth
+            // right now), independent of whatever's mid-tween on screen.
+            // Cloned so mutating it here can't alias a previous target
+            // still referenced by an in-progress chartFlow.
+            const targets = chartTargetData[key].map(arr => arr.slice());
+            targets[0].shift(); targets[0].push(val);
+            targets[1].shift(); targets[1].push(boundary);
+            targets[2].shift(); targets[2].push(baseline);
+            startChartFlow(key, chart, targets);
         }
 
         async function initCharts() {
@@ -1039,7 +1163,7 @@
 
             // Matched to the sensor's heartbeat so a quiet target's panels
             // are never more than a couple of seconds behind.
-            setInterval(fetchState, 2000);
+            setInterval(fetchState, POLL_INTERVAL_MS);
         }
 
         document.getElementById('logoutBtn').addEventListener('click', async () => {

@@ -6,6 +6,69 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## 1.8.0, 2026-09-25
+
+### Added
+
+- Playbooks: an operator-defined layer on top of the four automatic
+  enforcement tiers. A trigger (a tier being reached, a run of consecutive
+  attack-classified windows, or several protected hosts under attack at
+  once) starts a linear sequence of stages: escalate a target, fire an
+  external alert, or generate an incident report the moment it fires.
+  Defined through a form builder or a JSON/YAML document that round trip
+  to the same stored definition. See `docs/playbooks.md`.
+- Incident reports gain a stage-by-stage timeline, a per-source breakdown
+  within a single incident, and system performance for the incident's own
+  time range (throughput, drops, CPU, memory, context switches, the
+  latency breakdown, and time to first verdict and first block).
+- Two new alert channels: Telegram (bot token plus chat ID) and a generic
+  outgoing webhook (a URL plus optional extra headers), alongside the
+  existing Discord and email channels.
+- The whole web interface redesigned: three selectable design families, a
+  new icon, and motion where it helps read the gateway's state, across
+  every page under `stage2/static/`.
+- `scripts/trim_ddos_class.py` and a matching "Trim DDoS to cap" button on
+  the Auto Label page cap the training set's DDoS class at the size of the
+  smaller of Normal and Flash Crowd after a merge, dropping whole capture
+  sessions rather than individual rows so session-boundary detection stays
+  intact.
+- `install.sh` gained `--egress-interface`, matching the flag `run.sh`
+  already had; a fresh install can now configure egress measurement
+  without a manual edit to the generated systemd unit.
+
+### Fixed
+
+- A playbook notify stage's `channel` field was recorded but never
+  actually restricted delivery; every enabled alert channel fired
+  regardless of what was configured. `dispatch_alert()` now takes a real
+  channel argument, and both the API and the dashboard enforce the closed
+  set of channel names.
+- The dashboard's live rate and entropy charts snapped to a new shape on
+  every poll instead of flowing; replaced with a `requestAnimationFrame`
+  interpolation engine that always animates from whatever is on screen
+  toward the latest polled values.
+- A training-set merge from the confidence-gated auto-label queue had left
+  the DDoS class at 2.25x the Normal class's own row count, which
+  regressed live Flash Crowd detection (false positive rate up to 40.5% on
+  one capture backend, Stage 2 handoff latency into the tens of seconds).
+  Root-caused to the class imbalance, not a boundary problem; fixed by
+  trimming DDoS to the class balance tool above and retraining all three
+  models. Confirmed via a live dual-backend rerun: false positive rate
+  down to 0.5%/1.3%, latency down to double digit milliseconds, backend
+  agreement on DDoS verdicts up from 14 of 17 phases to 17 of 17.
+
+## 1.7.0, 2026-09-24
+
+### Added
+
+- The rate sigma floor now scales against each target's own mean
+  (`--rate-sigma-floor-ratio`), mirroring the existing ceiling ratio and
+  backstopped by the absolute floor for a target still near zero during
+  warm-up. A single global floor could not fit protected hosts spanning a
+  wide range of mean rates without either leaving a quiet host
+  insensitive or flagging a busy one continuously. A startup check now
+  warns if the floor ratio is not kept below the ceiling ratio.
+
 ## 1.6.1, 2026-09-20
 
 ### Added

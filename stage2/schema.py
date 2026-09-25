@@ -54,6 +54,51 @@ TABLES = {
             rows_labeled INTEGER NOT NULL,
             resolved INTEGER NOT NULL DEFAULT 0
         )""",
+    # V10. definition is the single JSON document both editing surfaces
+    # (form builder, hand-edited JSON/YAML) read and write; see
+    # docs/specs/2026-09-13-playbooks-design.md for its shape. Storing it as
+    # one column rather than normalized trigger/stage tables is deliberate:
+    # a playbook is authored and edited as one document by one operator, not
+    # queried or joined against by anything else in the system.
+    "playbooks": """
+        CREATE TABLE IF NOT EXISTS playbooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            target_scope_type TEXT NOT NULL,
+            target_scope_value TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            definition TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""",
+    # At most one running row per (playbook_id, target_host), enforced by
+    # the caller checking before insert rather than a partial unique index,
+    # since SQLite's partial index syntax on a non-constant WHERE clause
+    # (status = 'running') still permits duplicates a caller could race
+    # into; the engine only ever runs one advancement pass at a time so
+    # this is not a concurrency gap in practice.
+    "playbook_runs": """
+        CREATE TABLE IF NOT EXISTS playbook_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            playbook_id INTEGER NOT NULL,
+            target_host TEXT NOT NULL,
+            target_source TEXT,
+            current_stage_index INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'running',
+            trigger_reason TEXT,
+            started_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""",
+    "playbook_events": """
+        CREATE TABLE IF NOT EXISTS playbook_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            stage_index INTEGER NOT NULL,
+            stage_type TEXT NOT NULL,
+            fired_at REAL NOT NULL,
+            target_source TEXT,
+            detail TEXT
+        )""",
 }
 
 LOGS_COLUMNS = "timestamp, src_ip, dst_ip, proto, rate, entropy, classification"
@@ -64,6 +109,8 @@ LOGS_COLUMNS = "timestamp, src_ip, dst_ip, proto, rate, entropy, classification"
 INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_logs_classification_id ON logs (classification, id)",
     "CREATE INDEX IF NOT EXISTS idx_auto_label_runs_resolved ON auto_label_runs (resolved, id)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_runs_status ON playbook_runs (playbook_id, target_host, status)",
+    "CREATE INDEX IF NOT EXISTS idx_playbook_events_run_id ON playbook_events (run_id, stage_index)",
 )
 
 

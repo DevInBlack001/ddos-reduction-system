@@ -113,6 +113,72 @@ class BuildContextTests(unittest.TestCase):
         titles = [p["title"] for p in ctx["phases"]]
         self.assertIn("Blocked", titles)
 
+    def test_an_empty_window_has_no_source_detail_or_timeline(self):
+        ctx = report_data.build_context(1.0)
+        self.assertEqual(ctx["source_detail"], [])
+        self.assertEqual(ctx["timeline"], [])
+
+    def test_source_detail_carries_first_and_last_seen_and_peak_rate(self):
+        now = time.time()
+        db.log_incident(now - 120, "198.51.100.9", "Normal", victim_ip="192.0.2.3", src_rate=40.0)
+        db.log_incident(now - 60, "198.51.100.9", "Blocked", victim_ip="192.0.2.3", src_rate=900.0)
+        ctx = report_data.build_context(1.0)
+        self.assertEqual(len(ctx["source_detail"]), 1)
+        row = ctx["source_detail"][0]
+        self.assertEqual(row["ip"], "198.51.100.9")
+        self.assertEqual(row["n"], "2")
+        self.assertEqual(row["peak_rate"], "900.0")
+
+    def test_source_detail_reflects_current_block_status(self):
+        # get_blocked_ips() shells out to read the real ipset, which the
+        # RecordingRun stub does not actually maintain, so the "currently
+        # blocked" list is mocked directly here rather than driven through
+        # a real block_ip() call, the same way the block/ratelimit lists
+        # themselves are unit-testable independent of enforcement.py.
+        real_get_blocked = enforcement.get_blocked_ips
+        enforcement.get_blocked_ips = lambda: [{"ip": "198.51.100.9", "remaining_seconds": 600}]
+        try:
+            db.log_incident(time.time() - 60, "198.51.100.9", "Blocked", victim_ip="192.0.2.3", src_rate=900.0)
+            ctx = report_data.build_context(1.0)
+            self.assertEqual(ctx["source_detail"][0]["status"], "Blocked")
+        finally:
+            enforcement.get_blocked_ips = real_get_blocked
+
+    def test_source_detail_status_is_none_when_never_actioned(self):
+        db.log_incident(time.time() - 60, "198.51.100.9", "Normal", victim_ip="192.0.2.3", src_rate=40.0)
+        ctx = report_data.build_context(1.0)
+        self.assertEqual(ctx["source_detail"][0]["status"], "None")
+
+    def test_timeline_includes_a_playbook_event_inside_the_window(self):
+        now = time.time()
+        playbook_id = db.create_playbook(
+            "test playbook", "host", "192.0.2.3", True,
+            '{"triggers":[{"type":"tier_reached","min_tier":1}],"stages":[{"type":"notify"}]}',
+            now,
+        )
+        run_id = db.start_playbook_run(playbook_id, "192.0.2.3", "198.51.100.9", "tier=1", now - 30)
+        db.record_playbook_event(run_id, 0, "notify", "198.51.100.9", "notified (all)", now - 20)
+
+        ctx = report_data.build_context(1.0)
+        self.assertEqual(len(ctx["timeline"]), 1)
+        entry = ctx["timeline"][0]
+        self.assertEqual(entry["stage_type"], "notify")
+        self.assertEqual(entry["target_host"], "192.0.2.3")
+        self.assertEqual(entry["playbook_name"], "test playbook")
+
+    def test_timeline_excludes_an_event_outside_the_window(self):
+        now = time.time()
+        playbook_id = db.create_playbook(
+            "old playbook", "host", "192.0.2.3", True,
+            '{"triggers":[{"type":"tier_reached","min_tier":1}],"stages":[{"type":"notify"}]}',
+            now,
+        )
+        run_id = db.start_playbook_run(playbook_id, "192.0.2.3", "198.51.100.9", "tier=1", now - 7200)
+        db.record_playbook_event(run_id, 0, "notify", "198.51.100.9", "notified (all)", now - 7200)
+
+        ctx = report_data.build_context(1.0)  # a 1 hour window
+        self.assertEqual(ctx["timeline"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

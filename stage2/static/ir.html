@@ -8,8 +8,14 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Incident Response</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
@@ -40,12 +46,16 @@
             color: var(--text-secondary);
             line-height: 1.5;
         }
+        .export-card .btn {
+            width: 100%;
+            margin-top: auto;
+        }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -56,6 +66,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
@@ -87,7 +98,7 @@
                         Downloads the entire SQLite audit ledger in comma-separated values format.
                         Suitable for ingestion into corporate SIEM platforms (Splunk, ELK) or spreadsheet analysis.
                     </div>
-                    <button class="btn" style="width: 100%; margin-top: auto;" onclick="downloadCsv()">Download Raw Ledger (.csv)</button>
+                    <button class="btn" onclick="downloadCsv()">Download Raw Ledger (.csv)</button>
                 </div>
 
                 <!-- PDF Card -->
@@ -98,16 +109,16 @@
                         baseline, a plain-language breakdown of what happened during the window, and the active
                         blocklist, built entirely from server-side state.
                     </div>
-                    <label style="font-size: 0.78rem; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px;">
-                        Time window covered
-                        <select id="pdfHours" class="input" style="width: 100%;">
+                    <div class="field">
+                        <label for="pdfHours">Time window covered</label>
+                        <select id="pdfHours" class="form-input">
                             <option value="1">Last hour</option>
                             <option value="6" selected>Last 6 hours</option>
                             <option value="24">Last 24 hours</option>
                             <option value="168">Last 7 days</option>
                         </select>
-                    </label>
-                    <button class="btn btn-danger" style="width: 100%; margin-top: auto;" onclick="downloadPdf()">Compile Incident Report (.pdf)</button>
+                    </div>
+                    <button class="btn btn-danger" onclick="downloadPdf()">Compile Incident Report (.pdf)</button>
                 </div>
             </div>
         </div>

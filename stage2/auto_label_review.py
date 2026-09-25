@@ -20,6 +20,7 @@ import config
 import db
 from auto_label import BASE_CSV_HEADER, _read_rows, _rewrite_csv
 from storage import _atomic_write
+from training_balance import trim_ddos_sessions
 
 router = APIRouter()
 
@@ -137,6 +138,39 @@ def discard_staged_rows():
         f"from {config.AUTO_LABELED_CSV_PATH} without merging."
     )
     return {"discarded": discarded_count}
+
+
+@router.post("/api/auto-label/trim-ddos")
+def trim_ddos_class():
+    """Caps config.TRAINING_CSV_PATH's DDoS (label 2) row count at the
+    smaller of its Normal and Flash Crowd row counts, dropping whole
+    DDoS sessions (never individual rows out of one, see
+    training_balance.py). A deliberate, operator-clicked action, the
+    same as Merge itself, never run automatically as part of a merge:
+    this project's own convention is that training data changes are
+    deliberate steps, not a hidden side effect."""
+    if not config.TRAINING_CSV_PATH:
+        raise HTTPException(
+            status_code=400,
+            detail="TRAINING_CSV_PATH is not configured. Set it (the same "
+                   "--training-csv value install.sh/update.sh take for the "
+                   "retrain timer) before trimming from the dashboard.",
+        )
+
+    header, rows, _ = _read_rows(config.TRAINING_CSV_PATH)
+    if header is None or not rows:
+        raise HTTPException(status_code=400, detail="Training CSV is empty or missing, nothing to trim.")
+
+    trimmed, dropped, cap = trim_ddos_sessions(rows)
+    if dropped == 0:
+        return {"dropped": 0, "cap": cap, "message": "DDoS is already at or under the cap, nothing trimmed."}
+
+    _rewrite_csv(config.TRAINING_CSV_PATH, header, trimmed)
+    logging.warning(
+        f"[+] Dashboard trim: {dropped} DDoS row(s) dropped as whole sessions from "
+        f"{config.TRAINING_CSV_PATH}, capped at {cap} (the smaller of Normal/Flash Crowd)."
+    )
+    return {"dropped": dropped, "cap": cap, "remaining_rows": len(trimmed)}
 
 
 def _write_csv(f, header, rows):

@@ -8,15 +8,21 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Interfaces</title>
     <link rel="stylesheet" href="/static/base.css">
 </head>
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -27,6 +33,7 @@
             <li class="nav-item active"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
@@ -67,7 +74,7 @@
                     </thead>
                     <tbody id="ifaceTableBody">
                         <tr>
-                            <td colspan="6" style="text-align: center; color: var(--text-tertiary);">Loading network interfaces...</td>
+                            <td colspan="6" class="table-empty">Loading network interfaces...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -77,11 +84,17 @@
                 <div class="hud-panel-header">
                     <div class="hud-panel-title">Monitoring Architecture</div>
                 </div>
-                <div style="font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);">
-                    The FLOD System operates in <span style="color: var(--accent); font-weight: 600;">transparent bridge/tap mode</span>.<br>
-                    Stage 1 captures raw frames using zero-copy <b>libpcap ring buffers</b> directly from the active network interface.<br>
-                    To change the primary interface under inspection, update the <code style="font-family: var(--font-mono); background: var(--bg-code); padding: 1px 5px; border-radius: 3px;">--interface</code> argument inside <code style="font-family: var(--font-mono); background: var(--bg-code); padding: 1px 5px; border-radius: 3px;">/etc/systemd/system/ddos-stage1.service</code> and restart the daemon.
-                </div>
+                <p style="font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary); margin-bottom: 4px;">
+                    The FLOD System operates in <span style="color: var(--accent); font-weight: 600;">transparent bridge/tap mode</span>,
+                    capturing raw frames with zero-copy libpcap ring buffers directly from the active interface.
+                </p>
+                <dl class="kv-list">
+                    <div class="kv-row">
+                        <dt>Change the capture interface</dt>
+                        <dd>Edit <span class="code-chip">--interface</span> in
+                            <span class="code-chip">/etc/systemd/system/ddos-stage1.service</span>, then restart the daemon.</dd>
+                    </div>
+                </dl>
             </div>
         </div>
     </div>
@@ -111,11 +124,11 @@
                 ifaces.forEach(i => {
                     let statusLabel;
                     if (i.name === activeIface) {
-                        statusLabel = '<span class="badge" style="color: var(--accent); background-color: var(--accent-soft);">Ingress Sniffer</span>';
+                        statusLabel = '<span class="badge badge-accent">Ingress Sniffer</span>';
                     } else if (egressIface && i.name === egressIface) {
-                        statusLabel = '<span class="badge" style="color: var(--status-victim); background-color: var(--status-victim-bg);">Egress Sniffer</span>';
+                        statusLabel = '<span class="badge badge-victim">Egress Sniffer</span>';
                     } else {
-                        statusLabel = '<span class="badge" style="color: var(--text-tertiary); background-color: var(--bg-surface-alt);">Idle</span>';
+                        statusLabel = '<span class="badge badge-neutral">Idle</span>';
                     }
 
                     const stateLabel = i.up

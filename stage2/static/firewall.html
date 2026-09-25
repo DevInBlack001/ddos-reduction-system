@@ -8,8 +8,14 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Firewall</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
@@ -18,12 +24,13 @@
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 20px;
         }
+        .action-cell { text-align: right; }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -34,6 +41,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item active"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
@@ -72,12 +80,12 @@
                         <thead>
                             <tr>
                                 <th>Whitelisted Address</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="whitelistTableBody">
                             <tr>
-                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading whitelist entries...</td>
+                                <td colspan="2" class="table-empty">Loading whitelist entries...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -89,9 +97,8 @@
                         <div class="hud-panel-title">Shared / NAT Addresses</div>
                     </div>
                     <div style="font-size: 0.78rem; color: var(--text-secondary); background: var(--bg-surface-alt); border-left: 3px solid var(--status-warning); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px; line-height: 1.6;">
-                        Addresses listed here are never hard-blocked, because one entry in
-                        <code style="font-family: var(--font-mono);">ddos_blocklist</code> would drop traffic
-                        for every host behind them. Attacks from these sources are rate-limited instead.
+                        Addresses listed here are never hard-blocked. Attacks from these sources
+                        are rate-limited instead.
                     </div>
 
                     <form id="sharedIpForm" class="form-group">
@@ -103,12 +110,12 @@
                         <thead>
                             <tr>
                                 <th>Shared Address</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="sharedIpTableBody">
                             <tr>
-                                <td colspan="2" style="text-align: center; color: var(--text-tertiary);">Loading shared addresses...</td>
+                                <td colspan="2" class="table-empty">Loading shared addresses...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -125,12 +132,12 @@
                             <tr>
                                 <th>Blocked Address</th>
                                 <th>Time Remaining</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="blockedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active blocks...</td>
+                                <td colspan="3" class="table-empty">Loading active blocks...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -148,12 +155,12 @@
                             <tr>
                                 <th>Rate-Limited Address</th>
                                 <th>Time Remaining</th>
-                                <th style="text-align: right;">Action</th>
+                                <th class="action-cell">Action</th>
                             </tr>
                         </thead>
                         <tbody id="ratelimitedTableBody">
                             <tr>
-                                <td colspan="3" style="text-align: center; color: var(--text-tertiary);">Loading active rate limits...</td>
+                                <td colspan="3" class="table-empty">Loading active rate limits...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -166,9 +173,8 @@
                     <div class="hud-panel-title">Enforcement Thresholds</div>
                 </div>
                 <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
-                    These are the deterministic thresholds that decide block vs. rate-limit vs. no
-                    action. Changes apply to the next window immediately, no restart needed,
-                    except the rate-limit pps cap, which rewrites the live iptables hashlimit rule.
+                    These thresholds decide block, rate-limit, or no action. Changes apply
+                    immediately, no restart needed.
                 </div>
                 <form id="thresholdForm">
                     <div class="threshold-grid">
@@ -219,7 +225,7 @@
                         </div>
                     </div>
                     <button type="submit" class="btn">Save Thresholds</button>
-                    <button type="button" class="btn" style="background: transparent;" onclick="loadThresholds()">Discard Changes</button>
+                    <button type="button" class="btn btn-ghost" onclick="loadThresholds()">Discard Changes</button>
                 </form>
             </div>
         </div>
@@ -240,13 +246,13 @@
                 const wlBody = document.getElementById('whitelistTableBody');
                 const whitelisted = data.whitelisted_ips || [];
                 if (whitelisted.length === 0) {
-                    wlBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No IP addresses whitelisted.</td></tr>`;
+                    wlBody.innerHTML = `<tr><td colspan="2" class="table-empty">No IP addresses whitelisted.</td></tr>`;
                 } else {
                     let wlHtml = '';
                     whitelisted.forEach(ip => {
                         wlHtml += `<tr>
                             <td style="font-weight: 600; font-family: var(--font-mono);">${FlodSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeWhitelist('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td class="action-cell"><button class="btn btn-danger" onclick="removeWhitelist('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     wlBody.innerHTML = wlHtml;
@@ -256,13 +262,13 @@
                 const shBody = document.getElementById('sharedIpTableBody');
                 const sharedIps = data.shared_ips || [];
                 if (sharedIps.length === 0) {
-                    shBody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-tertiary);">No shared addresses marked.</td></tr>`;
+                    shBody.innerHTML = `<tr><td colspan="2" class="table-empty">No shared addresses marked.</td></tr>`;
                 } else {
                     let shHtml = '';
                     sharedIps.forEach(ip => {
                         shHtml += `<tr>
                             <td style="font-weight: 600; font-family: var(--font-mono); color: var(--status-warning);">${FlodSafe.escapeHtml(ip)}</td>
-                            <td style="text-align: right;"><button class="btn btn-danger" style="padding: 3px 10px; font-size: 0.75rem;" onclick="removeSharedIp('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
+                            <td class="action-cell"><button class="btn btn-danger" onclick="removeSharedIp('${FlodSafe.jsAttr(ip)}')">Remove</button></td>
                         </tr>`;
                     });
                     shBody.innerHTML = shHtml;
@@ -272,14 +278,14 @@
                 const blBody = document.getElementById('blockedTableBody');
                 const blocked = data.blocked_ips_detail || []; // Should contain {ip, remaining_seconds}
                 if (blocked.length === 0) {
-                    blBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active blocks.</td></tr>`;
+                    blBody.innerHTML = `<tr><td colspan="3" class="table-empty">No active blocks.</td></tr>`;
                 } else {
                     let blHtml = '';
                     blocked.forEach(b => {
                         blHtml += `<tr>
                             <td style="font-weight: 600; color: var(--status-danger); font-family: var(--font-mono);">${FlodSafe.escapeHtml(b.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${b.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(b.ip)}')">Release</button></td>
+                            <td class="action-cell"><button class="btn" onclick="releaseBlock('${FlodSafe.jsAttr(b.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     blBody.innerHTML = blHtml;
@@ -291,14 +297,14 @@
                 const rlBody = document.getElementById('ratelimitedTableBody');
                 const ratelimited = data.ratelimited_ips_detail || []; // {ip, remaining_seconds}
                 if (ratelimited.length === 0) {
-                    rlBody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary);">No active rate limits.</td></tr>`;
+                    rlBody.innerHTML = `<tr><td colspan="3" class="table-empty">No active rate limits.</td></tr>`;
                 } else {
                     let rlHtml = '';
                     ratelimited.forEach(r => {
                         rlHtml += `<tr>
                             <td style="font-weight: 600; color: var(--accent); font-family: var(--font-mono);">${FlodSafe.escapeHtml(r.ip)}</td>
                             <td style="color: var(--status-warning); font-weight: 600;">${r.remaining_seconds}s remaining</td>
-                            <td style="text-align: right;"><button class="btn" style="padding: 3px 10px; font-size: 0.75rem;" onclick="releaseBlock('${FlodSafe.jsAttr(r.ip)}')">Release</button></td>
+                            <td class="action-cell"><button class="btn" onclick="releaseBlock('${FlodSafe.jsAttr(r.ip)}')">Release</button></td>
                         </tr>`;
                     });
                     rlBody.innerHTML = rlHtml;

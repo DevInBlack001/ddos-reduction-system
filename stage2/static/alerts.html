@@ -8,8 +8,14 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Alerts</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
@@ -36,7 +42,7 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -47,6 +53,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item active"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>
@@ -70,10 +77,9 @@
 
         <div class="content-area">
             <div class="info-note">
-                Alerts fire on a victim's classification changing to/from DDoS, on every new hard
-                block (Tier 1/2), and on the Tier 4 aggregate rate-limit fallback. Soft rate-limits
-                (Tier 3) don't alert on their own, and a source already alerted stays suppressed
-                for the configured block duration so a sustained attack doesn't spam either channel.
+                Alerts fire on a classification change to/from DDoS, a new hard block, or the
+                aggregate rate-limit fallback. A source stays suppressed for the block duration
+                once alerted.
             </div>
 
             <div class="channel-grid">
@@ -92,7 +98,7 @@
                     </div>
                     <div class="channel-actions">
                         <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
-                        <button type="button" class="btn" style="background: transparent;" onclick="testChannel('discord')">Send Test Alert</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('discord')">Send Test Alert</button>
                     </div>
                     <div id="discordTestResult" class="channel-status" style="margin-top: 8px;"></div>
                 </div>
@@ -130,9 +136,68 @@
                     </div>
                     <div class="channel-actions">
                         <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
-                        <button type="button" class="btn" style="background: transparent;" onclick="testChannel('email')">Send Test Alert</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('email')">Send Test Alert</button>
                     </div>
                     <div id="emailTestResult" class="channel-status" style="margin-top: 8px;"></div>
+                </div>
+
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Telegram</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="telegramEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-grid">
+                        <div class="threshold-field">
+                            <label for="telegramBotToken">Bot token</label>
+                            <input type="password" id="telegramBotToken" class="form-input" placeholder="123456789:ABC-DEF...">
+                            <span class="threshold-hint" id="telegramBotTokenHint">Leave blank to keep the current one.</span>
+                        </div>
+                        <div class="threshold-field">
+                            <label for="telegramChatId">Chat ID</label>
+                            <input type="text" id="telegramChatId" class="form-input" placeholder="-1001234567890">
+                        </div>
+                    </div>
+                    <div class="info-note" style="margin: 10px 0 0;">
+                        Create a bot with Telegram's <code>@BotFather</code>, add it to the target chat or
+                        channel, and use that chat's ID here.
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('telegram')">Send Test Alert</button>
+                    </div>
+                    <div id="telegramTestResult" class="channel-status" style="margin-top: 8px;"></div>
+                </div>
+
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <div class="hud-panel-title">Custom Webhook</div>
+                        <label class="panel-toggle">
+                            <input type="checkbox" id="webhookEnabled">
+                            Enabled
+                        </label>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="webhookUrl">URL</label>
+                        <input type="password" id="webhookUrl" class="form-input" placeholder="https://your-endpoint.example.com/alert">
+                        <span class="threshold-hint" id="webhookUrlHint">Leave blank to keep the current one.</span>
+                    </div>
+                    <div class="threshold-field">
+                        <label for="webhookHeaders">Extra headers (JSON object, optional)</label>
+                        <input type="text" id="webhookHeaders" class="form-input" placeholder='{"Authorization": "Bearer ..."}'>
+                        <span class="threshold-hint" id="webhookHeadersHint">For an API key or bearer token most receivers expect. Leave blank to keep the current ones, or to send none.</span>
+                    </div>
+                    <div class="info-note" style="margin: 10px 0 0;">
+                        Posts one JSON body: <code>subject</code>, <code>message</code>, <code>text</code>
+                        (for a Slack- or Teams-compatible webhook), and <code>title</code> (for ntfy).
+                    </div>
+                    <div class="channel-actions">
+                        <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
+                        <button type="button" class="btn btn-ghost" onclick="testChannel('webhook')">Send Test Alert</button>
+                    </div>
+                    <div id="webhookTestResult" class="channel-status" style="margin-top: 8px;"></div>
                 </div>
             </div>
         </div>
@@ -161,6 +226,24 @@
                 document.getElementById('smtpAppPasswordHint').innerText = cfg.smtp_app_password_set
                     ? 'A password is already saved, leave blank to keep it.'
                     : 'No password saved yet.';
+
+                document.getElementById('telegramEnabled').checked = !!cfg.telegram_enabled;
+                document.getElementById('telegramBotToken').value = '';
+                document.getElementById('telegramBotTokenHint').innerText = cfg.telegram_bot_token_set
+                    ? 'A bot token is already saved, leave blank to keep it.'
+                    : 'No bot token saved yet.';
+                document.getElementById('telegramChatId').value = cfg.telegram_chat_id || '';
+
+                document.getElementById('webhookEnabled').checked = !!cfg.webhook_enabled;
+                document.getElementById('webhookUrl').value = '';
+                document.getElementById('webhookUrlHint').innerText = cfg.webhook_url_set
+                    ? 'A URL is already saved, leave blank to keep it.'
+                    : 'No URL saved yet.';
+                document.getElementById('webhookHeaders').value = '';
+                const headerNames = cfg.webhook_header_names || [];
+                document.getElementById('webhookHeadersHint').innerText = headerNames.length
+                    ? `Headers already saved: ${headerNames.join(', ')}. Leave blank to keep them, or retype the full JSON object to replace them.`
+                    : 'For an API key or bearer token most receivers expect. Leave blank to keep the current ones, or to send none.';
             } catch (err) {
                 console.error("Failed to load alerts config:", err);
             }
@@ -175,14 +258,38 @@
                 smtp_username: document.getElementById('smtpUsername').value,
                 email_recipients: document.getElementById('emailRecipients').value
                     .split(',').map(s => s.trim()).filter(Boolean),
+                telegram_enabled: document.getElementById('telegramEnabled').checked,
+                telegram_chat_id: document.getElementById('telegramChatId').value,
+                webhook_enabled: document.getElementById('webhookEnabled').checked,
             };
-            const webhookUrl = document.getElementById('discordWebhookUrl').value;
-            if (webhookUrl) {
-                payload.discord_webhook_url = webhookUrl;
+            const webhookUrlField = document.getElementById('discordWebhookUrl').value;
+            if (webhookUrlField) {
+                payload.discord_webhook_url = webhookUrlField;
             }
             const appPassword = document.getElementById('smtpAppPassword').value;
             if (appPassword) {
                 payload.smtp_app_password = appPassword;
+            }
+            const telegramBotToken = document.getElementById('telegramBotToken').value;
+            if (telegramBotToken) {
+                payload.telegram_bot_token = telegramBotToken;
+            }
+            const webhookUrl = document.getElementById('webhookUrl').value;
+            if (webhookUrl) {
+                payload.webhook_url = webhookUrl;
+            }
+            const webhookHeadersRaw = document.getElementById('webhookHeaders').value.trim();
+            if (webhookHeadersRaw) {
+                try {
+                    const parsed = JSON.parse(webhookHeadersRaw);
+                    if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+                        throw new Error('not an object');
+                    }
+                    payload.webhook_headers = parsed;
+                } catch (err) {
+                    alert('Extra headers must be a JSON object, e.g. {"Authorization": "Bearer ..."}.');
+                    return;
+                }
             }
             const res = await fetch('/api/config/alerts', {
                 method: 'POST',
@@ -192,6 +299,9 @@
             if (res.ok) {
                 document.getElementById('smtpAppPassword').value = '';
                 document.getElementById('discordWebhookUrl').value = '';
+                document.getElementById('telegramBotToken').value = '';
+                document.getElementById('webhookUrl').value = '';
+                document.getElementById('webhookHeaders').value = '';
                 await loadAlertsConfig();
             } else {
                 const data = await res.json();

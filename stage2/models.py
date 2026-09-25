@@ -6,7 +6,7 @@ every route module can import from here without risking a cycle.
 """
 
 import ipaddress
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, field_validator
@@ -133,6 +133,47 @@ class SetPasswordPayload(BaseModel):
         return _check_password_strength(v)
 
 
+_PLAYBOOK_SCOPE_TYPES = {"host", "subnet", "all"}
+
+
+class PlaybookPayload(BaseModel):
+    """A playbook's editable fields. `definition` is validated by
+    playbooks.validate_definition() at the route, not here: that
+    validator is the one gate both the form builder and the raw
+    JSON/YAML editor go through, duplicating its rules into a second
+    pydantic schema would let the two drift apart."""
+    name: str
+    target_scope_type: str
+    target_scope_value: Optional[str] = None
+    enabled: bool = True
+    definition: dict
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v):
+        if not (1 <= len(v) <= 200):
+            raise ValueError("Playbook name must be 1-200 characters.")
+        return v
+
+    @field_validator("target_scope_type")
+    @classmethod
+    def _v_scope_type(cls, v):
+        if v not in _PLAYBOOK_SCOPE_TYPES:
+            raise ValueError(f"target_scope_type must be one of {sorted(_PLAYBOOK_SCOPE_TYPES)}.")
+        return v
+
+    @field_validator("target_scope_value")
+    @classmethod
+    def _v_scope_value(cls, v):
+        # Full cross-field check (host needs a value, subnet needs a
+        # valid CIDR) happens in the route, once target_scope_type is
+        # known; pydantic v2 field_validators run per field, not with
+        # access to sibling fields already validated, by default.
+        if v is not None and len(v) > 64:
+            raise ValueError("target_scope_value is too long.")
+        return v
+
+
 class AlertsConfigPayload(BaseModel):
     discord_enabled: Optional[bool] = None
     discord_webhook_url: Optional[str] = None
@@ -142,3 +183,13 @@ class AlertsConfigPayload(BaseModel):
     smtp_username: Optional[str] = None
     smtp_app_password: Optional[str] = None
     email_recipients: Optional[List[str]] = None
+    telegram_enabled: Optional[bool] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    # A generic outgoing webhook, for any platform without its own named
+    # integration (Slack, ntfy, a custom receiver, ...): a URL plus
+    # optional extra headers for an API key or bearer token, rather than
+    # a dedicated panel per platform.
+    webhook_enabled: Optional[bool] = None
+    webhook_url: Optional[str] = None
+    webhook_headers: Optional[Dict[str, str]] = None

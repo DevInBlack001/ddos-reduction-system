@@ -9,7 +9,7 @@ An adaptive two stage Layer 4 volumetric DDoS mitigation gateway.
 **Project:** Adaptive Two Stage Framework for Near Real Time Layer 4 Volumetric
 DDoS Mitigation Using Behavioral Traffic Analysis
 
-![The FLOD dashboard overview, five protected targets, all reading Normal](docs/images/dashboard-overview.png)
+![The FLOD dashboard overview, five protected targets covering all four classification states at once: Normal, Flash Crowd, DDoS, and Anomalous](docs/images/dashboard-overview.png)
 
 
 ## What It Does
@@ -159,6 +159,8 @@ scripts/test.sh
 | [Explainer](docs/explainer.md) | Every term and every wire format field, explained for a non-technical reader |
 | [IPC](docs/ipc.md) | The feature vector wire format |
 | [Enforcement](docs/enforcement.md) | Classification, the four mitigation tiers, NAT handling |
+| [Playbooks](docs/playbooks.md) | Operator-defined trigger/stage sequences layered on top of the four tiers |
+| [Alerts](docs/alerts.md) | Discord, email, Telegram, and a generic webhook for anything else |
 | [Training](docs/training.md) | Capturing labelled data and training the model |
 | [Testing](docs/testing.md) | Running both test suites |
 | [Security](docs/security.md) | The hardening pass and the threat model |
@@ -192,8 +194,8 @@ A personal, open source project, and a working system, but not one that has
 been through the adversarial testing a production security product needs.
 Deploy it on a lab network or somewhere you can afford to have it be wrong.
 
-The dashboard is functional and plain. A visual redesign is planned as part of
-V10; see the [roadmap](docs/roadmap.md#planned).
+The dashboard has three selectable design families and operator-defined
+playbooks as of V10; see the [roadmap](docs/roadmap.md#completed).
 
 
 ## Licence

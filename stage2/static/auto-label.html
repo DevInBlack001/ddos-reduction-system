@@ -8,8 +8,14 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Auto Label</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
@@ -53,7 +59,7 @@
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -64,6 +70,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item active"><a href="/auto-label.html"><span>■</span> Auto Label <span class="nav-badge" id="autoLabelBadge"></span></a></li>
@@ -87,11 +94,9 @@
 
         <div class="content-area">
             <div class="info-note">
-                Rows here were auto-labeled because two independently trained
-                models agreed on the class confidently, on traffic newer than
-                either model's own training run. Nothing reaches the real
-                training set until you merge it here; discard clears the
-                queue without merging any of it.
+                Rows here were auto-labeled by agreement between two models.
+                Merge appends them to the training set; discard clears the
+                queue without merging.
             </div>
 
             <div id="pendingRuns" class="run-list"></div>
@@ -103,6 +108,7 @@
             <div class="review-actions">
                 <button type="button" class="btn" id="mergeBtn" onclick="mergeStaged()">Merge into training data</button>
                 <button type="button" class="btn btn-danger" id="discardBtn" onclick="discardStaged()">Discard</button>
+                <button type="button" class="btn btn-ghost" id="trimBtn" onclick="trimDdos()" title="Caps the training CSV's DDoS row count at the smaller of Normal/Flash Crowd, dropping whole DDoS sessions">Trim DDoS to cap</button>
                 <span id="actionResult" style="font-size: 0.82rem;"></span>
             </div>
 
@@ -201,6 +207,11 @@
         async function discardStaged() {
             if (!confirm('Discard every staged row without merging? This cannot be undone.')) return;
             await runAction('/api/auto-label/discard', 'discarded');
+        }
+
+        async function trimDdos() {
+            if (!confirm('Cap the training CSV\'s DDoS rows at the smaller of Normal/Flash Crowd, dropping whole DDoS sessions? This edits the training CSV directly and cannot be undone from here. Run this after a merge, before the next retrain.')) return;
+            await runAction('/api/auto-label/trim-ddos', 'dropped');
         }
 
         async function runAction(url, key) {

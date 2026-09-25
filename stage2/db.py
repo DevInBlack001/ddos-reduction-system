@@ -179,3 +179,278 @@ def purge_metrics_history():
         except Exception as e:
             _close()
             logging.error(f"[-] Failed to purge metrics history: {e}")
+
+
+# V10: playbooks. Reads use their own short-lived connect() (dashboard
+# routes), writes go through the shared writer lock like everything above,
+# since the live service's window-processing loop is the other writer.
+
+
+def get_enabled_playbooks_for_host(victim_ip):
+    """Playbooks whose target_scope matches this host: an exact host match,
+    or scope_type 'all'. 'subnet' scope is stored but not matched here yet,
+    left for the dashboard's editing surface to validate; evaluating a CIDR
+    membership check against every window is deferred until a playbook
+    actually uses that scope type."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, definition FROM playbooks WHERE enabled = 1 AND "
+            "(target_scope_type = 'all' OR "
+            " (target_scope_type = 'host' AND target_scope_value = ?))",
+            (victim_ip,)
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_active_playbook_run(playbook_id, target_host):
+    """The `running` row for this (playbook, host) pair, or None. Checked
+    before starting a new run so a still-firing trigger doesn't spawn
+    duplicate runs."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, current_stage_index, target_source, started_at FROM playbook_runs "
+            "WHERE playbook_id = ? AND target_host = ? AND status = 'running'",
+            (playbook_id, target_host)
+        ).fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def start_playbook_run(playbook_id, target_host, target_source, trigger_reason, now):
+    with _lock:
+        try:
+            conn = _open()
+            cur = conn.execute(
+                "INSERT INTO playbook_runs "
+                "(playbook_id, target_host, target_source, current_stage_index, status, "
+                " trigger_reason, started_at, updated_at) "
+                "VALUES (?, ?, ?, 0, 'running', ?, ?, ?)",
+                (playbook_id, target_host, target_source, trigger_reason, now, now)
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to start playbook run: {e}")
+            return None
+
+
+def get_running_playbook_runs():
+    """Every `running` row, for the once-per-window stage advancement pass
+    across all active runs, regardless of which host's window is currently
+    being processed."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, playbook_id, target_host, target_source, current_stage_index, "
+            "started_at, updated_at FROM playbook_runs WHERE status = 'running'"
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_playbook_definition(playbook_id):
+    conn = connect()
+    try:
+        row = conn.execute("SELECT definition FROM playbooks WHERE id = ?", (playbook_id,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def record_playbook_event(run_id, stage_index, stage_type, target_source, detail, now):
+    with _lock:
+        try:
+            conn = _open()
+            conn.execute(
+                "INSERT INTO playbook_events (run_id, stage_index, stage_type, fired_at, "
+                "target_source, detail) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, stage_index, stage_type, now, target_source, detail)
+            )
+            conn.commit()
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to record playbook event: {e}")
+
+
+def advance_playbook_run(run_id, next_stage_index, now):
+    """Advance to the next stage, or mark the run completed when
+    `next_stage_index` is None (the stage list is exhausted)."""
+    with _lock:
+        try:
+            conn = _open()
+            if next_stage_index is None:
+                conn.execute(
+                    "UPDATE playbook_runs SET status = 'completed', updated_at = ? WHERE id = ?",
+                    (now, run_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE playbook_runs SET current_stage_index = ?, updated_at = ? WHERE id = ?",
+                    (next_stage_index, now, run_id)
+                )
+            conn.commit()
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to advance playbook run: {e}")
+
+
+# V10: the two editing surfaces (form builder, JSON/YAML text editor) both
+# go through these. Writes take the shared lock like every other write in
+# this file; reads use the dashboard's short-lived connect(), same split
+# as the trigger-evaluation functions above.
+
+
+def get_all_playbooks():
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, target_scope_type, target_scope_value, enabled, "
+            "definition, created_at, updated_at FROM playbooks ORDER BY id"
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_playbook(playbook_id):
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT id, name, target_scope_type, target_scope_value, enabled, "
+            "definition, created_at, updated_at FROM playbooks WHERE id = ?",
+            (playbook_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def create_playbook(name, target_scope_type, target_scope_value, enabled, definition_json, now):
+    with _lock:
+        try:
+            conn = _open()
+            cur = conn.execute(
+                "INSERT INTO playbooks (name, target_scope_type, target_scope_value, "
+                "enabled, definition, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, target_scope_type, target_scope_value, int(enabled), definition_json, now, now)
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to create playbook: {e}")
+            return None
+
+
+def update_playbook(playbook_id, name, target_scope_type, target_scope_value, enabled, definition_json, now):
+    with _lock:
+        try:
+            conn = _open()
+            cur = conn.execute(
+                "UPDATE playbooks SET name = ?, target_scope_type = ?, target_scope_value = ?, "
+                "enabled = ?, definition = ?, updated_at = ? WHERE id = ?",
+                (name, target_scope_type, target_scope_value, int(enabled), definition_json, now, playbook_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to update playbook {playbook_id}: {e}")
+            return False
+
+
+def set_playbook_enabled(playbook_id, enabled, now):
+    with _lock:
+        try:
+            conn = _open()
+            cur = conn.execute(
+                "UPDATE playbooks SET enabled = ?, updated_at = ? WHERE id = ?",
+                (int(enabled), now, playbook_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to toggle playbook {playbook_id}: {e}")
+            return False
+
+
+def delete_playbook(playbook_id):
+    """Deletes the playbook definition itself, plus its own run and event
+    history: once the definition is gone there is nothing left for those
+    rows to describe, and keeping them around would let a future playbook
+    reusing the same id inherit another playbook's history."""
+    with _lock:
+        try:
+            conn = _open()
+            run_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM playbook_runs WHERE playbook_id = ?", (playbook_id,)
+            ).fetchall()]
+            if run_ids:
+                placeholders = ",".join("?" * len(run_ids))
+                conn.execute(f"DELETE FROM playbook_events WHERE run_id IN ({placeholders})", run_ids)
+            conn.execute("DELETE FROM playbook_runs WHERE playbook_id = ?", (playbook_id,))
+            cur = conn.execute("DELETE FROM playbooks WHERE id = ?", (playbook_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            _close()
+            logging.error(f"[-] Failed to delete playbook {playbook_id}: {e}")
+            return False
+
+
+def get_recent_playbook_runs(limit=50):
+    """Every run, newest first, regardless of status, for the dashboard's
+    run history view. Bounded so a long-lived deployment's full history
+    doesn't all load into one response."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT r.id, r.playbook_id, p.name, r.target_host, r.target_source, "
+            "r.current_stage_index, r.status, r.trigger_reason, r.started_at, r.updated_at "
+            "FROM playbook_runs r JOIN playbooks p ON p.id = r.playbook_id "
+            "ORDER BY r.started_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_playbook_events(run_id):
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT stage_index, stage_type, fired_at, target_source, detail "
+            "FROM playbook_events WHERE run_id = ? ORDER BY stage_index",
+            (run_id,)
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_playbook_events_between(start_ts, end_ts):
+    """Every playbook_events row in [start_ts, end_ts], joined back to its
+    run and playbook, for the incident report's timeline section."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT e.fired_at, e.stage_type, e.target_source, e.detail, "
+            "r.target_host, p.name "
+            "FROM playbook_events e "
+            "JOIN playbook_runs r ON r.id = e.run_id "
+            "JOIN playbooks p ON p.id = r.playbook_id "
+            "WHERE e.fired_at >= ? AND e.fired_at <= ? "
+            "ORDER BY e.fired_at",
+            (start_ts, end_ts)
+        ).fetchall()
+        return rows
+    finally:
+        conn.close()

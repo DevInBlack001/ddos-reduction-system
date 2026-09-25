@@ -1,17 +1,37 @@
 /* =============================================================================
    FLOD System Design System (base.css)
-   Professional SOC dashboard theme, light + dark mode via [data-theme]
+   Three selectable design families (V10): Operations Console, Security
+   Terminal, and Modern SaaS Security, each with a light and dark variant.
+   Selected via [data-design] on <html> (theme.js), combined with the
+   existing light/dark [data-theme] toggle. This block is Operations
+   Console, light variant, and doubles as the page default before
+   [data-design] is set (theme.js applies it after this file's initial
+   paint; see theme.js's own note on that gap).
+
+   Borderless by design, in all six family/theme combinations: every
+   --border-color and --border-strong token is transparent (kept as a
+   token, not removed from the rules that reference it, so box sizing
+   under box-sizing: border-box doesn't shift). Panel and control chrome
+   (--bg-surface, --bg-surface-alt, --bg-hover) is transparent the same
+   way; --bg-page (the page's own base fill) and --bg-code (anywhere
+   text needs a legible background, e.g. .code-chip and .legend) are the
+   two deliberate exceptions, per the project owner's own instruction
+   that text and diagrams keep their backgrounds. Colored status
+   backgrounds (--status-*-bg) are untouched for the same reason: they
+   carry meaning through color on the text/badge sitting in them, not
+   decorative chrome.
    ============================================================================= */
 
 :root {
     --bg-page: #f4f6f9;
-    --bg-surface: #ffffff;
-    --bg-surface-alt: #f0f2f6;
-    --bg-hover: #eef1f6;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
     --bg-code: #f0f2f6;
 
-    --border-color: #dde2ea;
-    --border-strong: #c6cedb;
+    --border-color: transparent;
+    --border-faint: #dde2ea;
+    --border-strong: transparent;
 
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
@@ -42,37 +62,48 @@
     --radius: 6px;
     --transition-speed: 0.15s;
 
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* V10: Inter is the chosen UI face; falls back to the system stack
+       until a <link> for it is added to the page templates, which is
+       page-redesign work not done in this pass. */
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
-:root[data-theme="dark"] {
-    --bg-page: #10141d;
-    --bg-surface: #171d29;
-    --bg-surface-alt: #1c2330;
-    --bg-hover: #212a3a;
-    --bg-code: #0d1119;
+/* Operations Console, dark variant: graphite, cyan primary, amber and red
+   reserved strictly for the warning/critical states so an alert colour
+   never doubles as ordinary UI chrome. Matches any dark theme with no
+   [data-design], or explicitly [data-design="operations"] below, which
+   is redundant with this selector but kept for clarity next to the other
+   two families' own explicit blocks. */
+:root[data-theme="dark"],
+:root[data-design="operations"][data-theme="dark"] {
+    --bg-page: #0f1419;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
+    --bg-code: #0d1319;
 
-    --border-color: #2a3242;
-    --border-strong: #3a4457;
+    --border-color: transparent;
+    --border-faint: #2a3540;
+    --border-strong: transparent;
 
-    --accent: #3b82f6;
-    --accent-hover: #60a5fa;
-    --accent-soft: rgba(59, 130, 246, 0.16);
+    --accent: #4fd1e8;
+    --accent-hover: #6fdbee;
+    --accent-soft: rgba(79, 209, 232, 0.14);
 
-    --text-primary: #e6e9ef;
-    --text-secondary: #9aa4b8;
-    --text-tertiary: #6b7488;
-    --text-on-accent: #ffffff;
+    --text-primary: #e4e8ec;
+    --text-secondary: #8b96a3;
+    --text-tertiary: #5f6b78;
+    --text-on-accent: #0b1216;
 
-    --status-success: #4ade80;
-    --status-success-bg: rgba(74, 222, 128, 0.12);
-    --status-warning: #fbbf24;
-    --status-warning-bg: rgba(251, 191, 36, 0.12);
-    --status-danger: #f87171;
-    --status-danger-bg: rgba(248, 113, 113, 0.14);
-    --status-info: #60a5fa;
-    --status-info-bg: rgba(96, 165, 250, 0.14);
+    --status-success: #52d489;
+    --status-success-bg: rgba(82, 212, 137, 0.12);
+    --status-warning: #f0a94e;
+    --status-warning-bg: rgba(240, 169, 78, 0.12);
+    --status-danger: #f06a5a;
+    --status-danger-bg: rgba(240, 106, 90, 0.14);
+    --status-info: #4fd1e8;
+    --status-info-bg: rgba(79, 209, 232, 0.14);
     --status-victim: #a78bfa;
     --status-victim-bg: rgba(167, 139, 250, 0.16);
     --status-anomaly: #a78bfa;
@@ -82,34 +113,228 @@
     --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
+/* Security Terminal, light variant. There is no historical precedent for
+   a "light terminal", so this reads as a printed manifest instead: warm
+   paper background, dark ink text, the same monochrome-amber accent
+   family darkened for contrast on a light background. Sharp corners and
+   near-zero motion carry over from the dark variant, since those are the
+   family's defining trait, not a light/dark difference. */
+:root[data-design="terminal"] {
+    --bg-page: #f5f3ea;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
+    --bg-code: #ece8da;
+
+    --border-color: transparent;
+    --border-faint: #cfc9b8;
+    --border-strong: transparent;
+
+    --accent: #a66a00;
+    --accent-hover: #8a5800;
+    --accent-soft: rgba(166, 106, 0, 0.12);
+
+    --text-primary: #1a1a16;
+    --text-secondary: #4a4a3f;
+    --text-tertiary: #736f5e;
+    --text-on-accent: #fffdf7;
+
+    --status-success: #1f7a3d;
+    --status-success-bg: rgba(31, 122, 61, 0.1);
+    --status-warning: #a66a00;
+    --status-warning-bg: rgba(166, 106, 0, 0.12);
+    --status-danger: #b83232;
+    --status-danger-bg: rgba(184, 50, 50, 0.12);
+    --status-info: #a66a00;
+    --status-info-bg: rgba(166, 106, 0, 0.12);
+    --status-victim: #6b4fa0;
+    --status-victim-bg: rgba(107, 79, 160, 0.12);
+    --status-anomaly: #6b4fa0;
+    --status-anomaly-bg: rgba(107, 79, 160, 0.12);
+
+    --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.1);
+
+    --radius-sm: 0px;
+    --radius: 2px;
+    --transition-speed: 0.05s;
+
+    --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Security Terminal, dark variant: near-black, monochrome amber phosphor,
+   monospace everywhere including labels, minimal motion, sharp corners.
+   Highest information density and lowest visual noise of the three
+   families, the tradeoff being the least approachable to a first-time
+   visitor. */
+:root[data-design="terminal"][data-theme="dark"] {
+    --bg-page: #0a0a0a;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
+    --bg-code: #000000;
+
+    --border-color: transparent;
+    --border-faint: #2a2a2a;
+    --border-strong: transparent;
+
+    --accent: #ffb000;
+    --accent-hover: #ffc640;
+    --accent-soft: rgba(255, 176, 0, 0.14);
+
+    --text-primary: #d8d8d0;
+    --text-secondary: #9a9a90;
+    --text-tertiary: #6b6b62;
+    --text-on-accent: #0a0a0a;
+
+    --status-success: #33ff77;
+    --status-success-bg: rgba(51, 255, 119, 0.1);
+    --status-warning: #ffb000;
+    --status-warning-bg: rgba(255, 176, 0, 0.14);
+    --status-danger: #ff3b3b;
+    --status-danger-bg: rgba(255, 59, 59, 0.14);
+    --status-info: #ffb000;
+    --status-info-bg: rgba(255, 176, 0, 0.14);
+    --status-victim: #b088ff;
+    --status-victim-bg: rgba(176, 136, 255, 0.14);
+    --status-anomaly: #b088ff;
+    --status-anomaly-bg: rgba(176, 136, 255, 0.14);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.5);
+
+    --radius-sm: 0px;
+    --radius: 2px;
+    --transition-speed: 0.05s;
+
+    --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Modern SaaS Security, light variant: indigo/violet primary, generous
+   whitespace, soft shadows and larger radii. Most approachable to a
+   first-time visitor of the three, at the cost of the lowest information
+   density, a real tradeoff for a console meant to be scanned quickly
+   during an incident. */
+:root[data-design="saas"] {
+    --bg-page: #ffffff;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
+    --bg-code: #f2f2f8;
+
+    --border-color: transparent;
+    --border-faint: #e2e2ec;
+    --border-strong: transparent;
+
+    --accent: #6d5ef8;
+    --accent-hover: #5a4ae0;
+    --accent-soft: rgba(109, 94, 248, 0.1);
+
+    --text-primary: #1a1a2e;
+    --text-secondary: #55556e;
+    --text-tertiary: #8888a0;
+    --text-on-accent: #ffffff;
+
+    --status-success: #30a46c;
+    --status-success-bg: rgba(48, 164, 108, 0.1);
+    --status-warning: #f5a623;
+    --status-warning-bg: rgba(245, 166, 35, 0.12);
+    --status-danger: #e5484d;
+    --status-danger-bg: rgba(229, 72, 77, 0.12);
+    --status-info: #6d5ef8;
+    --status-info-bg: rgba(109, 94, 248, 0.1);
+    --status-victim: #ab4aba;
+    --status-victim-bg: rgba(171, 74, 186, 0.1);
+    --status-anomaly: #ab4aba;
+    --status-anomaly-bg: rgba(171, 74, 186, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(26, 26, 46, 0.08);
+    --shadow-md: 0 4px 16px rgba(26, 26, 46, 0.1);
+
+    --radius-sm: 8px;
+    --radius: 12px;
+    --transition-speed: 0.25s;
+
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* Modern SaaS Security, dark variant. */
+:root[data-design="saas"][data-theme="dark"] {
+    --bg-page: #0d0d12;
+    --bg-surface: transparent;
+    --bg-surface-alt: transparent;
+    --bg-hover: transparent;
+    --bg-code: #131319;
+
+    --border-color: transparent;
+    --border-faint: #2b2b3a;
+    --border-strong: transparent;
+
+    --accent: #8f7ffa;
+    --accent-hover: #a996fc;
+    --accent-soft: rgba(143, 127, 250, 0.16);
+
+    --text-primary: #e8e8f0;
+    --text-secondary: #a3a3b8;
+    --text-tertiary: #6f6f85;
+    --text-on-accent: #0d0d12;
+
+    --status-success: #4cc38a;
+    --status-success-bg: rgba(76, 195, 138, 0.14);
+    --status-warning: #f7b955;
+    --status-warning-bg: rgba(247, 185, 85, 0.14);
+    --status-danger: #f16a70;
+    --status-danger-bg: rgba(241, 106, 112, 0.16);
+    --status-info: #8f7ffa;
+    --status-info-bg: rgba(143, 127, 250, 0.16);
+    --status-victim: #c76ad6;
+    --status-victim-bg: rgba(199, 106, 214, 0.16);
+    --status-anomaly: #c76ad6;
+    --status-anomaly-bg: rgba(199, 106, 214, 0.16);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+    --radius-sm: 8px;
+    --radius: 12px;
+    --transition-speed: 0.25s;
+
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]):not([data-theme="dark"]) {
-        --bg-page: #10141d;
-        --bg-surface: #171d29;
-        --bg-surface-alt: #1c2330;
-        --bg-hover: #212a3a;
-        --bg-code: #0d1119;
+        --bg-page: #0f1419;
+        --bg-surface: transparent;
+        --bg-surface-alt: transparent;
+        --bg-hover: transparent;
+        --bg-code: #0d1319;
 
-        --border-color: #2a3242;
-        --border-strong: #3a4457;
+        --border-color: transparent;
+        --border-faint: #2a3540;
+        --border-strong: transparent;
 
-        --accent: #3b82f6;
-        --accent-hover: #60a5fa;
-        --accent-soft: rgba(59, 130, 246, 0.16);
+        --accent: #4fd1e8;
+        --accent-hover: #6fdbee;
+        --accent-soft: rgba(79, 209, 232, 0.14);
 
-        --text-primary: #e6e9ef;
-        --text-secondary: #9aa4b8;
-        --text-tertiary: #6b7488;
-        --text-on-accent: #ffffff;
+        --text-primary: #e4e8ec;
+        --text-secondary: #8b96a3;
+        --text-tertiary: #5f6b78;
+        --text-on-accent: #0b1216;
 
-        --status-success: #4ade80;
-        --status-success-bg: rgba(74, 222, 128, 0.12);
-        --status-warning: #fbbf24;
-        --status-warning-bg: rgba(251, 191, 36, 0.12);
-        --status-danger: #f87171;
-        --status-danger-bg: rgba(248, 113, 113, 0.14);
-        --status-info: #60a5fa;
-        --status-info-bg: rgba(96, 165, 250, 0.14);
+        --status-success: #52d489;
+        --status-success-bg: rgba(82, 212, 137, 0.12);
+        --status-warning: #f0a94e;
+        --status-warning-bg: rgba(240, 169, 78, 0.12);
+        --status-danger: #f06a5a;
+        --status-danger-bg: rgba(240, 106, 90, 0.14);
+        --status-info: #4fd1e8;
+        --status-info-bg: rgba(79, 209, 232, 0.14);
         --status-victim: #a78bfa;
         --status-victim-bg: rgba(167, 139, 250, 0.16);
         --status-anomaly: #a78bfa;
@@ -315,6 +540,16 @@ body {
 .content-area {
     padding: 24px;
     flex-grow: 1;
+    animation: content-fade-in var(--transition-speed) ease-out;
+}
+
+/* V10 animation pass: classification/tier transitions, new incident/alert,
+   live chart/metric updates, and panel/page navigation. Every keyframe
+   below is disabled under prefers-reduced-motion, further down this
+   file, rather than each rule repeating that guard individually. */
+@keyframes content-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* Panels & Modules */
@@ -326,6 +561,22 @@ body {
     padding: 20px;
     position: relative;
     box-shadow: var(--shadow-sm);
+}
+
+/* The one exception to the borderless pass: a panel that's one of
+   several sitting side by side in a page's own grid (Firewall's four,
+   Alerts' four, Users' two) needs some line between them, otherwise
+   there's nothing left saying "these are separate modules" instead of
+   one continuous block. --border-faint is each theme's own original
+   --border-color value from before that pass, restored here only,
+   narrow and selective rather than undoing the pass generally. A
+   single full-width panel (Event Log's, Active Flows', everywhere
+   else) is unaffected, this only fires when .hud-panel is a grid child
+   next to a sibling. */
+.firewall-grid > .hud-panel,
+.channel-grid > .hud-panel,
+.account-forms > .hud-panel {
+    border-color: var(--border-faint);
 }
 
 .hud-panel-header {
@@ -376,6 +627,21 @@ body {
     font-weight: 600;
     color: var(--text-primary);
     font-family: var(--font-mono);
+    transition: color var(--transition-speed) ease-out;
+}
+
+/* Applied briefly by JS (e.g. FlodTheme.pulse(el)) when a live-polled
+   number actually changes, not on every poll regardless of the value,
+   so it reads as "this changed" rather than a constant tic every
+   interval. Not wired into any page's polling loop yet; the class and
+   keyframe are the reusable primitive. */
+.stat-value.stat-pulse {
+    animation: stat-pulse 0.5s ease-out;
+}
+
+@keyframes stat-pulse {
+    0% { color: var(--accent); transform: scale(1.08); }
+    100% { color: var(--text-primary); transform: scale(1); }
 }
 
 .stat-meta {
@@ -388,6 +654,24 @@ body {
     display: flex;
     gap: 10px;
     margin-bottom: 16px;
+}
+
+/* A single labelled input, label above the control, distinct from
+   .form-group above which lays an input and its submit button out
+   side by side with no label at all. Was a one-off inline style on a
+   single page (ir.html's report time window picker); pulled out since
+   "one labelled control on its own" is a more general pattern than that
+   one page. */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 16px;
+}
+.field label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
 }
 
 .form-input {
@@ -469,6 +753,19 @@ body {
     color: var(--text-on-accent);
 }
 
+/* No page had this until now: a disabled .btn looked fully clickable,
+   the disabled attribute worked functionally but gave no visual signal
+   at all. One page was working around it with its own inline opacity. */
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.btn:disabled:hover {
+    background-color: var(--bg-surface);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
 .btn-danger {
     background-color: var(--status-danger-bg);
     border-color: var(--status-danger);
@@ -478,6 +775,14 @@ body {
 .btn-danger:hover {
     background-color: var(--status-danger);
     color: #ffffff;
+}
+
+/* A secondary action next to a primary .btn (Send Test Alert beside
+   Save, Discard Changes beside the real submit), transparent instead of
+   the surface fill so it reads as lower emphasis without a second colour.
+   Was a one-off inline style repeated on two pages. */
+.btn-ghost {
+    background: transparent;
 }
 
 /* Tables */
@@ -503,8 +808,29 @@ td {
     color: var(--text-primary);
 }
 
+/* The two widest, most repetitive tables (Event Log: 7 columns, every
+   row structurally identical; Active Flows: 8, including two action
+   buttons) lose row-tracking without some divider, the eye has nothing
+   guiding it from the source address on the left to the classification
+   badge on the right. Every other table stays fully borderless. */
+.log-table td,
+.flow-table td {
+    border-bottom-color: var(--border-faint);
+}
+
 tr:hover td {
     background-color: var(--bg-hover);
+}
+
+/* A single-cell "Loading...", "No X found", or "Could not reach the
+   gateway" row, spanning every column via colspan. Was inline on 23
+   occurrences across 7 pages, in two slightly different variants
+   (with and without extra padding) that read identically; both are this
+   one class now. */
+.table-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-tertiary);
 }
 
 .badge {
@@ -514,6 +840,13 @@ tr:hover td {
     font-weight: 600;
     border-radius: 999px;
     border: 1px solid transparent;
+    /* A classification badge changing which of the four badge-* classes
+       it carries (Normal -> Flash Crowd -> DDoS, an enforcement tier
+       escalating) transitions colour smoothly instead of snapping,
+       automatically, with no JS beyond the class swap the page already
+       does. */
+    transition: background-color var(--transition-speed) ease-out,
+                color var(--transition-speed) ease-out;
 }
 
 .badge-normal {
@@ -536,6 +869,38 @@ tr:hover td {
     background-color: var(--status-anomaly-bg);
 }
 
+/* Non-classification badge variants: interface roles, generic accent and
+   neutral states. Several pages built these as one-off inline styles in
+   JS template strings instead of a shared class; consolidated here so a
+   colour only needs changing in one place. */
+.badge-accent {
+    color: var(--accent);
+    background-color: var(--accent-soft);
+}
+
+.badge-victim {
+    color: var(--status-victim);
+    background-color: var(--status-victim-bg);
+}
+
+.badge-neutral {
+    color: var(--text-tertiary);
+    background-color: var(--bg-surface-alt);
+}
+
+/* Applied briefly by JS alongside the class swap above, for the moment a
+   badge's classification actually changes (not on every poll): a short
+   scale pop on top of the colour transition, the highest-signal moment
+   on the dashboard per the V10 design decision. */
+.badge.badge-pulse {
+    animation: badge-pulse 0.4s ease-out;
+}
+
+@keyframes badge-pulse {
+    0% { transform: scale(1.18); }
+    100% { transform: scale(1); }
+}
+
 /* A count badge on a nav item, e.g. auto-labeled rows awaiting review.
    Hidden by default, JS shows it once a count is known. */
 .nav-badge {
@@ -549,10 +914,104 @@ tr:hover td {
     background-color: var(--status-warning-bg);
 }
 
+/* A short inline reference to a file path, flag, or config key inside
+   body text, e.g. "edit --interface in the unit file". Was a one-off
+   inline style on a single page; pulled out since the pattern (point a
+   reader at a real path or flag inline) recurs anywhere the console
+   tells an operator what to go edit by hand. */
+.code-chip {
+    font-family: var(--font-mono);
+    background: var(--bg-code);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85em;
+}
+
+/* A short labelled list of facts inside an info panel, e.g. "Capture
+   mode: transparent bridge/tap", one or more per panel. .kv-list is the
+   <dl>, block level; each .kv-row is one dt/dd pair, laid out as its own
+   flex row so multiple rows stack instead of all their labels and
+   values running together on one line. */
+.kv-list {
+    margin: 0;
+}
+.kv-row {
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85rem;
+}
+.kv-row:last-child {
+    border-bottom: none;
+}
+.kv-row dt {
+    flex: 0 0 160px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.kv-row dd {
+    flex: 1;
+    color: var(--text-primary);
+    margin: 0;
+}
+
 /* Charts */
 .chart-container {
     height: 320px;
     position: relative;
+}
+
+/* Shared by network.html and traffic.html's canvas-drawn graphs, which
+   duplicated this CSS near byte-for-byte before consolidation. A page
+   sets its own min-height on .graph-wrap (force-directed layout and a
+   flow diagram want different breathing room) and, if it needs cursor
+   feedback for dragging, its own canvas id rule; everything else here
+   is identical between the two. */
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    /* Text labelling the diagram below it, not decorative panel chrome:
+       kept opaque on purpose so the legend stays legible over whatever
+       the diagram draws underneath, unlike the general surface/border
+       tokens this rule used to inherit, which are transparent now. */
+    background: var(--bg-code);
+    padding: 8px 14px;
+    font-size: 0.75rem;
+}
+.legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+/* Normal-flow bar above the canvas, not an overlay: an
+   absolutely-positioned legend on top of the drawing surface will
+   eventually collide with a node as layout changes. height (not
+   max-height) always fills the available space so a force-directed or
+   flow simulation has room even with few nodes; the canvas inside grows
+   past this and triggers the scrollbar only once content actually needs
+   more room. */
+.graph-wrap {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 220px);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+@media (max-width: 900px) {
+    .graph-wrap {
+        height: calc(100dvh - 250px);
+        min-height: 300px;
+    }
 }
 
 /* Toast container */
@@ -581,6 +1040,21 @@ tr:hover td {
 @keyframes slideIn {
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
+}
+
+/* Every animation added in the V10 pass (content-fade-in, stat-pulse,
+   badge-pulse) plus the pre-existing toast slideIn, turned off in one
+   place rather than guarded individually at each rule. Colour and layout
+   transitions (badge, nav-item, stat-value) are left alone: they still
+   happen, just instantly, which is what prefers-reduced-motion asks for,
+   distinct from the state change itself never happening. */
+@media (prefers-reduced-motion: reduce) {
+    .content-area,
+    .stat-value.stat-pulse,
+    .badge.badge-pulse,
+    .toast {
+        animation: none;
+    }
 }
 
 /*

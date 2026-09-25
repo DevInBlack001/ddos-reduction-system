@@ -274,6 +274,8 @@ cap or clean up on the way in.
 
 ## Account Management
 
+![The dashboard's Users page: existing accounts with per-account actions, and the Add Account / Change Password forms, both of which require the caller's own current password](images/dashboard-users.png)
+
 Creating an account, deleting one, or changing a password all require the
 caller to re enter their own current password, verified against the caller's
 stored hash rather than the target account's.

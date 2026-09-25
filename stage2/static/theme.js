@@ -1,6 +1,13 @@
-/* Shared light/dark theme toggle for the FLOD System console. */
+/* Shared light/dark theme toggle for the FLOD System console, plus V10's
+   selectable design family (which of the three redesign directions is
+   active). Two independent axes: data-theme (light/dark) and data-design
+   (operations/terminal/saas), combined in base.css as
+   :root[data-design="X"][data-theme="Y"]. */
 (function () {
-    var STORAGE_KEY = 'flod-theme';
+    var THEME_STORAGE_KEY = 'flod-theme';
+    var DESIGN_STORAGE_KEY = 'flod-design';
+    var DESIGNS = ['operations', 'terminal', 'saas'];
+    var DEFAULT_DESIGN = 'operations';
 
     function currentTheme() {
         return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -8,6 +15,22 @@
 
     function applyTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
+    }
+
+    function currentDesign() {
+        var d = document.documentElement.getAttribute('data-design');
+        return DESIGNS.indexOf(d) !== -1 ? d : DEFAULT_DESIGN;
+    }
+
+    function applyDesign(design) {
+        if (DESIGNS.indexOf(design) === -1) design = DEFAULT_DESIGN;
+        document.documentElement.setAttribute('data-design', design);
+    }
+
+    function setDesign(design) {
+        localStorage.setItem(DESIGN_STORAGE_KEY, design);
+        applyDesign(design);
+        document.dispatchEvent(new CustomEvent('designchange', { detail: { design: design } }));
     }
 
     function updateToggleButton() {
@@ -18,7 +41,7 @@
 
     function toggleTheme() {
         var next = currentTheme() === 'dark' ? 'light' : 'dark';
-        localStorage.setItem(STORAGE_KEY, next);
+        localStorage.setItem(THEME_STORAGE_KEY, next);
         applyTheme(next);
         updateToggleButton();
         document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: next } }));
@@ -28,10 +51,41 @@
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     }
 
+    // V10: briefly applies one of base.css's pulse classes (badge-pulse,
+    // stat-pulse) to an element, for the moment a live-polled value
+    // actually changed, not on every poll regardless of value. Callers
+    // are expected to only invoke this when the new value differs from
+    // the last one they rendered; this helper does not check that
+    // itself, since it doesn't know what "the value" means for a given
+    // caller. Restarts cleanly if called again before the previous pulse
+    // finished (removing then re-adding the class in the next frame,
+    // since re-adding an already-present class does not restart a CSS
+    // animation).
+    function pulse(el, className) {
+        if (!el) return;
+        el.classList.remove(className);
+        // eslint-disable-next-line no-unused-expressions
+        void el.offsetWidth; // force reflow so the removal above takes effect
+        el.classList.add(className);
+    }
+
+    // Unlike data-theme, which every page bootstraps inline in <head>
+    // before this file loads (avoiding a flash of the wrong theme), this
+    // runs wherever this <script src="theme.js"> tag sits on the page,
+    // which today is near the end of <body>. A brief flash of the
+    // default design on load is a known, accepted gap until an inline
+    // per-page bootstrap is added to match data-theme's pattern, tracked
+    // as part of the still-open per-page redesign work.
+    applyDesign(localStorage.getItem(DESIGN_STORAGE_KEY) || DEFAULT_DESIGN);
+
     window.FlodTheme = {
         toggle: toggleTheme,
         current: currentTheme,
-        cssVar: cssVar
+        cssVar: cssVar,
+        pulse: pulse,
+        designs: DESIGNS.slice(),
+        currentDesign: currentDesign,
+        setDesign: setDesign
     };
 
     // Escaping helpers for rendering server-supplied strings (IPs, victim
@@ -148,8 +202,43 @@
             .catch(function () {});
     }
 
+    // Debugging aid only, not part of the V10 design: lets the three
+    // design families be compared in a browser next to the existing
+    // theme toggle, without console commands. Injected here, on every
+    // page that loads theme.js, rather than duplicated into each page's
+    // markup. Remove once a real settings surface for this exists.
+    function initDesignSwitcher() {
+        var anchor = document.getElementById('themeToggle');
+        if (!anchor || !anchor.parentNode) return;
+        var sel = document.createElement('select');
+        sel.id = 'designSwitcher';
+        sel.title = 'Design family (debug)';
+        // Inserted into the same flex row as the theme toggle and log out
+        // button, right before the toggle, instead of a fixed pixel
+        // position: a hardcoded position:fixed guess drifted under those
+        // real controls on pages where the status pills next to it are a
+        // different width, overlapping the toggle and even the log out
+        // button. Living in the row's own flow can't drift like that.
+        sel.style.cssText = 'background:var(--bg-surface-alt);color:var(--text-primary);border:none;' +
+            'border-radius:var(--radius-sm);padding:6px 10px;font-family:var(--font-sans);font-size:0.78rem;';
+        DESIGNS.forEach(function (name) {
+            var opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = {
+                operations: 'Operations Console',
+                terminal: 'Security Terminal',
+                saas: 'Modern SaaS'
+            }[name] || name;
+            sel.appendChild(opt);
+        });
+        sel.value = currentDesign();
+        sel.addEventListener('change', function () { setDesign(sel.value); });
+        anchor.parentNode.insertBefore(sel, anchor);
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         updateToggleButton();
+        initDesignSwitcher();
         var btn = document.getElementById('themeToggle');
         if (btn) btn.addEventListener('click', toggleTheme);
         initSidebarDrawer();

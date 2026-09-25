@@ -8,55 +8,35 @@
             var t = localStorage.getItem('flod-theme');
             if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
             document.documentElement.setAttribute('data-theme', t);
+            var d = localStorage.getItem('flod-design') || 'operations';
+            document.documentElement.setAttribute('data-design', d);
         })();
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <title>FLOD System - Traffic</title>
     <link rel="stylesheet" href="/static/base.css">
     <style>
+        /* .legend/.legend-row/.legend-dot/.graph-wrap: shared with
+           network.html, in base.css. Page-specific here: 420px breathing
+           room for the flow diagram, less than network.html's
+           force-directed layout needs; no drag cursor, this canvas isn't
+           draggable. */
         #trafficCanvas {
             display: block;
             width: 100%;
         }
         .graph-wrap {
-            position: relative;
-            width: 100%;
-            /* height (not max-height): always fills the available space,
-               even with few nodes, instead of shrinking down to whatever
-               the content needs, the canvas inside grows past this and
-               triggers the scrollbar only once there's actually enough
-               content to need more room. */
-            height: calc(100vh - 220px);
             min-height: 420px;
-            overflow-y: auto;
-            overflow-x: hidden;
         }
-        @media (max-width: 900px) {
-            .graph-wrap {
-                height: calc(100dvh - 250px);
-                min-height: 300px;
-            }
-        }
-        /* A normal-flow bar above the canvas, not an overlay, an
-           absolutely-positioned legend sitting on top of the drawing
-           surface will inevitably collide with a node sooner or later as
-           the host count/layout changes. */
-        .legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px 20px;
-            background: var(--bg-surface-alt);
-            border-bottom: 1px solid var(--border-color);
-            padding: 8px 14px;
-            font-size: 0.75rem;
-        }
-        .legend-row { display: flex; align-items: center; gap: 8px; }
-        .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     </style>
 </head>
 <body>
     <div class="sidebar">
         <div class="logo-area">
-            <div class="logo-icon">F</div>
+            <div class="logo-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><circle cx="19" cy="12" r="2.2" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="7.2" y1="12" x2="9.5" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><line x1="14.5" y1="12" x2="16.8" y2="12" stroke="var(--text-on-accent)" stroke-width="1.5"/><path d="M9.5 8 L12.5 12 L9.5 16 M12.5 8 L15.5 12 L12.5 16" stroke="var(--text-on-accent)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             <div class="logo-text">FLOD System</div>
         </div>
         <ul class="nav-menu">
@@ -67,6 +47,7 @@
             <li class="nav-item"><a href="/interfaces.html"><span>■</span> Interfaces</a></li>
             <li class="nav-item"><a href="/firewall.html"><span>■</span> Firewall</a></li>
             <li class="nav-item"><a href="/targets.html"><span>■</span> Targets</a></li>
+            <li class="nav-item"><a href="/playbooks.html"><span>■</span> Playbooks</a></li>
             <li class="nav-item"><a href="/logs.html"><span>■</span> Event Log</a></li>
             <li class="nav-item"><a href="/alerts.html"><span>■</span> Alerts</a></li>
             <li class="nav-item"><a href="/users.html"><span>■</span> Users</a></li>

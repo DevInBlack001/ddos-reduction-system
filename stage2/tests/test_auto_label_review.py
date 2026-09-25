@@ -254,5 +254,90 @@ class DiscardStagedRowsTests(AutoLabelReviewTestCase):
         self.assertEqual(auto_label_review.list_pending_runs()["runs"], [])
 
 
+class TrimDdosClassTests(AutoLabelReviewTestCase):
+    def test_refuses_when_no_training_csv_is_configured(self):
+        with self.assertRaises(HTTPException) as ctx:
+            auto_label_review.trim_ddos_class()
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_refuses_when_the_training_csv_is_empty(self):
+        config.TRAINING_CSV_PATH = self.training_path
+        with self.assertRaises(HTTPException) as ctx:
+            auto_label_review.trim_ddos_class()
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_drops_ddos_rows_down_to_the_smaller_of_the_other_two_classes(self):
+        config.TRAINING_CSV_PATH = self.training_path
+        # Five separate DDoS sessions (each gap between groups > the 30s
+        # session boundary), sized 2/3/2/1/3, so a cap of 3 can be met
+        # by keeping one whole session rather than being forced to drop
+        # every DDoS row because it's all one undivided session.
+        ddos_rows = []
+        for group_start, size in [(3000, 2), (3100, 3), (3200, 2), (3300, 1), (3400, 3)]:
+            for i in range(size):
+                ddos_rows.append(self._row(timestamp=str(group_start + i), label="2"))
+        rows = (
+            [self._row(timestamp=str(1000 + i), label="0") for i in range(5)]
+            + [self._row(timestamp=str(2000 + i), label="1") for i in range(3)]
+            + ddos_rows
+        )
+        _write_csv(self.training_path, auto_label.BASE_CSV_HEADER, rows)
+
+        result = auto_label_review.trim_ddos_class()
+
+        self.assertEqual(result["cap"], 3)
+        self.assertGreater(result["dropped"], 0)
+        _, kept = _read_csv(self.training_path)
+        label_idx = auto_label.BASE_CSV_HEADER.index("label")
+        by_label = {}
+        for row in kept:
+            by_label[row[label_idx]] = by_label.get(row[label_idx], 0) + 1
+        self.assertEqual(by_label.get("0"), 5)
+        self.assertEqual(by_label.get("1"), 3)
+        self.assertGreater(by_label.get("2", 0), 0)
+        self.assertLessEqual(by_label.get("2", 0), 3)
+
+    def test_never_fragments_a_ddos_session_it_keeps(self):
+        # A kept session's rows must all survive together; this asserts
+        # that directly rather than only checking the total count, since
+        # a bug that dropped scattered rows from within a session could
+        # still land under the row-count cap by coincidence.
+        config.TRAINING_CSV_PATH = self.training_path
+        ddos_rows = [
+            self._row(timestamp="3000", label="2"),
+            self._row(timestamp="3001", label="2"),
+            self._row(timestamp="3100", label="2"),
+        ]
+        rows = (
+            [self._row(timestamp=str(1000 + i), label="0") for i in range(2)]
+            + [self._row(timestamp=str(2000 + i), label="1") for i in range(2)]
+            + ddos_rows
+        )
+        _write_csv(self.training_path, auto_label.BASE_CSV_HEADER, rows)
+
+        auto_label_review.trim_ddos_class()
+
+        _, kept = _read_csv(self.training_path)
+        kept_ts = {row[auto_label.TIMESTAMP_COL] for row in kept if row[auto_label.BASE_CSV_HEADER.index("label")] == "2"}
+        # The 2-row session (3000, 3001) is either entirely present or
+        # entirely absent, never just one of the two.
+        self.assertEqual("3000" in kept_ts, "3001" in kept_ts)
+
+    def test_reports_nothing_dropped_when_already_under_the_cap(self):
+        config.TRAINING_CSV_PATH = self.training_path
+        rows = (
+            [self._row(timestamp=str(1000 + i), label="0") for i in range(5)]
+            + [self._row(timestamp=str(2000 + i), label="1") for i in range(5)]
+            + [self._row(timestamp=str(3000 + i), label="2") for i in range(2)]
+        )
+        _write_csv(self.training_path, auto_label.BASE_CSV_HEADER, rows)
+
+        result = auto_label_review.trim_ddos_class()
+
+        self.assertEqual(result["dropped"], 0)
+        _, kept = _read_csv(self.training_path)
+        self.assertEqual(len(kept), 12)
+
+
 if __name__ == "__main__":
     unittest.main()
