@@ -97,9 +97,8 @@
                         <div class="hud-panel-title">Shared / NAT Addresses</div>
                     </div>
                     <div style="font-size: 0.78rem; color: var(--text-secondary); background: var(--bg-surface-alt); border-left: 3px solid var(--status-warning); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px; line-height: 1.6;">
-                        Addresses listed here are never hard-blocked, because one entry in
-                        <code style="font-family: var(--font-mono);">ddos_blocklist</code> would drop traffic
-                        for every host behind them. Attacks from these sources are rate-limited instead.
+                        Addresses listed here are never hard-blocked. Attacks from these sources
+                        are rate-limited instead.
                     </div>
 
                     <form id="sharedIpForm" class="form-group">
@@ -174,9 +173,8 @@
                     <div class="hud-panel-title">Enforcement Thresholds</div>
                 </div>
                 <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 16px;">
-                    These are the deterministic thresholds that decide block vs. rate-limit vs. no
-                    action. Changes apply to the next window immediately, no restart needed,
-                    except the rate-limit pps cap, which rewrites the live iptables hashlimit rule.
+                    These thresholds decide block, rate-limit, or no action. Changes apply
+                    immediately, no restart needed.
                 </div>
                 <form id="thresholdForm">
                     <div class="threshold-grid">

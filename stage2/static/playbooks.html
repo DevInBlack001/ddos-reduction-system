@@ -118,10 +118,8 @@
 
         <div class="content-area">
             <div class="info-note" style="font-size: 0.78rem; color: var(--text-secondary); background: var(--bg-surface-alt); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 20px;">
-                The four enforcement tiers keep running automatically on every window exactly as they do without any
-                playbook configured. A playbook is a separate layer on top that starts when its trigger condition
-                fires and runs a linear sequence of stages over time (escalate, notify, report); it never replaces
-                or gates the tiers.
+                A playbook starts when its trigger fires and runs its stages (escalate, notify,
+                report) in order, in addition to the four enforcement tiers.
             </div>
 
             <div class="hud-panel">

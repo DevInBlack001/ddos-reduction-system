@@ -270,10 +270,7 @@
                         <span class="metric-badge" id="ddosSourcePill">0 senders</span>
                     </div>
                     <div style="padding: 12px 15px 0; font-size: 0.8rem; color: var(--text-secondary);">
-                        Senders blocked outright for attacking a monitored target, and
-                        still blocked. Rate-limited hosts are not listed: that response
-                        is also used as a precaution and applied to whole groups at once,
-                        so it does not identify a sender as an attacker.
+                        Senders currently blocked for attacking a monitored target.
                     </div>
                     <div style="overflow-x: auto; padding: 15px;">
                         <table class="data-table">
@@ -349,9 +346,8 @@
                         <div class="hud-panel-title">Evasion-Resistant Signals</div>
                     </div>
                     <p style="color: var(--text-tertiary); font-size: 0.8rem; margin: 0 0 16px;">
-                        Computed from source port, TTL, and TCP option ordering rather than
-                        source address, so a randomized-source flood cannot raise these the
-                        way it raises address entropy.
+                        Computed from source port, TTL, and TCP option ordering, unaffected
+                        by a forged source address.
                     </p>
                     <div class="stats-grid">
                         <div class="stat-card">

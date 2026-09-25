@@ -77,10 +77,9 @@
 
         <div class="content-area">
             <div class="info-note">
-                Alerts fire on a victim's classification changing to/from DDoS, on every new hard
-                block (Tier 1/2), and on the Tier 4 aggregate rate-limit fallback. Soft rate-limits
-                (Tier 3) don't alert on their own, and a source already alerted stays suppressed
-                for the configured block duration so a sustained attack doesn't spam either channel.
+                Alerts fire on a classification change to/from DDoS, a new hard block, or the
+                aggregate rate-limit fallback. A source stays suppressed for the block duration
+                once alerted.
             </div>
 
             <div class="channel-grid">
@@ -191,11 +190,8 @@
                         <span class="threshold-hint" id="webhookHeadersHint">For an API key or bearer token most receivers expect. Leave blank to keep the current ones, or to send none.</span>
                     </div>
                     <div class="info-note" style="margin: 10px 0 0;">
-                        Posts one fixed JSON body: <code>subject</code>, <code>message</code>, <code>text</code>
-                        (subject and message combined, for a Slack- or Teams-compatible incoming webhook), and
-                        <code>title</code> (alongside <code>message</code>, for ntfy). For any platform with its
-                        own gateway or bot API that accepts a webhook, this is how to reach it, FLOD does not
-                        integrate with any platform's own API directly beyond Discord, email, and Telegram above.
+                        Posts one JSON body: <code>subject</code>, <code>message</code>, <code>text</code>
+                        (for a Slack- or Teams-compatible webhook), and <code>title</code> (for ntfy).
                     </div>
                     <div class="channel-actions">
                         <button type="button" class="btn" onclick="saveAlertsConfig()">Save</button>
