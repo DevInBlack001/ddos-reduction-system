@@ -46,29 +46,12 @@ Telegram account), add it to the target chat or channel, and use that
 chat's ID here. One HTTP POST per alert, to the bot's own
 `sendMessage` endpoint.
 
-**Why Telegram has a named integration and WhatsApp does not.**
-WhatsApp's official Business Platform needs Meta business
-verification, a permanent access token, and operator-side approval of
-message templates before it can send anything unprompted at all, none
-of which this codebase can set up on an operator's behalf, and the
-template requirement in particular means a plain free-form alert
-message may not even be deliverable that way. Telegram needs none of
-that. Building a WhatsApp integration to the same standard as the other
-three channels here would mean shipping something that still can't
-send a single message until an operator has separately gone through
-Meta's own approval process, a materially different (and heavier)
-thing than every other channel on this page. The generic webhook below
-is how to reach WhatsApp anyway, through a gateway the operator already
-has (a Twilio WhatsApp integration, for example), without this
-codebase taking on the official API directly.
-
 ## Custom Webhook
 
 A URL and, optionally, a JSON object of extra HTTP headers (for an
 `Authorization` or API-key header, whatever the target expects). For
-any platform without its own panel above: Slack, Teams, ntfy, PagerDuty-style
-receivers, a WhatsApp gateway, or a custom receiver of an operator's
-own.
+any platform without its own panel above: Slack, Teams, ntfy,
+PagerDuty-style receivers, or a custom receiver of an operator's own.
 
 One fixed JSON body is posted on every alert:
 
