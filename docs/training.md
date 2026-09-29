@@ -237,6 +237,26 @@ least noisy candidate if every one exceeds the cap. On the same 34,727 row
 capture this selects `contamination=0.1`: a 28.8% DDoS outlier rate against
 a 4.7% benign one.
 
+**DDoS is capped to a minority of the fitting set before the sweep runs,
+the same way `scripts/trim_ddos_class.py` caps it for the training CSV
+itself, but applied here on top of that.** `IsolationForest`'s scoring
+depends on whatever it should flag as anomalous actually being sparse in
+the space it fits on: a point earns a short average path length, and so a
+high anomaly score, because random partitioning isolates it quickly, which
+only happens in a sparsely populated region. If DDoS rows outnumber the
+combined benign classes, DDoS is not sparse, it is the pattern the forest
+learns as ordinary, and something in the minority gets flagged instead.
+Found on a capture built specifically to make DDoS closely resemble Flash
+Crowd, where DDoS ended up 62.4% of the fitting set and every contamination
+candidate under the benign cap showed *negative* separation, the model
+scoring real DDoS traffic less anomalous than ordinary traffic. Capping
+DDoS at the smaller benign class's own count (random sample, seed 42, not
+by session, since this model pools every label and has no session-based
+fold to protect) fixed the mechanism; it does not guarantee positive
+separation on every capture, since that also depends on how much genuine
+feature overlap exists, but it removes a real, separate failure mode from
+compounding on top of that.
+
 ### Reading the Result
 
 The script prints an outlier rate by label after fitting, explicitly marked

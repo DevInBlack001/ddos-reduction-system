@@ -1,5 +1,6 @@
 # .gitignore
 
+docs/specs/2026-09-25-second-lab-multi-interface-handoff.md
 # Rust / Cargo (Stage 1)
 stage1/src/testing_results.txt
 attachments/*

@@ -6,6 +6,41 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## 1.8.2, 2026-09-29
+
+### Fixed
+
+- `train.py`/`train_second_model.py`/`train_isolation_forest.py`'s Flash
+  Crowd warm-up filter was rate based (`ewma_rate < 100`), which correctly
+  strips a generator's own startup transient on every capture where Flash
+  Crowd is meant to run fast, but silently gutted an entire deliberately
+  slow-paced Flash Crowd class down to 4% of its real row count on a
+  capture built to test rate-band overlap with Normal traffic. Changed to
+  duration based (`FLOD_FLASHCROWD_WARMUP_SECONDS`, default 15s, an
+  environment variable, not a hardcoded value): the first N seconds of a
+  session are warm-up regardless of the session's own target rate, so a
+  session paced slow throughout is no longer mistaken for the generator
+  never leaving warm-up. The filter now also prints how many rows it drops,
+  matching the idle-DDoS filter beside it.
+- `train_isolation_forest.py` fit on the full pooled dataset regardless of
+  class balance. `IsolationForest`'s anomaly scoring depends on whatever it
+  should flag as anomalous being sparse in the space it fits on; on a
+  capture where DDoS rows outnumbered the combined benign classes, DDoS
+  stopped looking sparse and every contamination candidate under the
+  benign outlier cap showed negative separation, DDoS scoring less
+  anomalous than ordinary traffic. DDoS is now capped at the smaller
+  benign class's own row count before the contamination sweep runs, the
+  same principle `scripts/trim_ddos_class.py` already applies to the
+  training CSV itself.
+- The cosmetic sklearn/joblib warning about config propagation
+  (`sklearn.utils.parallel.delayed` should be used with
+  `sklearn.utils.parallel.Parallel`) was only suppressed in the training
+  scripts' own process; joblib's `loky` backend runs each parallel worker
+  as a separate interpreter that never sees an in-memory
+  `warnings.filterwarnings()` call, only environment variables it reads at
+  its own startup. `PYTHONWARNINGS` is now set for the same rule, reaching
+  workers the prior fix couldn't.
+
 ## 1.8.1, 2026-09-25
 
 ### Fixed

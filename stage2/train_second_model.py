@@ -36,6 +36,9 @@ warnings.filterwarnings(
     message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
     category=UserWarning,
 )
+# See train.py's matching comment: the filter above misses joblib's
+# spawned workers entirely, only PYTHONWARNINGS reaches those.
+os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.parallel")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
@@ -43,6 +46,10 @@ CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.cs
 # training against a production install can target the root-owned model
 # directory Stage 2's auto_label.py actually reads from.
 SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_gb_model.joblib"))
+# Seconds from the start of a Flash Crowd session still treated as the
+# generator's own ramp-up. See train.py's own comment on the matching
+# constant for why this is duration based, not rate based.
+FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
 
 FEATURE_COLS = [
     "entropy",
@@ -141,7 +148,14 @@ def main():
     df["new_session"] = (df["time_diff"] > 30.0) | (df["time_diff"].isna()) | df["label_changed"]
     df["session_id"] = df["new_session"].cumsum()
 
-    df = df[~((df[LABEL_COL] == 1) & (df["ewma_rate"] < 100))].reset_index(drop=True)
+    session_start = df.groupby("session_id")["timestamp"].transform("min")
+    elapsed_in_session = df["timestamp"] - session_start
+    warmup_mask = (df[LABEL_COL] == 1) & (elapsed_in_session < FLASHCROWD_WARMUP_SECONDS)
+    warmup_count = warmup_mask.sum()
+    if warmup_count > 0:
+        print(f"[!] Dropping {warmup_count} Flash Crowd rows within "
+              f"{FLASHCROWD_WARMUP_SECONDS:.0f}s of their session's own start (generator ramp-up).")
+    df = df[~warmup_mask].reset_index(drop=True)
 
     dropped_idle_ddos = ((df[LABEL_COL] == 2) & (df["ewma_rate"] < 1.0)).sum()
     if dropped_idle_ddos > 0:

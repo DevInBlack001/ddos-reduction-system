@@ -35,12 +35,19 @@ warnings.filterwarnings(
     message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
     category=UserWarning,
 )
+# See train.py's matching comment: the filter above misses joblib's
+# spawned workers entirely, only PYTHONWARNINGS reaches those.
+os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.parallel")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
 # Same IF_MODEL_PATH environment variable config.py honours, see train.py's
 # matching MODEL_PATH comment.
 IF_MODEL_PATH = os.environ.get("IF_MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_if_model.joblib"))
+# Seconds from the start of a Flash Crowd session still treated as the
+# generator's own ramp-up. See train.py's own comment on the matching
+# constant for why this is duration based, not rate based.
+FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
 
 # Matches train.py's FEATURE_COLS exactly. Kept as a separate literal rather
 # than imported from train.py, since train.py is not a module meant to be
@@ -131,7 +138,25 @@ def main():
         print(f"[!] Dropping {dup_count} exact-duplicate rows found in the dataset.")
         df = df.drop_duplicates().reset_index(drop=True)
 
-    df = df[~((df[LABEL_COL] == 1) & (df["ewma_rate"] < 100))].reset_index(drop=True)
+    # Session detection, same heuristic as train.py, needed here only to
+    # locate each Flash Crowd session's own start for the warm-up filter
+    # below; this model pools every label together and never keys on
+    # session_id for anything else.
+    df = df.sort_values(by="timestamp").reset_index(drop=True)
+    df["time_diff"] = df["timestamp"].diff()
+    df["label_changed"] = df[LABEL_COL] != df[LABEL_COL].shift()
+    df["new_session"] = (df["time_diff"] > 30.0) | (df["time_diff"].isna()) | df["label_changed"]
+    df["session_id"] = df["new_session"].cumsum()
+
+    session_start = df.groupby("session_id")["timestamp"].transform("min")
+    elapsed_in_session = df["timestamp"] - session_start
+    warmup_mask = (df[LABEL_COL] == 1) & (elapsed_in_session < FLASHCROWD_WARMUP_SECONDS)
+    warmup_count = warmup_mask.sum()
+    if warmup_count > 0:
+        print(f"[!] Dropping {warmup_count} Flash Crowd rows within "
+              f"{FLASHCROWD_WARMUP_SECONDS:.0f}s of their session's own start (generator ramp-up).")
+    df = df[~warmup_mask].reset_index(drop=True)
+    df = df.drop(columns=["time_diff", "label_changed", "new_session", "session_id"])
 
     dropped_idle_ddos = ((df[LABEL_COL] == 2) & (df["ewma_rate"] < 1.0)).sum()
     if dropped_idle_ddos > 0:
@@ -141,6 +166,31 @@ def main():
     df["delta_rate"] = df["ewma_rate"] - df["mean_r"]
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
+
+    # IsolationForest's own scoring assumes whatever it should flag as
+    # anomalous is a minority of the rows it fits on: a point gets a short
+    # average path length, and so a high anomaly score, precisely because
+    # random partitioning isolates it quickly, which only happens for points
+    # sitting in sparse regions of the fitted feature space. If DDoS rows
+    # outnumber Normal and Flash Crowd combined, DDoS is not sparse, it is
+    # the dominant pattern the forest learns as "normal," and something in
+    # the minority (real benign traffic) gets flagged as the outlier
+    # instead, backwards from what this model exists to do. Capped the same
+    # way scripts/trim_ddos_class.py already caps the supervised models'
+    # own training set, at the smaller of the other two classes, dropped by
+    # random sample here rather than by whole session, since this model
+    # pools every label together and has no session-based fold to protect.
+    benign_counts = df[df[LABEL_COL] != 2][LABEL_COL].value_counts()
+    ddos_count = (df[LABEL_COL] == 2).sum()
+    if len(benign_counts) > 0:
+        ddos_cap = int(benign_counts.min())
+        if ddos_count > ddos_cap:
+            print(f"[!] DDoS rows ({ddos_count}) outnumber the smaller benign class "
+                  f"({ddos_cap}); IsolationForest needs DDoS to stay a minority of what "
+                  f"it fits on to score it as anomalous at all. Subsampling DDoS down to "
+                  f"{ddos_cap} rows (seed 42) before fitting.")
+            ddos_rows = df[df[LABEL_COL] == 2].sample(n=ddos_cap, random_state=42)
+            df = pd.concat([df[df[LABEL_COL] != 2], ddos_rows]).sort_index().reset_index(drop=True)
 
     print(f"\n[+] Training set after cleaning: {len(df)} rows, all labels pooled, "
           "label column not used as an input.")

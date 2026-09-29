@@ -27,6 +27,14 @@ warnings.filterwarnings(
     message=r".*should be used with `sklearn\.utils\.parallel\.Parallel`.*",
     category=UserWarning,
 )
+# The filter above only covers this process's own thread. joblib's loky
+# backend runs each worker as a separate interpreter, which does not
+# inherit an in-memory warnings.filterwarnings() call, only environment
+# variables it reads fresh at its own startup, so the same warning leaks
+# from every worker regardless of the filter above. PYTHONWARNINGS is
+# read by each spawned worker independently; setdefault so an operator's
+# own PYTHONWARNINGS setting still wins if one is already set.
+os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.parallel")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
@@ -35,6 +43,14 @@ CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.cs
 # directory Stage 2 actually loads from, rather than silently writing a
 # new model into the checkout that nothing running in production reads.
 MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib"))
+# Seconds from the start of a Flash Crowd session still treated as the
+# generator's own ramp-up rather than the session proper. Locust spins up
+# simulated users gradually rather than hitting target load instantly, so
+# the first several seconds of a real Flash Crowd session measure a rate
+# climbing toward its target, not the class's own steady-state behavior.
+# A starting point, not a proven value; override if a generator's own
+# ramp-up timing changes.
+FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
 FEATURE_COLS = [
     "entropy",
     "ewma_rate",
@@ -176,8 +192,22 @@ def main():
                   f"{duration:.1f}s / {len(sess_df)} rows, short enough to be a restart that "
                   f"barely got going rather than a deliberate capture. Worth checking by hand.")
 
-    # Filter out flash-crowd warm-up rows (rate < 100) that blur the boundary with Normal traffic
-    df = df[~((df[LABEL_COL] == 1) & (df["ewma_rate"] < 100))].reset_index(drop=True)
+    # Filter out flash-crowd warm-up rows that blur the boundary with Normal
+    # traffic. By elapsed time since the session started, not by rate: a
+    # rate threshold conflates "this is the generator's own startup
+    # transient" with "this session's target rate happens to be low," which
+    # are different questions. A session deliberately paced slow throughout
+    # (not just at the start) has no rate-based tell to filter on, and a
+    # rate threshold would wrongly gut it entirely rather than trim its
+    # first few seconds. Elapsed time answers only the intended question.
+    session_start = df.groupby("session_id")["timestamp"].transform("min")
+    elapsed_in_session = df["timestamp"] - session_start
+    warmup_mask = (df[LABEL_COL] == 1) & (elapsed_in_session < FLASHCROWD_WARMUP_SECONDS)
+    warmup_count = warmup_mask.sum()
+    if warmup_count > 0:
+        print(f"[!] Dropping {warmup_count} Flash Crowd rows within "
+              f"{FLASHCROWD_WARMUP_SECONDS:.0f}s of their session's own start (generator ramp-up).")
+    df = df[~warmup_mask].reset_index(drop=True)
 
     # Filter out DDoS rows with essentially no traffic (rate < 1 pps): the
     # tail end of a capture after the flood stopped but the label had not yet
