@@ -155,6 +155,26 @@ def _read_rows(path):
     return header, rows, was_bounded
 
 
+def _read_training_csv(path):
+    """Returns (header, rows) for config.TRAINING_CSV_PATH, unbounded. The
+    production training CSV routinely holds far more rows than
+    config.AUTO_LABEL_MAX_QUEUE_ROWS bounds the small staging queue to
+    (50,000 by default; a real merged training set already exceeds that),
+    so it must never go through _read_rows()'s queue-bounded deque, which
+    would silently keep only the newest AUTO_LABEL_MAX_QUEUE_ROWS rows and
+    drop the rest on the very next write back to disk. Returns (None, [])
+    if the file does not exist."""
+    if not os.path.exists(path):
+        return None, []
+    with open(path, newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header is None:
+            return None, []
+        rows = list(reader)
+    return header, rows
+
+
 def _rewrite_csv(path, header, rows):
     """Atomic replace via storage._atomic_write, so a reader never sees a
     partially rewritten file, a crash mid-write leaves the previous complete

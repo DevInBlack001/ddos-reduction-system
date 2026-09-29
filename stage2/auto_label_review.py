@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException
 
 import config
 import db
-from auto_label import BASE_CSV_HEADER, _read_rows, _rewrite_csv
+from auto_label import BASE_CSV_HEADER, _read_rows, _read_training_csv, _rewrite_csv
 from storage import _atomic_write
 from training_balance import trim_ddos_sessions
 
@@ -100,7 +100,7 @@ def merge_staged_rows():
     if header is None or not staged_rows:
         raise HTTPException(status_code=400, detail="Nothing staged to merge.")
 
-    target_header, target_rows, _ = _read_rows(config.TRAINING_CSV_PATH)
+    target_header, target_rows = _read_training_csv(config.TRAINING_CSV_PATH)
     if target_header is None:
         target_header = BASE_CSV_HEADER
         target_rows = []
@@ -157,7 +157,7 @@ def trim_ddos_class():
                    "retrain timer) before trimming from the dashboard.",
         )
 
-    header, rows, _ = _read_rows(config.TRAINING_CSV_PATH)
+    header, rows = _read_training_csv(config.TRAINING_CSV_PATH)
     if header is None or not rows:
         raise HTTPException(status_code=400, detail="Training CSV is empty or missing, nothing to trim.")
 

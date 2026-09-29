@@ -69,7 +69,7 @@ training_data/
 *.parquet
 *.pcap
 *.pcapng
-
+conf_mat.md
 # Runtime / IPC artefacts
 
 # Unix domain socket file left behind after an unclean shutdown
