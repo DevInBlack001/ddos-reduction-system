@@ -38,11 +38,30 @@ os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.paral
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
+# experiment/generalized-training, not on the roadmap yet. "portable"
+# drops raw scale-dependent columns (ewma_rate, mean_r, sigma_r, mean_h,
+# sigma_h, dominant_rate) in favour of baseline-relative features
+# (rate_z, rate_ratio, entropy_z). See
+# scratch/specs/2026-10-12-generalized-feature-scaling-design.md.
+FEATURE_SET = os.environ.get("FLOD_FEATURE_SET", "local").lower()
+if FEATURE_SET not in ("local", "portable"):
+    print(f"[-] Error: FLOD_FEATURE_SET must be 'local' or 'portable', got '{FEATURE_SET}'")
+    sys.exit(1)
+# rate_z's relative floor: "5% of this site's own mean rate," a starting
+# point. Stage 1's own sigma_r floor is an absolute pps figure (~43% of
+# rows sit at one of three such values across tuning eras in the real
+# dataset); using it here would reintroduce that.
+RATE_Z_FLOOR_FRACTION = float(os.environ.get("FLOD_RATE_Z_FLOOR_FRACTION", "0.05"))
 # Same MODEL_PATH environment variable config.py honours, so training run
 # against a production install can be pointed at the root-owned model
 # directory Stage 2 actually loads from, rather than silently writing a
 # new model into the checkout that nothing running in production reads.
-MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_rf_model.joblib"))
+# The portable feature set gets its own default filename so the two are
+# never silently overwritten by each other.
+MODEL_PATH = os.environ.get(
+    "MODEL_PATH",
+    os.path.join(SCRIPT_DIR, "ddos_rf_model_portable.joblib" if FEATURE_SET == "portable" else "ddos_rf_model.joblib"),
+)
 # Seconds from the start of a Flash Crowd session still treated as the
 # generator's own ramp-up rather than the session proper. Locust spins up
 # simulated users gradually rather than hitting target load instantly, so
@@ -51,7 +70,7 @@ MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_rf_mode
 # A starting point, not a proven value; override if a generator's own
 # ramp-up timing changes.
 FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
-FEATURE_COLS = [
+FEATURE_COLS_LOCAL = [
     "entropy",
     "ewma_rate",
     "mean_h",
@@ -67,6 +86,23 @@ FEATURE_COLS = [
     "ttl_variance",
     "fingerprint_diversity"
 ]
+# proto_ratio/dominant_ip_ratio/source_port_entropy/ttl_variance/
+# fingerprint_diversity are ratios or bounded quantities, independent of
+# traffic volume. rate_z/rate_ratio/entropy_z are baseline-relative forms
+# of rate and entropy. Raw entropy is excluded even though it's volume-
+# independent: its range depends on address-pool diversity, a property of
+# the site. entropy_z is the form relative to this target's own baseline.
+FEATURE_COLS_PORTABLE = [
+    "proto_ratio",
+    "dominant_ip_ratio",
+    "source_port_entropy",
+    "ttl_variance",
+    "fingerprint_diversity",
+    "rate_z",
+    "rate_ratio",
+    "entropy_z",
+]
+FEATURE_COLS = FEATURE_COLS_PORTABLE if FEATURE_SET == "portable" else FEATURE_COLS_LOCAL
 LABEL_COL = "label"
 
 
@@ -115,7 +151,8 @@ def pick_depth(candidates, accuracy_tolerance, share_tolerance):
 
 def main():
     print("=== DDoS Reduction Project: Stage 2 Training ===")
-    
+    print(f"[+] FLOD_FEATURE_SET={FEATURE_SET} ({len(FEATURE_COLS)} features: {', '.join(FEATURE_COLS)})")
+
     # 1. Load Dataset. Optional args: <csv_path> [<model_out_path>], so a
     # capture from a different environment can be trained and saved
     # separately without overwriting the canonical file or model.
@@ -143,10 +180,14 @@ def main():
     # before that change has no way to hold them: fail loudly here rather
     # than silently training on NaNs (dropna below would just delete every
     # row) or a raw pandas KeyError deep in a later step. delta_rate,
-    # delta_entropy, and dominant_rate are computed below, not raw columns,
-    # so they are not part of this check.
-    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate"}
-    required_raw_cols = [c for c in FEATURE_COLS if c not in derived_cols] + [LABEL_COL, "timestamp"]
+    # delta_entropy, dominant_rate, rate_z, rate_ratio, and entropy_z are
+    # computed below. mean_r/sigma_r/mean_h/sigma_h are always required:
+    # rate_z/rate_ratio/entropy_z derive from them even in portable mode.
+    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate", "rate_z", "rate_ratio", "entropy_z"}
+    base_required_raw_cols = {"ewma_rate", "mean_r", "sigma_r", "mean_h", "sigma_h"}
+    required_raw_cols = sorted(
+        base_required_raw_cols | {c for c in FEATURE_COLS if c not in derived_cols}
+    ) + [LABEL_COL, "timestamp"]
     missing_cols = [c for c in required_raw_cols if c not in df.columns]
     if missing_cols:
         print(f"[-] Error: '{csv_file}' is missing column(s): {', '.join(missing_cols)}")
@@ -228,6 +269,27 @@ def main():
     # enforcement guards; promoted here to an actual classifier input so the
     # RF sees it too, not just the post-classification block/ratelimit rule.
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
+
+    # rate_z/rate_ratio/entropy_z: baseline-relative forms of the same raw
+    # fields above, for FEATURE_SET=portable. Dividing by sigma_r/sigma_h/
+    # mean_r needs those strictly positive; Stage 1's own sigma floors
+    # (--rate-sigma-floor, --entropy-sigma-floor) keep this true on a real
+    # capture, but nothing stops a hand-edited or synthetic CSV from having
+    # a zero, so rows that would divide by zero are dropped and counted
+    # rather than silently producing inf, which the earlier inf/nan sweep
+    # ran before these columns existed and would not catch.
+    unsafe_baseline = (df["sigma_r"] <= 0) | (df["sigma_h"] <= 0) | (df["mean_r"] <= 0)
+    unsafe_count = unsafe_baseline.sum()
+    if unsafe_count > 0:
+        print(f"[!] Dropping {unsafe_count} rows with a non-positive sigma_r/sigma_h/mean_r "
+              "(would divide by zero computing rate_z/rate_ratio/entropy_z).")
+    df = df[~unsafe_baseline].reset_index(drop=True)
+    # sigma_eff: relative floor, see RATE_Z_FLOOR_FRACTION above. entropy_z
+    # keeps raw sigma_h: entropy is already normalized to [0, 1].
+    sigma_eff = df["sigma_r"].clip(lower=RATE_Z_FLOOR_FRACTION * df["mean_r"])
+    df["rate_z"] = (df["ewma_rate"] - df["mean_r"]) / sigma_eff
+    df["rate_ratio"] = df["ewma_rate"] / df["mean_r"]
+    df["entropy_z"] = (df["entropy"] - df["mean_h"]) / df["sigma_h"]
 
     print("\n== Raw Class Distribution ==")
     print(df[LABEL_COL].value_counts().to_string())

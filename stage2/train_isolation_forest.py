@@ -41,19 +41,31 @@ os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.paral
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
-# Same IF_MODEL_PATH environment variable config.py honours, see train.py's
-# matching MODEL_PATH comment.
-IF_MODEL_PATH = os.environ.get("IF_MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_if_model.joblib"))
+# experiment/generalized-training, not on the roadmap yet. Same
+# FLOD_FEATURE_SET switch as train.py; applies here too to keep this
+# file's own stated parity with train.py's feature set.
+FEATURE_SET = os.environ.get("FLOD_FEATURE_SET", "local").lower()
+if FEATURE_SET not in ("local", "portable"):
+    print(f"[-] Error: FLOD_FEATURE_SET must be 'local' or 'portable', got '{FEATURE_SET}'")
+    sys.exit(1)
+# rate_z's relative floor, see train.py's matching comment.
+RATE_Z_FLOOR_FRACTION = float(os.environ.get("FLOD_RATE_Z_FLOOR_FRACTION", "0.05"))
+# Portable gets its own default filename, see train.py's matching comment.
+IF_MODEL_PATH = os.environ.get(
+    "IF_MODEL_PATH",
+    os.path.join(SCRIPT_DIR, "ddos_if_model_portable.joblib" if FEATURE_SET == "portable" else "ddos_if_model.joblib"),
+)
 # Seconds from the start of a Flash Crowd session still treated as the
 # generator's own ramp-up. See train.py's own comment on the matching
 # constant for why this is duration based, not rate based.
 FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
 
-# Matches train.py's FEATURE_COLS exactly. Kept as a separate literal rather
-# than imported from train.py, since train.py is not a module meant to be
-# imported (it runs as a script), and duplicating one list is a smaller risk
-# than coupling two independently run training scripts together.
-FEATURE_COLS = [
+# Matches train.py's FEATURE_COLS_LOCAL/FEATURE_COLS_PORTABLE exactly. Kept
+# as separate literals rather than imported from train.py, since train.py
+# is not a module meant to be imported (it runs as a script), and
+# duplicating two lists is a smaller risk than coupling two independently
+# run training scripts together.
+FEATURE_COLS_LOCAL = [
     "entropy",
     "ewma_rate",
     "mean_h",
@@ -69,6 +81,18 @@ FEATURE_COLS = [
     "ttl_variance",
     "fingerprint_diversity"
 ]
+# Raw entropy excluded, see train.py's matching comment.
+FEATURE_COLS_PORTABLE = [
+    "proto_ratio",
+    "dominant_ip_ratio",
+    "source_port_entropy",
+    "ttl_variance",
+    "fingerprint_diversity",
+    "rate_z",
+    "rate_ratio",
+    "entropy_z",
+]
+FEATURE_COLS = FEATURE_COLS_PORTABLE if FEATURE_SET == "portable" else FEATURE_COLS_LOCAL
 LABEL_COL = "label"
 
 # contamination is swept the same way train.py sweeps max_depth: rather than
@@ -94,6 +118,7 @@ CANDIDATE_CONTAMINATIONS = [0.01, 0.02, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25]
 
 def main():
     print("=== FLOD System: Stage 2 Isolation Forest Training (V7) ===")
+    print(f"[+] FLOD_FEATURE_SET={FEATURE_SET} ({len(FEATURE_COLS)} features: {', '.join(FEATURE_COLS)})")
 
     # Same arg handling as train.py: <csv_path> [<model_out_path>].
     if len(sys.argv) > 1:
@@ -115,11 +140,13 @@ def main():
     df = pd.read_csv(csv_file)
     print(f"[+] Loaded {len(df)} raw rows.")
 
-    # Same schema check as train.py: a pre-V7 capture has no way to hold the
-    # three V7 columns, fail loudly rather than train on NaNs or crash on a
-    # raw KeyError later.
-    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate"}
-    required_raw_cols = [c for c in FEATURE_COLS if c not in derived_cols] + [LABEL_COL, "timestamp"]
+    # Same schema check as train.py. mean_r/sigma_r/mean_h/sigma_h are
+    # always required: rate_z/rate_ratio/entropy_z derive from them.
+    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate", "rate_z", "rate_ratio", "entropy_z"}
+    base_required_raw_cols = {"ewma_rate", "mean_r", "sigma_r", "mean_h", "sigma_h"}
+    required_raw_cols = sorted(
+        base_required_raw_cols | {c for c in FEATURE_COLS if c not in derived_cols}
+    ) + [LABEL_COL, "timestamp"]
     missing_cols = [c for c in required_raw_cols if c not in df.columns]
     if missing_cols:
         print(f"[-] Error: '{csv_file}' is missing column(s): {', '.join(missing_cols)}")
@@ -166,6 +193,20 @@ def main():
     df["delta_rate"] = df["ewma_rate"] - df["mean_r"]
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
+
+    # rate_z/rate_ratio/entropy_z: same baseline-relative features and same
+    # divide-by-zero guard as train.py, for FEATURE_SET=portable.
+    unsafe_baseline = (df["sigma_r"] <= 0) | (df["sigma_h"] <= 0) | (df["mean_r"] <= 0)
+    unsafe_count = unsafe_baseline.sum()
+    if unsafe_count > 0:
+        print(f"[!] Dropping {unsafe_count} rows with a non-positive sigma_r/sigma_h/mean_r "
+              "(would divide by zero computing rate_z/rate_ratio/entropy_z).")
+    df = df[~unsafe_baseline].reset_index(drop=True)
+    # sigma_eff: same relative floor as train.py, see its matching comment.
+    sigma_eff = df["sigma_r"].clip(lower=RATE_Z_FLOOR_FRACTION * df["mean_r"])
+    df["rate_z"] = (df["ewma_rate"] - df["mean_r"]) / sigma_eff
+    df["rate_ratio"] = df["ewma_rate"] / df["mean_r"]
+    df["entropy_z"] = (df["entropy"] - df["mean_h"]) / df["sigma_h"]
 
     # IsolationForest's own scoring assumes whatever it should flag as
     # anomalous is a minority of the rows it fits on: a point gets a short
