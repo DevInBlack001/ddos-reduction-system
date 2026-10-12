@@ -42,16 +42,29 @@ os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.paral
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
+# Same FLOD_FEATURE_SET switch as train.py, see its matching comment.
+# auto_label.py's agreement check needs both models on the same feature
+# representation.
+FEATURE_SET = os.environ.get("FLOD_FEATURE_SET", "local").lower()
+if FEATURE_SET not in ("local", "portable"):
+    print(f"[-] Error: FLOD_FEATURE_SET must be 'local' or 'portable', got '{FEATURE_SET}'")
+    sys.exit(1)
+# rate_z's relative floor, see train.py's matching comment.
+RATE_Z_FLOOR_FRACTION = float(os.environ.get("FLOD_RATE_Z_FLOOR_FRACTION", "0.05"))
 # Same SECOND_MODEL_PATH environment variable config.py honours, so
 # training against a production install can target the root-owned model
-# directory Stage 2's auto_label.py actually reads from.
-SECOND_MODEL_PATH = os.environ.get("SECOND_MODEL_PATH", os.path.join(SCRIPT_DIR, "ddos_gb_model.joblib"))
+# directory Stage 2's auto_label.py actually reads from. Portable gets its
+# own default filename so the two are never silently overwritten.
+SECOND_MODEL_PATH = os.environ.get(
+    "SECOND_MODEL_PATH",
+    os.path.join(SCRIPT_DIR, "ddos_gb_model_portable.joblib" if FEATURE_SET == "portable" else "ddos_gb_model.joblib"),
+)
 # Seconds from the start of a Flash Crowd session still treated as the
 # generator's own ramp-up. See train.py's own comment on the matching
 # constant for why this is duration based, not rate based.
 FLASHCROWD_WARMUP_SECONDS = float(os.environ.get("FLOD_FLASHCROWD_WARMUP_SECONDS", "15"))
 
-FEATURE_COLS = [
+FEATURE_COLS_LOCAL = [
     "entropy",
     "ewma_rate",
     "mean_h",
@@ -67,6 +80,18 @@ FEATURE_COLS = [
     "ttl_variance",
     "fingerprint_diversity"
 ]
+# Raw entropy excluded, see train.py's matching comment.
+FEATURE_COLS_PORTABLE = [
+    "proto_ratio",
+    "dominant_ip_ratio",
+    "source_port_entropy",
+    "ttl_variance",
+    "fingerprint_diversity",
+    "rate_z",
+    "rate_ratio",
+    "entropy_z",
+]
+FEATURE_COLS = FEATURE_COLS_PORTABLE if FEATURE_SET == "portable" else FEATURE_COLS_LOCAL
 LABEL_COL = "label"
 
 
@@ -106,6 +131,7 @@ ACCURACY_TOLERANCE = 0.005
 
 def main():
     print("=== FLOD System: Stage 2 Second Model Training (V8) ===")
+    print(f"[+] FLOD_FEATURE_SET={FEATURE_SET} ({len(FEATURE_COLS)} features: {', '.join(FEATURE_COLS)})")
 
     if len(sys.argv) > 1:
         csv_file = sys.argv[1]
@@ -126,8 +152,11 @@ def main():
     df = pd.read_csv(csv_file)
     print(f"[+] Loaded {len(df)} raw rows.")
 
-    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate"}
-    required_raw_cols = [c for c in FEATURE_COLS if c not in derived_cols] + [LABEL_COL, "timestamp"]
+    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate", "rate_z", "rate_ratio", "entropy_z"}
+    base_required_raw_cols = {"ewma_rate", "mean_r", "sigma_r", "mean_h", "sigma_h"}
+    required_raw_cols = sorted(
+        base_required_raw_cols | {c for c in FEATURE_COLS if c not in derived_cols}
+    ) + [LABEL_COL, "timestamp"]
     missing_cols = [c for c in required_raw_cols if c not in df.columns]
     if missing_cols:
         print(f"[-] Error: '{csv_file}' is missing column(s): {', '.join(missing_cols)}")
@@ -165,6 +194,19 @@ def main():
     df["delta_rate"] = df["ewma_rate"] - df["mean_r"]
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
+
+    # rate_z/rate_ratio/entropy_z: same baseline-relative features, same
+    # relative floor, and same divide-by-zero guard as train.py.
+    unsafe_baseline = (df["sigma_r"] <= 0) | (df["sigma_h"] <= 0) | (df["mean_r"] <= 0)
+    unsafe_count = unsafe_baseline.sum()
+    if unsafe_count > 0:
+        print(f"[!] Dropping {unsafe_count} rows with a non-positive sigma_r/sigma_h/mean_r "
+              "(would divide by zero computing rate_z/rate_ratio/entropy_z).")
+    df = df[~unsafe_baseline].reset_index(drop=True)
+    sigma_eff = df["sigma_r"].clip(lower=RATE_Z_FLOOR_FRACTION * df["mean_r"])
+    df["rate_z"] = (df["ewma_rate"] - df["mean_r"]) / sigma_eff
+    df["rate_ratio"] = df["ewma_rate"] / df["mean_r"]
+    df["entropy_z"] = (df["entropy"] - df["mean_h"]) / df["sigma_h"]
 
     print("\n== Raw Class Distribution ==")
     print(df[LABEL_COL].value_counts().to_string())
