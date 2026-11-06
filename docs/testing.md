@@ -56,7 +56,7 @@ cd stage2
 python3 -m unittest discover -s tests -t tests -q
 ```
 
-555 tests across storage, configuration, request models, the database schema,
+567 tests across storage, configuration, request models, the database schema,
 the audit writers, enforcement, authentication, the three capture CSV writers
 (Anomalous, cold start, and DDoS), the Auto Label review queue and its paging,
 the deterministic safety overrides, IPC peer verification, the latency summary
