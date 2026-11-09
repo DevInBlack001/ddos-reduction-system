@@ -20,6 +20,9 @@ minor bump adds a feature, milestones are numbered separately from tags.
   are `--zero-loss-capture-pct` and `--zero-loss-probe-pct`. The ladder
   generator is `scripts/benchmark_limit_flood.sh`.
 - Egress bandwidth in the backend comparison.
+- `scripts/present.py`: a terminal presentation of the pipeline, one stage per
+  section with a title, a description and numbered steps, optionally running
+  read only demo commands. Content is in `docs/presentation/stages.json`.
 
 ## 1.8.2, 2026-09-29
 

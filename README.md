@@ -167,7 +167,8 @@ scripts/test.sh
 | [Roadmap](docs/roadmap.md) | Completed and planned versions |
 | [Benchmark Results](docs/benchmark-results.md) | FLOD vs. a fixed threshold: hardware, methodology, full output |
 | [Live Benchmark](docs/benchmark-live-v1.3.0.md) | The seven phase traffic campaign against the deployed gateway |
-| [Backend Benchmark](docs/benchmark-backends.md) | Kernel and libpcap compared on throughput, CPU, latency, and switching |
+| [Backend Benchmark](docs/benchmark-backends.md) | Kernel and libpcap compared on throughput, bandwidth, packet latency, CPU, switching, and the gateway's limits |
+| [Presentation](docs/presentation.md) | A terminal walkthrough of the pipeline, stage by stage |
 | [Lessons Learned](docs/lessons-learned.md) | Real bugs found during development, kept for what they generalize to |
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers development setup and conventions.

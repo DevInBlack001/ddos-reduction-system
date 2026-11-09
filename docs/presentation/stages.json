@@ -1,0 +1,119 @@
+{
+  "title": "FLOD System: First Line Of Defense",
+  "subtitle": "An adaptive two stage Layer 4 volumetric DDoS mitigation gateway",
+  "stages": [
+    {
+      "id": "capture",
+      "title": "Stage 1: Packet capture",
+      "description": "A Rust sensor sits on the packet path and sees every packet bound for a protected host. Two interchangeable backends fill the same per window counters.",
+      "steps": [
+        "A packet arrives on the ingress interface of the gateway.",
+        "The libpcap backend reads it through a BPF filter that drops everything not addressed to a protected host.",
+        "The kernel backend does the same in XDP (driver mode where the NIC supports it) with a TC program on egress, counting into per CPU maps.",
+        "Egress packets only increment a counter, so past mitigation never shapes future decisions.",
+        {"text": "Show the sensor's own log.", "command": ["journalctl", "-u", "ddos-stage1.service", "-n", "5", "--no-pager"]}
+      ]
+    },
+    {
+      "id": "windows",
+      "title": "Stage 1: Windows and features",
+      "description": "Traffic is condensed into one summary per window, so nothing downstream needs to look at individual packets.",
+      "steps": [
+        "A window closes on a packet count, elapsed time, or a timer tick.",
+        "Source entropy measures how spread out the sending addresses are. A flood from one address has low entropy.",
+        "A smoothed packet rate measures volume.",
+        "Source port entropy, TTL variance and TCP SYN fingerprint diversity add features that address spoofing cannot forge.",
+        "Their histograms are keyed by value, not by source, so a flood of random addresses cannot fill them."
+      ]
+    },
+    {
+      "id": "baseline",
+      "title": "Stage 1: Adaptive baseline",
+      "description": "Each protected host learns its own normal. The anomaly boundary moves with the traffic instead of using one fixed threshold.",
+      "steps": [
+        "A warm-up period of 200 windows builds the first baseline for a host.",
+        "Welford accumulators keep a running mean and standard deviation of rate and entropy.",
+        "A window is flagged when the rate exceeds mean plus k sigma, or entropy falls below mean minus k sigma.",
+        "Flagged windows do not update the baseline, which defends against an attacker ramping slowly to poison it.",
+        "A bounded freeze lets the baseline accept sustained legitimate growth.",
+        "Sigma floors are calibrated from measured Normal traffic and set through an environment file."
+      ]
+    },
+    {
+      "id": "handoff",
+      "title": "The handoff between stages",
+      "description": "Stage 1 sends a fixed size feature vector per window to Stage 2 over a Unix domain socket.",
+      "steps": [
+        "Stage 1 reports flagged windows and a heartbeat for quiet hosts.",
+        "Each vector is 216 bytes with a fixed field order, including a warm-up flag.",
+        "Stage 2 verifies the peer on the socket is root or the sensor's account before reading.",
+        "Stage 2 never waits on a lock or a subprocess in its receive loop, so the socket does not back up.",
+        {"text": "Show the socket directory.", "command": ["ls", "-l", "/run/ddos_stage1/"]}
+      ]
+    },
+    {
+      "id": "classification",
+      "title": "Stage 2: Classification",
+      "description": "A Random Forest decides what kind of traffic a flagged window is. An Isolation Forest flags traffic unlike anything in training.",
+      "steps": [
+        "The Random Forest labels the window Normal, Flash Crowd or DDoS.",
+        "Telling a flash crowd from an attack is the one thing a fixed threshold cannot do.",
+        "The Isolation Forest scores how unusual the window is and can surface it as Anomalous for review, without changing enforcement.",
+        "Deterministic safety overrides catch extreme spikes whatever the models say, including during warm-up.",
+        "Both models skip warm-up windows, whose statistics have not settled."
+      ]
+    },
+    {
+      "id": "enforcement",
+      "title": "Stage 2: Enforcement",
+      "description": "Four tiers act on attacks, escalating from reversible throttling to blocking only where the source is confidently identified.",
+      "steps": [
+        "Tier 1 blocks the dominant source when it is concentrated and fast.",
+        "Tier 2 blocks any single source far above human rates, however the attack is spread.",
+        "Tier 3 rate limits sources that are elevated but ambiguous.",
+        "Tier 4 throttles every active flow to the host when traffic is spread too thin to name a source.",
+        "Blocks need consecutive attack windows, so one noisy window cannot trigger one.",
+        "Rules live in ipsets with an expiry, so a wrong decision heals itself. A whitelist protects known good addresses.",
+        {"text": "Show the blocklist summary.", "command": ["ipset", "list", "-terse", "ddos_blocklist"]}
+      ]
+    },
+    {
+      "id": "dashboard",
+      "title": "Dashboard, alerts and reports",
+      "description": "Operators see every host's state, act on addresses by hand, and get notified and documented without leaving the gateway.",
+      "steps": [
+        "The dashboard is served by Stage 2 over HTTPS on port 8000, with logins and account management.",
+        "Pages cover targets, active flows, logs, interfaces, firewall state, alerts and playbooks.",
+        "Alerts go out through Discord or SMTP, with credentials redacted from any failure message.",
+        "Playbooks run timed sequences on a trigger, such as escalating a target or generating a report.",
+        "Incident reports are rendered on the server from the database as PDF.",
+        {"text": "Show the running version.", "command": ["curl", "-sk", "https://localhost:8000/api/version"]}
+      ]
+    },
+    {
+      "id": "learning",
+      "title": "The learning loop",
+      "description": "The system captures what it saw, and a person decides what it learns from. Nothing retrains itself on an unverified guess.",
+      "steps": [
+        "Windows the models doubted or called DDoS are staged in capture files.",
+        "Automatic labeling labels a staged row only when two independently trained models agree with enough confidence.",
+        "The Auto Label page shows the staged rows for review and merging, an operator's deliberate click.",
+        "A trim tool caps the DDoS class at the size of the other two, dropping whole sessions.",
+        "Models are retrained with leave one session out validation, which picks the tree depth."
+      ]
+    },
+    {
+      "id": "benchmark",
+      "title": "Benchmarking the gateway",
+      "description": "A live benchmark drives the lab's generators through seven traffic phases per capture backend and reports what the deployed system did.",
+      "steps": [
+        "Normal, Flash Crowd and attack traffic run alone, then in every pairing, then all three.",
+        "Each backend learns its own baseline, and enforcement is reset before every run.",
+        "The report covers detection, enforcement, CPU, memory, drops and Stage 2 latency.",
+        "A probe measures packet latency through the gateway, with jitter and loss, in every phase.",
+        "A limit ladder raises the packet rate step by step, with small and large packets, to find the peak and loss-free packets per second and Mbit/s.",
+        "All results come from the simulated lab environment."
+      ]
+    }
+  ]
+}
