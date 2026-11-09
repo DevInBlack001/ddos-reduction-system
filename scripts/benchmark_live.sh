@@ -21,6 +21,11 @@
 # from an earlier run cannot change a later run's results. If the script is
 # interrupted, an exit trap performs the same rollback.
 #
+# With LATENCY_PROBE_TARGET set it also measures packet latency through the
+# gateway in every phase, and with LIMIT_STEPS_PPS set it ends each run with a
+# ladder of rising packet rates that finds the gateway's throughput and
+# bandwidth limits (see the example config).
+#
 # Per phase and per backend it records: traffic and throughput (packets and
 # bits per second, from the capture counters and from the network interface),
 # packets dropped at capture and by the firewall, CPU (per service and
@@ -107,6 +112,22 @@ source "$CONFIG"
 : "${NORMAL_SOURCE_FILE:=}"
 : "${FLASHCROWD_SOURCE_FILE:=}"
 : "${IDLE_INGRESS_MAX_PPS:=300}"
+: "${LATENCY_PROBE_TARGET:=}"
+: "${LATENCY_PROBE_HOST:=${NORMAL_HOST:-}}"
+: "${LATENCY_PROBE_SSH_KEY:=${NORMAL_SSH_KEY:-}}"
+: "${LATENCY_PROBE_INTERVAL_SECS:=0.2}"
+: "${LIMIT_STEPS_PPS:=}"
+: "${LIMIT_PROFILES:=small large}"
+: "${LIMIT_PAYLOAD_small:=0}"
+: "${LIMIT_PAYLOAD_large:=1400}"
+: "${LIMIT_STEP_SECS:=30}"
+: "${LIMIT_GAP_SECS:=20}"
+: "${LIMIT_HOST:=${ATTACK_HOST:-}}"
+: "${LIMIT_SSH_KEY:=${ATTACK_SSH_KEY:-}}"
+: "${LIMIT_HOST_2:=}"
+: "${LIMIT_SSH_KEY_2:=}"
+: "${LIMIT_START_CMD:=}"
+: "${LIMIT_STOP_CMD:=}"
 
 # The generator start and stop commands are shell you wrote, run over SSH on
 # the generator hosts, and this file is sourced as shell, so keep it out of
@@ -157,12 +178,39 @@ validate_config() {
             [[ "$mode" =~ ^[a-z0-9_]{1,20}$ ]] || config_error "$name holds '$mode', names use lowercase letters, digits and underscores"
         done
     done
-    for name in NORMAL_HOST NORMAL_HOST_2 FLASHCROWD_HOST FLASHCROWD_HOST_2 ATTACK_HOST; do
+    for name in NORMAL_HOST NORMAL_HOST_2 FLASHCROWD_HOST FLASHCROWD_HOST_2 ATTACK_HOST \
+                LATENCY_PROBE_HOST LIMIT_HOST LIMIT_HOST_2; do
         [ -z "${!name:-}" ] || check_value "$name" "${!name}" "$host_re"
     done
-    for name in NORMAL_SSH_KEY NORMAL_SSH_KEY_2 FLASHCROWD_SSH_KEY FLASHCROWD_SSH_KEY_2 ATTACK_SSH_KEY; do
+    for name in NORMAL_SSH_KEY NORMAL_SSH_KEY_2 FLASHCROWD_SSH_KEY FLASHCROWD_SSH_KEY_2 ATTACK_SSH_KEY \
+                LATENCY_PROBE_SSH_KEY LIMIT_SSH_KEY LIMIT_SSH_KEY_2; do
         [ -z "${!name:-}" ] || check_value "$name" "${!name}" "$key_re"
     done
+    if [ -n "$LATENCY_PROBE_TARGET" ]; then
+        check_value LATENCY_PROBE_TARGET "$LATENCY_PROBE_TARGET" '^[0-9A-Fa-f:.]{2,45}$'
+        check_value LATENCY_PROBE_INTERVAL_SECS "$LATENCY_PROBE_INTERVAL_SECS" '^[0-9]{1,3}(\.[0-9]{1,3})?$'
+        [ -n "$LATENCY_PROBE_HOST" ] && [ -n "$LATENCY_PROBE_SSH_KEY" ] \
+            || config_error "LATENCY_PROBE_TARGET needs LATENCY_PROBE_HOST and LATENCY_PROBE_SSH_KEY (or NORMAL_HOST and NORMAL_SSH_KEY)"
+    fi
+    if [ -n "$LIMIT_STEPS_PPS" ]; then
+        check_value LIMIT_STEPS_PPS "$LIMIT_STEPS_PPS" '^([0-9]{1,9}|max)( ([0-9]{1,9}|max))*$'
+        for name in LIMIT_STEP_SECS LIMIT_GAP_SECS; do
+            check_value "$name" "${!name}" '^[0-9]{1,5}$'
+        done
+        [ "$LIMIT_STEP_SECS" -ge 10 ] || config_error "LIMIT_STEP_SECS must be at least 10, the sampler needs several samples a step"
+        for mode in $LIMIT_PROFILES; do
+            check_value LIMIT_PROFILES "$mode" '^[a-z0-9]{1,10}$'
+            name="LIMIT_PAYLOAD_$mode"
+            [ -n "${!name:-}" ] || config_error "$name is not set, every profile in LIMIT_PROFILES needs a payload size in bytes"
+            check_value "$name" "${!name}" '^[0-9]{1,5}$'
+        done
+        [ -n "$LIMIT_PROFILES" ] || config_error "LIMIT_PROFILES is empty"
+        [ -n "$LIMIT_HOST" ] && [ -n "$LIMIT_SSH_KEY" ] \
+            || config_error "LIMIT_STEPS_PPS needs LIMIT_HOST and LIMIT_SSH_KEY (or ATTACK_HOST and ATTACK_SSH_KEY)"
+        [ -z "$LIMIT_HOST_2" ] || [ -n "$LIMIT_SSH_KEY_2" ] || config_error "LIMIT_HOST_2 needs LIMIT_SSH_KEY_2"
+        [ -n "$LIMIT_START_CMD" ] && [ -n "$LIMIT_STOP_CMD" ] \
+            || config_error "LIMIT_STEPS_PPS needs LIMIT_START_CMD and LIMIT_STOP_CMD"
+    fi
 }
 validate_config
 
@@ -382,6 +430,100 @@ stop_system_sampling() {
     log "system-health sampler stopped"
 }
 
+# --- Packet latency through the gateway. A probe on a generator host sends one
+# ICMP echo at a time to LATENCY_PROBE_TARGET, which sits behind the gateway,
+# for the whole run, and logs the round trip. The probe host's clock is
+# compared with the gateway's at the start so the analysis can place each probe
+# in a phase. Off when LATENCY_PROBE_TARGET is empty. ---
+PROBE_LOCAL="$(dirname "$0")/benchmark_latency_probe.sh"
+PROBE_REMOTE="$REMOTE_DIR/latency_probe.sh"
+PROBE_OUT_REMOTE="$REMOTE_DIR/probe_rtt.csv"
+PROBE_PIDFILE="$REMOTE_DIR/latency_probe.pid"
+PROBE_CLOCK_OFFSET=""
+PROBE_RUNNING=0
+start_latency_probe() {
+    [ -n "$LATENCY_PROBE_TARGET" ] || return 0
+    local g1 p g2
+    run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "umask 077; mkdir -p -m 700 '$REMOTE_DIR'; pkill -f '[l]atency_probe.sh' 2>/dev/null; true" >/dev/null 2>&1
+    if ! scp -i "$LATENCY_PROBE_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$PROBE_LOCAL" "$LATENCY_PROBE_HOST:$PROBE_REMOTE" >/dev/null 2>&1; then
+        log "WARNING: could not copy $PROBE_LOCAL to $LATENCY_PROBE_HOST, the latency probe is off for this run"
+        return
+    fi
+    g1=$($GW_SSH "date +%s" 2>/dev/null | tr -d '[:space:]')
+    p=$(run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "date +%s" 2>/dev/null | tr -d '[:space:]')
+    g2=$($GW_SSH "date +%s" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$g1" =~ ^[0-9]+$ && "$p" =~ ^[0-9]+$ && "$g2" =~ ^[0-9]+$ ]]; then
+        PROBE_CLOCK_OFFSET=$(( p - (g1 + g2) / 2 ))
+    else
+        PROBE_CLOCK_OFFSET=0
+        log "WARNING: could not compare the probe host's clock with the gateway's, assuming no offset"
+    fi
+    run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "chmod +x '$PROBE_REMOTE'; nohup '$PROBE_REMOTE' '$LATENCY_PROBE_TARGET' '$LATENCY_PROBE_INTERVAL_SECS' '$PROBE_OUT_REMOTE' >/dev/null 2>&1 & echo \$! > '$PROBE_PIDFILE'" >/dev/null 2>&1
+    PROBE_RUNNING=1
+    log "latency probe started: $LATENCY_PROBE_HOST to $LATENCY_PROBE_TARGET every ${LATENCY_PROBE_INTERVAL_SECS}s (clock offset ${PROBE_CLOCK_OFFSET}s)"
+}
+
+# stop_latency_probe [<run-dir>]: stops the probe and, given a run directory,
+# fetches its log there.
+stop_latency_probe() {
+    [ "$PROBE_RUNNING" -eq 1 ] || return 0
+    run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "kill \$(cat '$PROBE_PIDFILE' 2>/dev/null) 2>/dev/null; pkill -f '[l]atency_probe.sh' 2>/dev/null; true" >/dev/null 2>&1
+    if [ -n "${1:-}" ]; then
+        run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "cat '$PROBE_OUT_REMOTE' 2>/dev/null" > "$1/probe_rtt.csv" 2>/dev/null
+    fi
+    run_remote "$LATENCY_PROBE_HOST" "$LATENCY_PROBE_SSH_KEY" "rm -f '$PROBE_REMOTE' '$PROBE_OUT_REMOTE' '$PROBE_PIDFILE'" >/dev/null 2>&1
+    PROBE_RUNNING=0
+    log "latency probe stopped"
+}
+
+# --- Gateway limit ladder. After the standard phases, a flood generator
+# (LIMIT_START_CMD, run over SSH on LIMIT_HOST and optionally LIMIT_HOST_2)
+# steps through LIMIT_STEPS_PPS for every profile in LIMIT_PROFILES, one step
+# of LIMIT_STEP_SECS each. A profile is a payload size, so "small" finds the
+# packets per second limit and "large" the bandwidth limit. Before each step
+# both ipsets are emptied and Stage 2 restarts, so blocks from the step before
+# do not change what the next one measures. @PPS@ (this host's share of the
+# step's rate, or max), @PAYLOAD@ and @SECS@ in the commands are replaced by
+# validated numbers. ---
+LIMITS_TSV=""
+
+start_limit_generators() {
+    # start_limit_generators <pps share or max> <payload bytes>
+    local cmd="$LIMIT_START_CMD"
+    cmd="${cmd//@PPS@/$1}"; cmd="${cmd//@PAYLOAD@/$2}"; cmd="${cmd//@SECS@/$((LIMIT_STEP_SECS + 5))}"
+    run_remote "$LIMIT_HOST" "$LIMIT_SSH_KEY" "$cmd"
+    if [ -n "$LIMIT_HOST_2" ]; then run_remote "$LIMIT_HOST_2" "$LIMIT_SSH_KEY_2" "$cmd"; fi
+}
+
+stop_limit_generators() {
+    run_remote "$LIMIT_HOST" "$LIMIT_SSH_KEY" "$LIMIT_STOP_CMD"
+    if [ -n "$LIMIT_HOST_2" ]; then run_remote "$LIMIT_HOST_2" "$LIMIT_SSH_KEY_2" "$LIMIT_STOP_CMD"; fi
+}
+
+run_limit_ladder() {
+    [ -n "$LIMIT_STEPS_PPS" ] || return 0
+    local profile pps payload gens=1 share name
+    [ -z "$LIMIT_HOST_2" ] || gens=2
+    stop_all_generators
+    mark_phase "limit_gap_begin"
+    for profile in $LIMIT_PROFILES; do
+        name="LIMIT_PAYLOAD_$profile"; payload="${!name}"
+        log "--- Gateway limit ladder: $profile packets ($payload byte payload) ---"
+        for pps in $LIMIT_STEPS_PPS; do
+            $GW_SSH "$HELPER_REMOTE reset-enforcement $STAGE2_UNIT $BLOCKLIST_SET $RATELIMIT_SET" >/dev/null 2>&1
+            sleep "$LIMIT_GAP_SECS"
+            if [ "$pps" = max ]; then share=max; else share=$(( pps / gens )); [ "$share" -ge 1 ] || share=1; fi
+            log "Limit step $profile at $pps packets/s for ${LIMIT_STEP_SECS}s"
+            start_limit_generators "$share" "$payload"
+            mark_phase "limit_${profile}_${pps}"
+            printf 'limit_%s_%s\t%s\t%s\t%s\t%s\n' "$profile" "$pps" "$profile" "$pps" "$payload" "$gens" >> "$LIMITS_TSV"
+            sleep "$LIMIT_STEP_SECS"
+            stop_limit_generators
+            mark_phase "limit_gap_${profile}_${pps}"
+        done
+    done
+}
+
 # --- Capture mode switching and rollback. The gateway side of this is
 # benchmark_mode_switch.sh; every timestamp it records comes from the
 # gateway's own clock. ---
@@ -446,6 +588,8 @@ cleanup() {
         stop_normal >/dev/null 2>&1
         stop_flashcrowd >/dev/null 2>&1
         stop_attack >/dev/null 2>&1
+        [ -z "$LIMIT_STEPS_PPS" ] || stop_limit_generators >/dev/null 2>&1
+        stop_latency_probe >/dev/null 2>&1
         stop_system_sampling >/dev/null 2>&1
         do_rollback "$SESSION_DIR/rollback_emergency"
     fi
@@ -608,6 +752,8 @@ run_session() {
     : > "$FIREWALL_TSV"
     VARIANTS_TSV="$dir/traffic_variants.tsv"
     : > "$VARIANTS_TSV"
+    LIMITS_TSV="$dir/limits.tsv"
+    : > "$LIMITS_TSV"
     normal_on=0; flashcrowd_on=0; attack_on=0
     NORMAL_STARTS=0; FLASHCROWD_STARTS=0; ATTACK_STARTS=0
     RUNNING_NORMAL=""; RUNNING_FLASHCROWD=""; RUNNING_ATTACK=""
@@ -618,6 +764,7 @@ run_session() {
     log "Targets: $TARGET_IPS"
     mark_phase "session_start"
     start_system_sampling
+    start_latency_probe
 
     log "--- Warm-up stage: Normal traffic, warm-up, and calibration ---"
     goto_phase "warmup" 1 0 0
@@ -653,6 +800,10 @@ run_session() {
         echo "attack_variants=$(get_var ATTACK_VARIANTS default)"
         echo "attack_sweep_secs=$ATTACK_SWEEP_SECS"
         echo "calibrate=$CALIBRATE"
+        echo "probe_target=$LATENCY_PROBE_TARGET"
+        echo "probe_clock_offset_secs=$PROBE_CLOCK_OFFSET"
+        echo "limit_steps_pps=$LIMIT_STEPS_PPS"
+        echo "limit_profiles=$([ -n "$LIMIT_STEPS_PPS" ] && echo "$LIMIT_PROFILES")"
     } > "$dir/run_info.txt"
 
     log "--- Phase 1: Normal ---"
@@ -694,8 +845,11 @@ run_session() {
         run_attack_sweep
     fi
 
+    run_limit_ladder
+
     log "--- Stopping all traffic ---"
     stop_all_generators
+    stop_latency_probe "$dir"
     stop_system_sampling
     mark_phase "session_end"
 

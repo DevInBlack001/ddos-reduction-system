@@ -362,5 +362,158 @@ class EgressStallTests(unittest.TestCase):
         self.assertIsNone(bench.egress_stall_share(rows, "2026-09-19 08:00:00", "2026-09-19 08:01:00"))
 
 
+class ProbeMetricTests(unittest.TestCase):
+    START, END = "2026-09-19 08:00:00", "2026-09-19 08:00:10"
+    EPOCH = 1789804800
+
+    def test_percentiles_use_the_nearest_rank(self):
+        values = [float(v) for v in range(1, 101)]
+        self.assertEqual(bench.percentile(values, 95), 95.0)
+        self.assertEqual(bench.percentile(values, 50), 50.0)
+        self.assertEqual(bench.percentile([4.0], 99), 4.0)
+
+    def test_probe_figures_cover_only_the_phase_window(self):
+        samples = [(self.EPOCH - 1, 90.0)] + [(self.EPOCH + i, 1.0 + i) for i in range(10)] + [(self.EPOCH + 10, 90.0)]
+        probe = bench.probe_metrics(samples, self.START, self.END)
+        self.assertEqual(probe["sent"], 10)
+        self.assertAlmostEqual(probe["mean_ms"], 5.5)
+        self.assertEqual(probe["max_ms"], 10.0)
+        self.assertAlmostEqual(probe["jitter_ms"], 1.0)
+
+    def test_lost_probes_count_toward_loss_and_not_toward_latency(self):
+        samples = [(self.EPOCH + i, None if i % 2 else 2.0) for i in range(10)]
+        probe = bench.probe_metrics(samples, self.START, self.END)
+        self.assertEqual(probe["lost"], 5)
+        self.assertAlmostEqual(probe["loss_pct"], 50.0)
+        self.assertAlmostEqual(probe["mean_ms"], 2.0)
+
+    def test_the_probe_clock_offset_moves_the_window(self):
+        samples = [(self.EPOCH + 100 + i, 3.0) for i in range(10)]
+        self.assertIsNone(bench.probe_metrics(samples, self.START, self.END))
+        probe = bench.probe_metrics(samples, self.START, self.END, offset_secs=100.0)
+        self.assertEqual(probe["sent"], 10)
+
+    def test_a_phase_with_every_probe_lost_reports_loss_without_latency(self):
+        samples = [(self.EPOCH + i, None) for i in range(5)]
+        probe = bench.probe_metrics(samples, self.START, self.END)
+        self.assertEqual(probe["loss_pct"], 100.0)
+        self.assertNotIn("mean_ms", probe)
+
+    def test_too_few_probes_give_no_figures(self):
+        self.assertIsNone(bench.probe_metrics([(self.EPOCH, 1.0)], self.START, self.END))
+
+    def test_probe_rows_that_are_not_numbers_are_skipped(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "probe_rtt.csv"), "w") as f:
+                f.write("epoch,rtt_ms\n1789804800,0.5\n1789113601,\nbad,1\n1789113602,x\n")
+            self.assertEqual(bench.load_probe_samples(d), [(1789804800, 0.5), (1789113601, None)])
+
+
+def step_phase(pps, mbps, captured, dropped=0, errors=0, probe_loss=0.0):
+    return {"network": {"ingress_pps": pps, "ingress_mbps": mbps, "egress_pps": pps / 2,
+                        "egress_mbps": mbps / 2, "nic_rx_dropped": dropped, "nic_rx_errors": errors},
+            "captured_pps": captured, "probe": {"loss_pct": probe_loss, "mean_ms": 0.4, "p95_ms": 0.9}}
+
+
+class LimitSummaryTests(unittest.TestCase):
+    LADDER = [("limit_small_10000", "small", 10000, 0, 1),
+              ("limit_small_50000", "small", 50000, 0, 1),
+              ("limit_small_max", "small", None, 0, 1)]
+
+    def test_limit_phase_names_are_recognised_as_attack_phases(self):
+        self.assertEqual(bench.phase_info("limit_small_50000"), (True, True, False, None))
+        self.assertEqual(bench.phase_info("limit_large_max"), (True, True, False, None))
+        self.assertFalse(bench.phase_info("limit_gap_small_50000")[0])
+
+    def test_the_loss_free_figure_stops_at_the_first_step_with_loss(self):
+        phases = {"limit_small_10000": step_phase(10000, 5.0, 10000),
+                  "limit_small_50000": step_phase(49000, 25.0, 40000),
+                  "limit_small_max": step_phase(120000, 60.0, 120000)}
+        small = bench.summarize_limits(phases, self.LADDER)["small"]
+        self.assertEqual(small["loss_free_pps"], 10000)
+        self.assertEqual(small["loss_free_phase"], "limit_small_10000")
+        self.assertEqual(small["first_loss_phase"], "limit_small_50000")
+        self.assertIn("capture saw", small["first_loss_reasons"][0])
+
+    def test_peak_figures_come_from_the_whole_ladder(self):
+        phases = {"limit_small_10000": step_phase(10000, 5.0, 10000),
+                  "limit_small_50000": step_phase(49000, 25.0, 49000),
+                  "limit_small_max": step_phase(120000, 60.0, 90000, dropped=500)}
+        small = bench.summarize_limits(phases, self.LADDER)["small"]
+        self.assertEqual(small["peak_pps"], 120000)
+        self.assertEqual(small["peak_mbps"], 60.0)
+        self.assertEqual(small["peak_capture_pps"], 90000)
+        self.assertEqual(small["loss_free_pps"], 49000)
+
+    def test_nic_drops_and_probe_loss_each_end_the_loss_free_range(self):
+        dropped = bench.limit_step(step_phase(10000, 5.0, 10000, dropped=3), 10000, 99.0, 1.0)
+        self.assertFalse(dropped["loss_free"])
+        lossy = bench.limit_step(step_phase(10000, 5.0, 10000, probe_loss=4.0), 10000, 99.0, 1.0)
+        self.assertFalse(lossy["loss_free"])
+        self.assertIn("probes lost", lossy["loss_reasons"][0])
+
+    def test_the_thresholds_can_be_loosened(self):
+        step = step_phase(10000, 5.0, 9600)
+        self.assertFalse(bench.limit_step(step, 10000, 99.0, 1.0)["loss_free"])
+        self.assertTrue(bench.limit_step(step, 10000, 95.0, 1.0)["loss_free"])
+
+    def test_a_step_without_interface_counters_is_not_called_loss_free(self):
+        step = bench.limit_step({"network": {}}, 10000, 99.0, 1.0)
+        self.assertIsNone(step["loss_free"])
+
+    def test_a_ladder_row_without_a_phase_is_left_out(self):
+        phases = {"limit_small_10000": step_phase(10000, 5.0, 10000)}
+        small = bench.summarize_limits(phases, self.LADDER)["small"]
+        self.assertEqual(len(small["steps"]), 1)
+
+    def test_a_ladder_file_is_read_into_steps_with_max_as_no_target(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "limits.tsv"), "w") as f:
+                f.write("limit_small_5000\tsmall\t5000\t0\t2\nlimit_small_max\tsmall\tmax\t0\t2\nbroken\n")
+            self.assertEqual(bench.load_limits(d), [("limit_small_5000", "small", 5000, 0, 2),
+                                                    ("limit_small_max", "small", None, 0, 2)])
+
+
+class LimitRunTests(unittest.TestCase):
+    def test_a_run_directory_with_a_probe_and_a_ladder_is_summarised_end_to_end(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            def write(name, text):
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(text)
+            write("phase_boundaries.tsv",
+                  "session_start\t2026-09-19 08:00:00.000000\n"
+                  "limit_small_10000\t2026-09-19 08:00:00.000000\n"
+                  "limit_small_max\t2026-09-19 08:00:20.000000\n"
+                  "session_end\t2026-09-19 08:00:40.000000\n")
+            write("stage1.log", "")
+            write("stage2.log", "")
+            write("run_info.txt", "mode=kernel\nrun=1\nprobe_clock_offset_secs=2\n")
+            write("limits.tsv", "limit_small_10000\tsmall\t10000\t0\t1\nlimit_small_max\tsmall\tmax\t0\t1\n")
+            rows = ["timestamp,ingress_rx_packets,ingress_rx_bytes,ingress_rx_dropped,ingress_rx_errors,"
+                    "egress_tx_packets,egress_tx_bytes,egress_tx_dropped"]
+            for i in range(9):
+                t = i * 5
+                pps = 10000 if t <= 20 else 80000
+                packets = pps * t if t <= 20 else 10000 * 20 + 80000 * (t - 20)
+                rows.append(f"2026-09-19 08:00:{t:02d},{packets},{packets * 100},0,0,{packets // 2},{packets * 50},0"
+                            if t < 60 else "")
+            write("system_samples.csv", "\n".join(r for r in rows if r) + "\n")
+            probe = ["epoch,rtt_ms"]
+            start = 1789804800 + 2
+            probe += [f"{start + i},0.5" for i in range(20)]
+            probe += [f"{start + 20 + i},{'' if i % 2 else '5.0'}" for i in range(20)]
+            write("probe_rtt.csv", "\n".join(probe) + "\n")
+            result = bench.analyze_run(d)
+        small = result["limits"]["small"]
+        self.assertEqual([s["target_pps"] for s in small["steps"]], [10000, None])
+        self.assertAlmostEqual(small["steps"][0]["probe_mean_ms"], 0.5)
+        self.assertAlmostEqual(small["steps"][1]["probe_loss_pct"], 50.0)
+        self.assertEqual(small["loss_free_phase"], "limit_small_10000")
+        self.assertEqual(small["first_loss_phase"], "limit_small_max")
+
+
 if __name__ == "__main__":
     unittest.main()

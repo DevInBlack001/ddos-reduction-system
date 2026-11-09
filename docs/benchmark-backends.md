@@ -40,6 +40,8 @@ comparison:
 | `ATTACK_SOURCE_FILE`, `ATTACK_SOURCES_MIN`, `ATTACK_SOURCES_MAX` | empty, `30`, `40` | The run counts the addresses in this file on the attack host and stops outside the range. |
 | `IDLE_INGRESS_MAX_PPS` | `300` | Before anything runs every generator is stopped, and the run refuses to start if the ingress interface (`INGRESS_IFACE`) carries more than this many packets a second. |
 | `CALIBRATE`, `CALIBRATE_WINDOWS`, `CALIBRATE_TIMEOUT_MINS` | `off`, `1000`, `30` | Runs `scripts/calibrate.py` during each run's warm-up stage. `off`, `measure` or `apply`. See [Calibration](#calibration-during-the-warm-up-stage). |
+| `LATENCY_PROBE_TARGET`, `LATENCY_PROBE_HOST`, `LATENCY_PROBE_INTERVAL_SECS` | empty, `NORMAL_HOST`, `0.2` | Turns on the packet latency probe. See [Packet latency through the gateway](#packet-latency-through-the-gateway). |
+| `LIMIT_STEPS_PPS`, `LIMIT_PROFILES`, `LIMIT_PAYLOAD_<profile>`, `LIMIT_STEP_SECS`, `LIMIT_GAP_SECS`, `LIMIT_START_CMD`, `LIMIT_STOP_CMD`, `LIMIT_HOST`, `LIMIT_HOST_2` | empty, `small large`, `0` and `1400`, `30`, `20` | Turns on the gateway limit ladder. See [Gateway limit ladder](#gateway-limit-ladder). |
 | `REMOTE_DIR` | `/root/.flod_benchmark` | Root only directory on the gateway for the helper scripts and their output. |
 | `INGRESS_IFACE`, `EGRESS_IFACE` | empty | Interfaces whose kernel counters the sampler reads. Empty skips the interface figures. |
 | `BASELINE_DIR` | `/var/lib/ddos_stage1` | Where each run's own baseline file lives. |
@@ -187,6 +189,8 @@ flagged windows and are not a sample of all traffic.
 | CPU | Per service from `/proc/<pid>/stat`, and system wide from `/proc/stat`: busy, in the kernel, and in softirq. The kernel backend counts packets in XDP under softirq, which no per process figure attributes to Stage 1, so the system wide figures carry the comparison. |
 | Context switches | Voluntary and involuntary per service, summed over its threads from `/proc/<pid>/task/*/status`, and system wide from `/proc/stat`. |
 | Memory | Resident set size per service. |
+| Packet latency through the gateway | Round trip time of ICMP probes from a generator host to a target behind the gateway, per phase: mean, p50, p95, p99, maximum, jitter and loss. |
+| Gateway limits | Per ladder step: interface packets per second and Mbit/s, capture backend packets per second, NIC drops, system CPU, probe latency and loss. Per profile: the peak rates and the highest loss-free step. |
 | Inference latency | Stage 2's own timing of building the feature frame and running the RandomForest, and the Isolation Forest where it applies, for one window. |
 | Window handoff latency | From the sensor's window close timestamp to Stage 2 receiving the vector. |
 | Enforcement latency | The time one block or rate limit call takes, and the time from window close to the rule being in place. |
@@ -209,6 +213,50 @@ Latency: summary | interval_secs=30 | handoff_n=30 handoff_mean_ms=0.412 handoff
 The report merges the intervals inside each phase. Means are weighted by sample
 count. Percentiles cannot be merged exactly, so the p95 shown is the worst
 interval's p95 and the maximum is the largest seen.
+
+## Packet latency through the gateway
+
+Stage 2 latency (above) times work inside the service. The probe times what a
+packet experiences. With `LATENCY_PROBE_TARGET` set to an address behind the
+gateway, `scripts/benchmark_latency_probe.sh` runs on `LATENCY_PROBE_HOST` for the
+whole run and sends one ICMP echo at a time every `LATENCY_PROBE_INTERVAL_SECS`.
+The run fetches `probe_rtt.csv` and records the probe host's clock offset from the
+gateway (measured at the start, accurate to about a second) so each probe lands in
+the right phase. The report adds mean, p50, p95, p99, maximum, jitter and loss per
+phase and puts mean, p95, jitter and loss in the backend comparison. A probe that
+gets no answer within one second counts as lost. The attack phases also show how
+much the firewall's drops and the load itself add to the delay a legitimate packet
+sees.
+
+## Gateway limit ladder
+
+With `LIMIT_STEPS_PPS` set, each run ends with a ladder after the standard phases
+and the sweep. For every profile in `LIMIT_PROFILES` and every rate in
+`LIMIT_STEPS_PPS`, `LIMIT_START_CMD` runs on `LIMIT_HOST` (and `LIMIT_HOST_2`, which
+splits each step's rate) for `LIMIT_STEP_SECS`. `max` is an unpaced flood. A profile is
+a payload size: `small` (no payload) finds the packets per second limit and `large`
+(1,400 bytes) the bandwidth limit. Before each step both ipsets are emptied and
+Stage 2 restarts, then the script waits `LIMIT_GAP_SECS`, so one step's blocks do not
+change the next. `scripts/benchmark_limit_flood.sh` is a generator for it
+(hping3 SYN packets from several workers, spoofed from the source file). The ladder
+pushes the gateway as hard as the generators can and the sensor sees the flood as
+an attack, so run it only on a lab gateway.
+
+Each step is a phase named `limit_<profile>_<pps>` and is measured like any other,
+and `limits.tsv` records the ladder. The report lists every step and, per profile:
+
+- **Peak:** the highest interface packets per second, Mbit/s in and out, and
+  capture backend packets per second over the ladder.
+- **Highest loss-free step:** the last step of the unbroken run of loss-free steps
+  from the bottom of the ladder. A step is loss-free when the NIC reports no rx drops
+  or errors, the capture backend saw at least 99% of the interface's packets
+  (`--zero-loss-capture-pct`) and at most 1% of probes were lost
+  (`--zero-loss-probe-pct`). Both thresholds are starting points, not proven values.
+- **First step with loss** and the reason.
+
+The backend comparison puts the peak and loss-free figures side by side. The
+ladder has not run yet in the simulated lab environment, so this page holds no
+limit figures.
 
 ## Reading the results
 

@@ -285,6 +285,120 @@ class BenchmarkLiveConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("Config error: ATTACK_SOURCE_FILE", result.stderr)
 
+    LIMIT_OK = (
+        'ATTACK_HOST="root@198.51.100.10"\nATTACK_SSH_KEY="/home/user/.ssh/key"\n'
+        'LIMIT_STEPS_PPS="5000 20000 max"\n'
+        'LIMIT_START_CMD="run @PPS@ @PAYLOAD@ @SECS@"\nLIMIT_STOP_CMD="stop"\n'
+    )
+
+    def test_a_probe_target_with_shell_characters_is_rejected(self):
+        result = self.run_live('NORMAL_HOST="root@198.51.100.10"\nNORMAL_SSH_KEY="/k"\n'
+                               'LATENCY_PROBE_TARGET="192.0.2.10; id"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Config error: LATENCY_PROBE_TARGET", result.stderr)
+
+    def test_a_probe_without_a_host_to_run_on_is_rejected(self):
+        result = self.run_live('LATENCY_PROBE_TARGET="192.0.2.10"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LATENCY_PROBE_HOST", result.stderr)
+
+    def test_a_limit_step_that_is_not_a_number_or_max_is_rejected(self):
+        result = self.run_live(self.LIMIT_OK + 'LIMIT_STEPS_PPS="5000 fast"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Config error: LIMIT_STEPS_PPS", result.stderr)
+
+    def test_a_limit_step_shorter_than_ten_seconds_is_rejected(self):
+        result = self.run_live(self.LIMIT_OK + 'LIMIT_STEP_SECS=5\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LIMIT_STEP_SECS must be at least 10", result.stderr)
+
+    def test_a_limit_profile_without_a_payload_size_is_rejected(self):
+        result = self.run_live(self.LIMIT_OK + 'LIMIT_PROFILES="small jumbo"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LIMIT_PAYLOAD_jumbo is not set", result.stderr)
+
+    def test_a_limit_payload_with_shell_characters_is_rejected(self):
+        result = self.run_live(self.LIMIT_OK + 'LIMIT_PAYLOAD_large="1400; id"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Config error: LIMIT_PAYLOAD_large", result.stderr)
+
+    def test_a_ladder_without_generator_commands_is_rejected(self):
+        result = self.run_live('ATTACK_HOST="root@198.51.100.10"\nATTACK_SSH_KEY="/k"\nLIMIT_STEPS_PPS="5000"\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LIMIT_START_CMD", result.stderr)
+
+    def test_a_valid_ladder_passes_validation_and_stops_later_at_the_missing_gateway(self):
+        result = self.run_live(self.LIMIT_OK)
+        self.assertNotIn("Config error", result.stderr)
+
+
+FLOOD = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "benchmark_limit_flood.sh"))
+PROBE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "benchmark_latency_probe.sh"))
+
+
+class BenchmarkLimitFloodTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.targets = os.path.join(self.dir, "targets.txt")
+        self.sources = os.path.join(self.dir, "sources.txt")
+        with open(self.targets, "w") as handle:
+            handle.write("192.0.2.10\n192.0.2.11\n\n")
+        with open(self.sources, "w") as handle:
+            handle.write("198.51.100.1\n198.51.100.2\n198.51.100.3\n")
+
+    def dry_run(self, pps, payload="0", secs="30", workers="4"):
+        env = dict(os.environ, LIMIT_FLOOD_DRY_RUN="1", LIMIT_FLOOD_WORKERS=workers)
+        return subprocess.run(["bash", FLOOD, pps, payload, secs, self.targets, self.sources],
+                              capture_output=True, text=True, timeout=30, env=env)
+
+    def test_a_paced_step_splits_the_rate_over_the_workers(self):
+        result = self.dry_run("40000")
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(all("-i u100 " in line for line in lines))
+
+    def test_a_max_step_sends_unpaced(self):
+        lines = self.dry_run("max", payload="1400").stdout.strip().splitlines()
+        self.assertTrue(all("--flood" in line and "-d 1400" in line for line in lines))
+
+    def test_workers_take_the_next_source_and_target_in_turn(self):
+        lines = self.dry_run("1000", workers="3").stdout.strip().splitlines()
+        self.assertIn("-a 198.51.100.1 ", lines[0])
+        self.assertIn("-a 198.51.100.3 ", lines[2])
+        self.assertTrue(lines[0].endswith("192.0.2.10"))
+        self.assertTrue(lines[1].endswith("192.0.2.11"))
+        self.assertTrue(lines[2].endswith("192.0.2.10"))
+
+    def test_the_step_length_is_enforced_with_a_timeout(self):
+        self.assertTrue(self.dry_run("1000", secs="35").stdout.startswith("timeout 35 hping3 "))
+
+    def test_a_rate_that_is_not_a_number_or_max_is_refused(self):
+        result = self.dry_run("1000; id")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid pps", result.stderr)
+
+    def test_an_empty_targets_file_is_refused(self):
+        open(self.targets, "w").close()
+        result = self.dry_run("1000")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no targets", result.stderr)
+
+
+class BenchmarkLatencyProbeTests(unittest.TestCase):
+    def test_a_target_with_shell_characters_is_refused(self):
+        result = subprocess.run(["sh", PROBE, "192.0.2.10;id", "0.2", "/dev/null"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid target", result.stderr)
+
+    def test_an_interval_that_is_not_a_number_is_refused(self):
+        result = subprocess.run(["sh", PROBE, "192.0.2.10", "fast", "/dev/null"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid interval", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

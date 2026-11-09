@@ -14,11 +14,15 @@ actually forwarded to Stage 2 (anomaly-or-heartbeat windows), which is a
 narrower view with a different denominator.
 
 Usage: python3 scripts/analyze_live_benchmark.py <session-or-run-dir>
+       [--zero-loss-capture-pct N] [--zero-loss-probe-pct N]
 A run directory holds stage1.log, stage2.log, firewall.log,
 phase_boundaries.tsv, and optionally system_samples.csv, clk_tck.txt,
-firewall_counters.tsv, mode_switch.txt, and run_info.txt.
+firewall_counters.tsv, mode_switch.txt, run_info.txt, probe_rtt.csv (latency probe),
+and limits.tsv (limit ladder).
 """
 
+import argparse
+import calendar
 import csv
 import json
 import os
@@ -41,6 +45,11 @@ ATTACK_PHASES = ("attacker", "normal_attacker", "flashcrowd_attacker", "all_thre
 # already running from the previous phase.
 FRESH_ATTACK_PHASES = ("attacker", "normal_attacker")
 SWEEP_RE = re.compile(r"^(attacker|normal_attacker)_([a-z0-9_]{1,20})$")
+LIMIT_RE = re.compile(r"^limit_([a-z0-9]{1,10})_(\d{1,9}|max)$")
+# Defaults for what counts as loss-free in a limit step. Starting points, set
+# with --zero-loss-capture-pct and --zero-loss-probe-pct.
+ZERO_LOSS_CAPTURE_PCT = 99.0
+ZERO_LOSS_PROBE_PCT = 1.0
 BIN_SECS = 10
 # Older than this, a boundary sample of a cumulative counter is treated as
 # missing. The status lines come every 5 seconds while packets flow.
@@ -63,6 +72,8 @@ def phase_info(name):
     """
     if name in PHASE_ORDER:
         return True, name in ATTACK_PHASES, name in FRESH_ATTACK_PHASES, None
+    if LIMIT_RE.match(name):
+        return True, True, False, None
     m = SWEEP_RE.match(name)
     if m:
         return True, True, m.group(1) == "attacker", m.group(2)
@@ -413,6 +424,156 @@ def network_metrics(samples, start_ts, end_ts):
     return metrics
 
 
+def ts_epoch(ts):
+    """Seconds since the epoch for a gateway UTC timestamp."""
+    dt = to_dt(ts)
+    return calendar.timegm(dt.timetuple()) + dt.microsecond / 1e6
+
+
+def load_probe_samples(run_dir):
+    """[(epoch on the probe host's clock, round trip in ms or None if lost)]."""
+    path = os.path.join(run_dir, "probe_rtt.csv")
+    samples = []
+    if not os.path.exists(path):
+        return samples
+    with open(path) as f:
+        for row in csv.reader(f):
+            if len(row) < 2 or not row[0].strip().isdigit():
+                continue
+            try:
+                rtt = float(row[1]) if row[1].strip() else None
+            except ValueError:
+                continue
+            samples.append((int(row[0]), rtt))
+    return samples
+
+
+def percentile(sorted_values, pct):
+    """Nearest rank percentile of an ascending list."""
+    rank = max(1, -(-len(sorted_values) * pct // 100))
+    return sorted_values[int(rank) - 1]
+
+
+def probe_metrics(samples, start_ts, end_ts, offset_secs=0.0):
+    """Round trip time and loss of the probe packets sent in one phase.
+
+    offset_secs is the probe host's clock minus the gateway's, so probe
+    timestamps line up with the gateway's phase boundaries.
+    """
+    low = ts_epoch(start_ts) + offset_secs
+    high = ts_epoch(end_ts) + offset_secs
+    rtts = [rtt for epoch, rtt in samples if low <= epoch < high]
+    if len(rtts) < 3:
+        return None
+    received = [r for r in rtts if r is not None]
+    result = {"sent": len(rtts), "lost": len(rtts) - len(received),
+              "loss_pct": 100.0 * (len(rtts) - len(received)) / len(rtts)}
+    if received:
+        ordered = sorted(received)
+        result.update({
+            "min_ms": ordered[0], "mean_ms": sum(received) / len(received),
+            "p50_ms": percentile(ordered, 50), "p95_ms": percentile(ordered, 95),
+            "p99_ms": percentile(ordered, 99), "max_ms": ordered[-1],
+            "jitter_ms": (sum(abs(b - a) for a, b in zip(received, received[1:])) / (len(received) - 1)
+                          if len(received) > 1 else 0.0),
+        })
+    return result
+
+
+def load_limits(run_dir):
+    """Ladder rows from limits.tsv: (phase, profile, target pps or None for max, payload bytes, generators)."""
+    path = os.path.join(run_dir, "limits.tsv")
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 5:
+                continue
+            try:
+                rows.append((parts[0], parts[1], None if parts[2] == "max" else int(parts[2]),
+                             int(parts[3]), int(parts[4])))
+            except ValueError:
+                continue
+    return rows
+
+
+def limit_step(m, target_pps, capture_pct, probe_pct):
+    """One limit step's figures and whether it ran without loss."""
+    net = m.get("network") or {}
+    probe = m.get("probe") or {}
+    step = {
+        "target_pps": target_pps,
+        "ingress_pps": net.get("ingress_pps"), "ingress_mbps": net.get("ingress_mbps"),
+        "egress_pps": net.get("egress_pps"), "egress_mbps": net.get("egress_mbps"),
+        "captured_pps": m.get("captured_pps"),
+        "nic_rx_dropped": net.get("nic_rx_dropped"), "nic_rx_errors": net.get("nic_rx_errors"),
+        "firewall_drop_pps": m.get("firewall_drop_pps"),
+        "stage1_cpu_pct": (m.get("stage1") or {}).get("cpu_pct"),
+        "system_busy_pct": (m.get("system_cpu") or {}).get("busy_pct"),
+        "system_softirq_pct": (m.get("system_cpu") or {}).get("softirq_pct"),
+        "probe_loss_pct": probe.get("loss_pct"), "probe_mean_ms": probe.get("mean_ms"),
+        "probe_p95_ms": probe.get("p95_ms"),
+    }
+    ingress, captured = step["ingress_pps"], step["captured_pps"]
+    step["capture_share_pct"] = 100.0 * captured / ingress if ingress and captured is not None else None
+    if target_pps and ingress is not None:
+        step["achieved_pct"] = 100.0 * ingress / target_pps
+    reasons = []
+    if ingress is None:
+        step["loss_free"] = None
+        step["loss_reasons"] = ["no interface counters"]
+        return step
+    if step["nic_rx_dropped"]:
+        reasons.append(f"{step['nic_rx_dropped']:.0f} NIC rx drops")
+    if step["nic_rx_errors"]:
+        reasons.append(f"{step['nic_rx_errors']:.0f} NIC rx errors")
+    if step["capture_share_pct"] is not None and step["capture_share_pct"] < capture_pct:
+        reasons.append(f"capture saw {step['capture_share_pct']:.1f}% of the interface packets")
+    if step["probe_loss_pct"] is not None and step["probe_loss_pct"] > probe_pct:
+        reasons.append(f"{step['probe_loss_pct']:.1f}% of probes lost")
+    step["loss_free"] = not reasons
+    step["loss_reasons"] = reasons
+    return step
+
+
+def summarize_limits(phases, ladder, capture_pct=ZERO_LOSS_CAPTURE_PCT, probe_pct=ZERO_LOSS_PROBE_PCT):
+    """Per profile: the steps in ladder order, the peak rates, and the highest loss-free step.
+
+    The loss-free figure is the last step of the unbroken run of loss-free
+    steps from the bottom of the ladder, so a lucky clean step above the first
+    failure does not count.
+    """
+    profiles = {}
+    for phase, profile, target, payload, generators in ladder:
+        m = phases.get(phase)
+        if m is None:
+            continue
+        entry = profiles.setdefault(profile, {"payload_bytes": payload, "generators": generators, "steps": []})
+        step = limit_step(m, target, capture_pct, probe_pct)
+        step["phase"] = phase
+        entry["steps"].append(step)
+    for entry in profiles.values():
+        steps = entry["steps"]
+        measured = [s for s in steps if s["ingress_pps"] is not None]
+        entry["peak_pps"] = max((s["ingress_pps"] for s in measured), default=None)
+        entry["peak_mbps"] = max((s["ingress_mbps"] for s in measured if s["ingress_mbps"] is not None), default=None)
+        entry["peak_capture_pps"] = max((s["captured_pps"] for s in steps if s["captured_pps"] is not None), default=None)
+        entry["peak_egress_mbps"] = max((s["egress_mbps"] for s in steps if s["egress_mbps"] is not None), default=None)
+        best = None
+        for s in steps:
+            if not s["loss_free"]:
+                entry["first_loss_phase"] = s["phase"]
+                entry["first_loss_reasons"] = s["loss_reasons"]
+                break
+            best = s
+        entry["loss_free_pps"] = best["ingress_pps"] if best else None
+        entry["loss_free_mbps"] = best["ingress_mbps"] if best else None
+        entry["loss_free_phase"] = best["phase"] if best else None
+    return profiles
+
+
 ANOMALY_RE = re.compile(
     r"ANOMALY window \d+ \[victim=\S+?\] \| flags=0x([0-9a-fA-F]+) \| r=([\d.]+) \(boundary=[\d.]+\) \| "
     r"h=([\d.]+) \(boundary=[\d.]+\) \| proto_ratio=([\d.]+) \| dom_ratio=([\d.]+)"
@@ -558,7 +719,7 @@ def load_firewall_rows(run_dir):
     return rows
 
 
-def analyze_run(run_dir):
+def analyze_run(run_dir, capture_pct=ZERO_LOSS_CAPTURE_PCT, probe_pct=ZERO_LOSS_PROBE_PCT):
     windows = load_phases(run_dir)
     if not windows:
         raise SystemExit(f"[-] No phase boundaries in {run_dir}; did benchmark_live.sh run to completion?")
@@ -577,6 +738,11 @@ def analyze_run(run_dir):
     info = load_key_values(os.path.join(run_dir, "run_info.txt"))
     switch = load_key_values(os.path.join(run_dir, "mode_switch.txt"))
     variants = load_variants(run_dir)
+    probe_samples = load_probe_samples(run_dir)
+    try:
+        probe_offset = float(info.get("probe_clock_offset_secs") or 0)
+    except ValueError:
+        probe_offset = 0.0
 
     phases = {}
     for name, start_ts, end_ts in windows:
@@ -653,9 +819,12 @@ def analyze_run(run_dir):
             if duration > 0:
                 m["firewall_drop_pps"] = m["firewall_dropped"] / duration
         m["latency"] = latency_metrics(s2)
+        if probe_samples:
+            m["probe"] = probe_metrics(probe_samples, start_ts, end_ts, probe_offset)
         phases[name] = m
 
     return {
+        "limits": summarize_limits(phases, load_limits(run_dir), capture_pct, probe_pct),
         "run_dir": run_dir,
         "mode": info.get("mode") or ("kernel" if any(p.get("capture_backend") == "kernel" for p in phases.values()) else "pcap"),
         "run": info.get("run", "1"),
@@ -864,9 +1033,71 @@ def print_run_report(result):
             print("  Stage 2 latency: " + "; ".join(parts))
         else:
             print("  Stage 2 latency: no Latency summary lines (Stage 2 predates the latency log, or no windows arrived)")
+        probe = m.get("probe")
+        if probe and "mean_ms" in probe:
+            print(f"  Packet latency through the gateway: {probe['mean_ms']:.2f} ms mean / {probe['p50_ms']:.2f} p50 / "
+                  f"{probe['p95_ms']:.2f} p95 / {probe['p99_ms']:.2f} p99 / {probe['max_ms']:.2f} max, "
+                  f"jitter {probe['jitter_ms']:.2f} ms, {probe['lost']} of {probe['sent']} probes lost "
+                  f"({probe['loss_pct']:.1f}%)")
+        elif probe:
+            print(f"  Packet latency through the gateway: all {probe['sent']} probes lost")
         print()
 
+    print_limits(result)
     print_switch(result)
+
+
+def print_limits(result):
+    limits = result.get("limits") or {}
+    for profile, entry in limits.items():
+        print(f"--- Gateway limits, {profile} packets ({entry['payload_bytes']} byte payload, "
+              f"{entry['generators']} generator(s), {result['mode']} backend) ---")
+        print(f"  {'target pps':>12}{'interface pps':>15}{'Mbit/s':>10}{'capture pps':>13}{'capture %':>11}"
+              f"{'NIC drops':>11}{'sys CPU %':>11}{'RTT p95 ms':>12}{'probe loss %':>14}  loss free")
+        for s in entry["steps"]:
+            target = "max" if s["target_pps"] is None else f"{s['target_pps']:,}"
+            verdict = {True: "yes", False: "no", None: "n/a"}[s["loss_free"]]
+            print(f"  {target:>12}{fmt(s['ingress_pps'], ',.0f'):>15}{fmt(s['ingress_mbps']):>10}"
+                  f"{fmt(s['captured_pps'], ',.0f'):>13}{fmt(s['capture_share_pct']):>11}"
+                  f"{fmt(s['nic_rx_dropped'], ',.0f'):>11}{fmt(s['system_busy_pct']):>11}"
+                  f"{fmt(s['probe_p95_ms'], '.2f'):>12}{fmt(s['probe_loss_pct']):>14}  {verdict}")
+        print(f"  Peak: {fmt(entry['peak_pps'], ',.0f')} packets/s at the interface, "
+              f"{fmt(entry['peak_mbps'])} Mbit/s in, {fmt(entry['peak_egress_mbps'])} Mbit/s out, "
+              f"{fmt(entry['peak_capture_pps'], ',.0f')} packets/s seen by the capture backend")
+        print(f"  Highest loss-free step: {fmt(entry['loss_free_pps'], ',.0f')} packets/s, "
+              f"{fmt(entry['loss_free_mbps'])} Mbit/s"
+              + (f" ({entry['loss_free_phase']})" if entry.get("loss_free_phase") else ""))
+        if entry.get("first_loss_phase"):
+            print(f"  First step with loss: {entry['first_loss_phase']} ({'; '.join(entry['first_loss_reasons'])})")
+        print()
+
+
+def print_limits_comparison(by_mode, modes):
+    profiles = []
+    for runs in by_mode.values():
+        for r in runs:
+            for p in (r.get("limits") or {}):
+                if p not in profiles:
+                    profiles.append(p)
+    if not profiles:
+        return
+    print("--- Gateway limits by backend ---")
+    for profile in profiles:
+        print(f"  {profile} packets")
+        print(f"    {'':<28}" + "".join(f"{m:>14}" for m in modes))
+        for label, key, spec in (("Peak interface packets/s", "peak_pps", ",.0f"),
+                                 ("Peak capture packets/s", "peak_capture_pps", ",.0f"),
+                                 ("Peak bandwidth in (Mbit/s)", "peak_mbps", ".1f"),
+                                 ("Peak bandwidth out (Mbit/s)", "peak_egress_mbps", ".1f"),
+                                 ("Loss-free packets/s", "loss_free_pps", ",.0f"),
+                                 ("Loss-free bandwidth (Mbit/s)", "loss_free_mbps", ".1f")):
+            cells = []
+            for m in modes:
+                values = [(r.get("limits") or {}).get(profile, {}).get(key) for r in by_mode[m]]
+                values = [v for v in values if v is not None]
+                cells.append(fmt(sum(values) / len(values) if values else None, spec))
+            print(f"    {label:<28}" + "".join(f"{c:>14}" for c in cells))
+    print()
 
 
 def print_switch(result):
@@ -920,6 +1151,11 @@ COMPARISON_METRICS = (
     ("Ingress throughput, interface (Mbit/s)", lambda m: (m.get("network") or {}).get("ingress_mbps"), ".1f"),
     ("Packets/s seen by the capture backend", lambda m: m.get("captured_pps"), ",.0f"),
     ("Egress throughput, interface (packets/s)", lambda m: (m.get("network") or {}).get("egress_pps"), ",.0f"),
+    ("Egress bandwidth, interface (Mbit/s)", lambda m: (m.get("network") or {}).get("egress_mbps"), ".1f"),
+    ("Packet latency through the gateway, mean (ms)", lambda m: (m.get("probe") or {}).get("mean_ms"), ".2f"),
+    ("Packet latency through the gateway, p95 (ms)", lambda m: (m.get("probe") or {}).get("p95_ms"), ".2f"),
+    ("Packet latency jitter (ms)", lambda m: (m.get("probe") or {}).get("jitter_ms"), ".2f"),
+    ("Probe packets lost (%)", lambda m: (m.get("probe") or {}).get("loss_pct"), ".1f"),
     ("Dropped at capture (packets)", lambda m: m.get("capture_dropped"), ",.0f"),
     ("Firewall drops (packets/s)", lambda m: m.get("firewall_drop_pps"), ",.1f"),
     ("Stage 1 CPU (%)", lambda m: (m.get("stage1") or {}).get("cpu_pct"), ".1f"),
@@ -1020,6 +1256,7 @@ def print_comparison(results):
             print(f"  {phase:<22}{cells}{delta}")
         print()
 
+    print_limits_comparison(by_mode, modes)
     print_calibration_comparison(by_mode, modes)
     print_attack_types(by_mode, modes, phases)
     print_agreement(by_mode, modes, phases)
@@ -1244,12 +1481,12 @@ def json_safe(result):
     return trimmed
 
 
-def analyze(directory):
+def analyze(directory, capture_pct=ZERO_LOSS_CAPTURE_PCT, probe_pct=ZERO_LOSS_PROBE_PCT):
     run_dirs = find_runs(directory)
     if not run_dirs:
         raise SystemExit(f"[-] No run directories with phase_boundaries.tsv under {directory}")
     print("=== FLOD Live Benchmark Report ===\n")
-    results = [analyze_run(d) for d in run_dirs]
+    results = [analyze_run(d, capture_pct, probe_pct) for d in run_dirs]
     for r in results:
         print_run_report(r)
         print_calibration(r)
@@ -1274,7 +1511,13 @@ def analyze(directory):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python3 scripts/analyze_live_benchmark.py <session-or-run-dir>")
-        sys.exit(1)
-    analyze(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Report on a session captured by scripts/benchmark_live.sh.")
+    parser.add_argument("directory", help="session directory or a single run directory")
+    parser.add_argument("--zero-loss-capture-pct", type=float, default=ZERO_LOSS_CAPTURE_PCT,
+                        help="a limit step is loss-free only if the capture backend saw at least this share "
+                             f"of the interface packets (default {ZERO_LOSS_CAPTURE_PCT}, a starting point)")
+    parser.add_argument("--zero-loss-probe-pct", type=float, default=ZERO_LOSS_PROBE_PCT,
+                        help="a limit step is loss-free only if at most this share of latency probes was lost "
+                             f"(default {ZERO_LOSS_PROBE_PCT}, a starting point)")
+    args = parser.parse_args()
+    analyze(args.directory, args.zero_loss_capture_pct, args.zero_loss_probe_pct)

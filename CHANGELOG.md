@@ -6,6 +6,21 @@ Notable changes to the FLOD System, starting from this file's introduction at
 in this repository's own contribution conventions: a patch bump is a fix, a
 minor bump adds a feature, milestones are numbered separately from tags.
 
+## Unreleased
+
+### Added
+
+- Live benchmark: packet latency through the gateway. A probe on a generator
+  host sends ICMP echoes to a target behind the gateway for the whole run, and
+  the report gives round trip time (mean, p50, p95, p99, maximum), jitter and
+  loss per phase and in the backend comparison (`LATENCY_PROBE_TARGET`).
+- Live benchmark: a gateway limit ladder (`LIMIT_STEPS_PPS`). Rising packet
+  rates with small and large payloads find the peak packets per second and
+  Mbit/s and the highest loss-free step per backend. The loss-free thresholds
+  are `--zero-loss-capture-pct` and `--zero-loss-probe-pct`. The ladder
+  generator is `scripts/benchmark_limit_flood.sh`.
+- Egress bandwidth in the backend comparison.
+
 ## 1.8.2, 2026-09-29
 
 ### Fixed
