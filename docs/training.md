@@ -605,3 +605,34 @@ removes the setting, and the dashboard then reports "No training CSV is
 configured" and disables Merge. That is the intended behavior for an
 unset path, and it also happens by accident after a plain `update.sh`.
 
+## Portable features
+
+Experimental. By default the models train on raw rate and entropy values, so they
+learn the scale of the network they were captured on. Set `FLOD_FEATURE_SET=portable`
+before `train.py`, `train_isolation_forest.py` and `train_second_model.py` to train
+on baseline-relative features instead:
+
+| Feature | Definition |
+|-|-|
+| `rate_z` | `(ewma_rate - mean_r) / max(sigma_r, floor * mean_r)` |
+| `rate_ratio` | `ewma_rate / mean_r` |
+| `entropy_z` | `(entropy - mean_h) / sigma_h` |
+
+The set also keeps `proto_ratio`, `dominant_ip_ratio`, `source_port_entropy`,
+`ttl_variance` and `fingerprint_diversity`, which do not depend on traffic volume.
+Raw entropy is left out because its range depends on the site's address pool.
+The floor is `FLOD_RATE_Z_FLOOR_FRACTION`, 0.05 by default, a starting point and
+not a proven value. Stage 1's own `sigma_r` floor is an absolute packets per second
+figure, so the relative floor keeps the feature comparable across sites. Rows with a
+non-positive `mean_r`, `sigma_r` or `sigma_h` are dropped and counted, since the
+features divide by them.
+
+Portable models are saved under their own names (`ddos_rf_model_portable.joblib`,
+`ddos_if_model_portable.joblib`, `ddos_gb_model_portable.joblib`), so they never
+overwrite the default ones. Train all three on the same feature set, because the
+automatic labeling agreement check compares two models and needs both on the same
+representation. Stage 2 loads only the default model files today.
+
+`scripts/loso_scaled_validation.py` checks portability: leave one session out, with
+scaling applied only to the held-out session. The feature set has not been validated
+on the current training set yet, so it is not recommended for deployment.

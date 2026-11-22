@@ -474,6 +474,16 @@ as a later validation step once the pipeline works. Ranked last because it
 is the only planned milestone with no path to validation right now, not
 because of scope or difficulty.
 
+**A portable feature set, experimental.** No milestone number yet. A model
+trained on raw rate and entropy learns one network's scale, so it can misread
+traffic on a network with a different rate or address pool. `FLOD_FEATURE_SET=portable`
+trains on baseline-relative features instead (`rate_z`, `rate_ratio`, `entropy_z`,
+plus the existing scale-free ratios), for all three models, and writes
+`_portable` model files. The default stays `local`. It is developed on the
+`experiment/generalized-training` branch and not merged. What remains is
+validating it on the current training set, see
+[Portable features](training.md#portable-features).
+
 **A possible future as a plugin for other platforms.** No milestone number,
 and not a commitment: a direction to keep in mind. FLOD runs today as its own
 gateway on Linux, with Stage 1 on the packet path and Stage 2 enforcing

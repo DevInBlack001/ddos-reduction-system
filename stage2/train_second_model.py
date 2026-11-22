@@ -28,6 +28,8 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils import resample
+from portable_features import (PORTABLE_COLS, add_portable_features, feature_set_from_env,
+                               rate_z_floor_fraction_from_env, required_raw_cols)
 
 # See train.py's matching comment: cosmetic sklearn/joblib warning about
 # config propagation that does not apply here.
@@ -42,15 +44,14 @@ os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:sklearn.utils.paral
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(os.path.dirname(SCRIPT_DIR), "stage1", "training_data.csv")
-# Same FLOD_FEATURE_SET switch as train.py, see its matching comment.
-# auto_label.py's agreement check needs both models on the same feature
-# representation.
-FEATURE_SET = os.environ.get("FLOD_FEATURE_SET", "local").lower()
-if FEATURE_SET not in ("local", "portable"):
-    print(f"[-] Error: FLOD_FEATURE_SET must be 'local' or 'portable', got '{FEATURE_SET}'")
+# FLOD_FEATURE_SET=portable swaps raw rate and entropy for baseline-relative
+# features (see portable_features.py).
+try:
+    FEATURE_SET = feature_set_from_env()
+except ValueError as e:
+    print(f"[-] Error: {e}")
     sys.exit(1)
-# rate_z's relative floor, see train.py's matching comment.
-RATE_Z_FLOOR_FRACTION = float(os.environ.get("FLOD_RATE_Z_FLOOR_FRACTION", "0.05"))
+RATE_Z_FLOOR_FRACTION = rate_z_floor_fraction_from_env()
 # Same SECOND_MODEL_PATH environment variable config.py honours, so
 # training against a production install can target the root-owned model
 # directory Stage 2's auto_label.py actually reads from. Portable gets its
@@ -80,17 +81,7 @@ FEATURE_COLS_LOCAL = [
     "ttl_variance",
     "fingerprint_diversity"
 ]
-# Raw entropy excluded, see train.py's matching comment.
-FEATURE_COLS_PORTABLE = [
-    "proto_ratio",
-    "dominant_ip_ratio",
-    "source_port_entropy",
-    "ttl_variance",
-    "fingerprint_diversity",
-    "rate_z",
-    "rate_ratio",
-    "entropy_z",
-]
+FEATURE_COLS_PORTABLE = PORTABLE_COLS
 FEATURE_COLS = FEATURE_COLS_PORTABLE if FEATURE_SET == "portable" else FEATURE_COLS_LOCAL
 LABEL_COL = "label"
 
@@ -152,12 +143,8 @@ def main():
     df = pd.read_csv(csv_file)
     print(f"[+] Loaded {len(df)} raw rows.")
 
-    derived_cols = {"delta_rate", "delta_entropy", "dominant_rate", "rate_z", "rate_ratio", "entropy_z"}
-    base_required_raw_cols = {"ewma_rate", "mean_r", "sigma_r", "mean_h", "sigma_h"}
-    required_raw_cols = sorted(
-        base_required_raw_cols | {c for c in FEATURE_COLS if c not in derived_cols}
-    ) + [LABEL_COL, "timestamp"]
-    missing_cols = [c for c in required_raw_cols if c not in df.columns]
+    required = required_raw_cols(FEATURE_COLS) + [LABEL_COL, "timestamp"]
+    missing_cols = [c for c in required if c not in df.columns]
     if missing_cols:
         print(f"[-] Error: '{csv_file}' is missing column(s): {', '.join(missing_cols)}")
         print("    This looks like a pre-V7 capture. Recapture with the current sensor")
@@ -195,18 +182,10 @@ def main():
     df["delta_entropy"] = df["entropy"] - df["mean_h"]
     df["dominant_rate"] = df["ewma_rate"] * df["dominant_ip_ratio"]
 
-    # rate_z/rate_ratio/entropy_z: same baseline-relative features, same
-    # relative floor, and same divide-by-zero guard as train.py.
-    unsafe_baseline = (df["sigma_r"] <= 0) | (df["sigma_h"] <= 0) | (df["mean_r"] <= 0)
-    unsafe_count = unsafe_baseline.sum()
-    if unsafe_count > 0:
-        print(f"[!] Dropping {unsafe_count} rows with a non-positive sigma_r/sigma_h/mean_r "
-              "(would divide by zero computing rate_z/rate_ratio/entropy_z).")
-    df = df[~unsafe_baseline].reset_index(drop=True)
-    sigma_eff = df["sigma_r"].clip(lower=RATE_Z_FLOOR_FRACTION * df["mean_r"])
-    df["rate_z"] = (df["ewma_rate"] - df["mean_r"]) / sigma_eff
-    df["rate_ratio"] = df["ewma_rate"] / df["mean_r"]
-    df["entropy_z"] = (df["entropy"] - df["mean_h"]) / df["sigma_h"]
+    df, dropped = add_portable_features(df, RATE_Z_FLOOR_FRACTION)
+    if dropped:
+        print(f"[!] Dropping {dropped} rows with a non-positive sigma_r, sigma_h or mean_r "
+              "(the portable features divide by them).")
 
     print("\n== Raw Class Distribution ==")
     print(df[LABEL_COL].value_counts().to_string())
